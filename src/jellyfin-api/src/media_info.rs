@@ -37,6 +37,7 @@ static REPEATING_BLOCK: [u8; REPEATING_BLOCK_SIZE] = bitrate_test_block();
 
 #[derive(Debug, Default, Deserialize)]
 pub(crate) struct BitrateTestQuery {
+    #[serde(alias = "Size", alias = "SIZE")]
     size: Option<i64>,
 }
 
@@ -259,29 +260,179 @@ impl Default for PlaybackOptions {
 }
 
 #[derive(Debug, Default, Deserialize)]
+#[serde(default)]
 pub(crate) struct OpenLiveStreamQuery {
-    #[serde(rename = "openToken", alias = "OpenToken")]
+    #[serde(
+        rename = "openToken",
+        alias = "OpenToken",
+        alias = "opentoken",
+        alias = "OPENTOKEN"
+    )]
     open_token: Option<String>,
-    #[serde(rename = "userId", alias = "UserId")]
+    #[serde(
+        rename = "userId",
+        alias = "UserId",
+        alias = "userid",
+        alias = "USERID"
+    )]
     user_id: Option<Uuid>,
-    #[serde(rename = "playSessionId", alias = "PlaySessionId")]
+    #[serde(
+        rename = "playSessionId",
+        alias = "PlaySessionId",
+        alias = "playsessionid",
+        alias = "PLAYSESSIONID"
+    )]
     play_session_id: Option<String>,
-    #[serde(rename = "itemId", alias = "ItemId")]
+    #[serde(
+        rename = "maxStreamingBitrate",
+        alias = "MaxStreamingBitrate",
+        alias = "maxstreamingbitrate",
+        alias = "MAXSTREAMINGBITRATE",
+        deserialize_with = "deserialize_optional_number_or_string"
+    )]
+    max_streaming_bitrate: Option<i32>,
+    #[serde(
+        rename = "startTimeTicks",
+        alias = "StartTimeTicks",
+        alias = "starttimeticks",
+        alias = "STARTTIMETICKS",
+        deserialize_with = "deserialize_optional_number_or_string"
+    )]
+    start_time_ticks: Option<i64>,
+    #[serde(
+        rename = "audioStreamIndex",
+        alias = "AudioStreamIndex",
+        alias = "audiostreamindex",
+        alias = "AUDIOSTREAMINDEX",
+        deserialize_with = "deserialize_optional_number_or_string"
+    )]
+    audio_stream_index: Option<i32>,
+    #[serde(
+        rename = "subtitleStreamIndex",
+        alias = "SubtitleStreamIndex",
+        alias = "subtitlestreamindex",
+        alias = "SUBTITLESTREAMINDEX",
+        deserialize_with = "deserialize_optional_number_or_string"
+    )]
+    subtitle_stream_index: Option<i32>,
+    #[serde(
+        rename = "maxAudioChannels",
+        alias = "MaxAudioChannels",
+        alias = "maxaudiochannels",
+        alias = "MAXAUDIOCHANNELS",
+        deserialize_with = "deserialize_optional_number_or_string"
+    )]
+    max_audio_channels: Option<i32>,
+    #[serde(
+        rename = "itemId",
+        alias = "ItemId",
+        alias = "itemid",
+        alias = "ITEMID"
+    )]
     item_id: Option<Uuid>,
+    #[serde(
+        rename = "enableDirectPlay",
+        alias = "EnableDirectPlay",
+        alias = "enabledirectplay",
+        alias = "ENABLEDIRECTPLAY",
+        deserialize_with = "deserialize_optional_bool_or_string"
+    )]
+    enable_direct_play: Option<bool>,
+    #[serde(
+        rename = "enableDirectStream",
+        alias = "EnableDirectStream",
+        alias = "enabledirectstream",
+        alias = "ENABLEDIRECTSTREAM",
+        deserialize_with = "deserialize_optional_bool_or_string"
+    )]
+    enable_direct_stream: Option<bool>,
+    #[serde(
+        rename = "alwaysBurnInSubtitleWhenTranscoding",
+        alias = "AlwaysBurnInSubtitleWhenTranscoding",
+        alias = "alwaysburninsubtitlewhentranscoding",
+        alias = "ALWAYSBURNINSUBTITLEWHENTRANSCODING",
+        deserialize_with = "deserialize_optional_bool_or_string"
+    )]
+    always_burn_in_subtitle_when_transcoding: Option<bool>,
 }
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(default, rename_all = "PascalCase")]
 pub(crate) struct OpenLiveStreamDto {
+    #[serde(alias = "openToken", alias = "opentoken")]
     open_token: Option<String>,
+    #[serde(alias = "userId", alias = "userid")]
     user_id: Option<Uuid>,
+    #[serde(alias = "playSessionId", alias = "playsessionid")]
     play_session_id: Option<String>,
+    #[serde(
+        alias = "maxStreamingBitrate",
+        alias = "maxstreamingbitrate",
+        deserialize_with = "deserialize_optional_number_or_string"
+    )]
+    max_streaming_bitrate: Option<i32>,
+    #[serde(
+        alias = "startTimeTicks",
+        alias = "starttimeticks",
+        deserialize_with = "deserialize_optional_number_or_string"
+    )]
+    start_time_ticks: Option<i64>,
+    #[serde(
+        alias = "audioStreamIndex",
+        alias = "audiostreamindex",
+        deserialize_with = "deserialize_optional_number_or_string"
+    )]
+    audio_stream_index: Option<i32>,
+    #[serde(
+        alias = "subtitleStreamIndex",
+        alias = "subtitlestreamindex",
+        deserialize_with = "deserialize_optional_number_or_string"
+    )]
+    subtitle_stream_index: Option<i32>,
+    #[serde(
+        alias = "maxAudioChannels",
+        alias = "maxaudiochannels",
+        deserialize_with = "deserialize_optional_number_or_string"
+    )]
+    max_audio_channels: Option<i32>,
+    #[serde(alias = "itemId", alias = "itemid")]
     item_id: Option<Uuid>,
+    #[serde(
+        alias = "enableDirectPlay",
+        alias = "enabledirectplay",
+        deserialize_with = "deserialize_optional_bool_or_string"
+    )]
+    enable_direct_play: Option<bool>,
+    #[serde(
+        alias = "enableDirectStream",
+        alias = "enabledirectstream",
+        deserialize_with = "deserialize_optional_bool_or_string"
+    )]
+    enable_direct_stream: Option<bool>,
+    #[serde(
+        alias = "alwaysBurnInSubtitleWhenTranscoding",
+        alias = "alwaysburninsubtitlewhentranscoding",
+        deserialize_with = "deserialize_optional_bool_or_string"
+    )]
+    always_burn_in_subtitle_when_transcoding: Option<bool>,
+    #[serde(alias = "deviceProfile", alias = "deviceprofile")]
+    device_profile: Option<Value>,
+    #[serde(
+        alias = "directPlayProtocols",
+        alias = "directplayprotocols",
+        deserialize_with = "deserialize_optional_media_protocols"
+    )]
+    direct_play_protocols: Option<Vec<MediaProtocol>>,
 }
 
 #[derive(Debug, Deserialize)]
 pub(crate) struct CloseLiveStreamQuery {
-    #[serde(rename = "liveStreamId", alias = "LiveStreamId")]
+    #[serde(
+        rename = "liveStreamId",
+        alias = "LiveStreamId",
+        alias = "livestreamid",
+        alias = "LIVESTREAMID"
+    )]
     live_stream_id: String,
 }
 
@@ -334,6 +485,65 @@ where
         Some(value) => serde_json::from_value(value)
             .map(Some)
             .map_err(serde::de::Error::custom),
+    }
+}
+
+fn deserialize_optional_media_protocols<'de, D>(
+    deserializer: D,
+) -> Result<Option<Vec<MediaProtocol>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = Option::<Value>::deserialize(deserializer)?;
+    value
+        .map(|value| {
+            let Value::Array(values) = value else {
+                return Err(serde::de::Error::custom(
+                    "DirectPlayProtocols must be an array",
+                ));
+            };
+            values
+                .into_iter()
+                .map(|value| match value {
+                    Value::String(value) => media_protocol_from_name(&value)
+                        .ok_or_else(|| serde::de::Error::custom("unknown media protocol")),
+                    Value::Number(value) => value
+                        .as_i64()
+                        .and_then(media_protocol_from_number)
+                        .ok_or_else(|| serde::de::Error::custom("unknown media protocol")),
+                    _ => Err(serde::de::Error::custom("invalid media protocol")),
+                })
+                .collect()
+        })
+        .transpose()
+}
+
+fn media_protocol_from_name(value: &str) -> Option<MediaProtocol> {
+    match value.to_ascii_lowercase().as_str() {
+        "file" => Some(MediaProtocol::File),
+        "http" => Some(MediaProtocol::Http),
+        "rtmp" => Some(MediaProtocol::Rtmp),
+        "rtsp" => Some(MediaProtocol::Rtsp),
+        "udp" => Some(MediaProtocol::Udp),
+        "rtp" => Some(MediaProtocol::Rtp),
+        "ftp" => Some(MediaProtocol::Ftp),
+        _ => value
+            .parse::<i64>()
+            .ok()
+            .and_then(media_protocol_from_number),
+    }
+}
+
+const fn media_protocol_from_number(value: i64) -> Option<MediaProtocol> {
+    match value {
+        0 => Some(MediaProtocol::File),
+        1 => Some(MediaProtocol::Http),
+        2 => Some(MediaProtocol::Rtmp),
+        3 => Some(MediaProtocol::Rtsp),
+        4 => Some(MediaProtocol::Udp),
+        5 => Some(MediaProtocol::Rtp),
+        6 => Some(MediaProtocol::Ftp),
+        _ => None,
     }
 }
 
@@ -674,43 +884,124 @@ pub(crate) async fn post_playback_info(
 
 pub(crate) async fn open_live_stream(
     State(state): State<Arc<AppState>>,
+    RemoteIp(remote_ip): RemoteIp,
     headers: axum::http::HeaderMap,
+    OriginalUri(uri): OriginalUri,
     query: Result<Query<OpenLiveStreamQuery>, QueryRejection>,
     body: Result<Option<Json<OpenLiveStreamDto>>, JsonRejection>,
 ) -> Result<Json<LiveStreamResponse>, ApiError> {
-    let identity = authentication::authenticated_session(&state, &headers).await?;
+    // Authenticate before model-binding failures, as the canonical authorized
+    // controller does, while retaining the URI for API-key query binding.
+    let authenticated =
+        authentication::authenticated_identity(&state, &headers, Some(&uri)).await?;
     let Query(query) = query.map_err(|_| ApiError::InvalidRequest)?;
-    let body = optional_open_live_stream_body(body)?;
-    let target_user_id = query
-        .user_id
-        .or_else(|| body.as_ref().and_then(|body| body.user_id))
-        .unwrap_or(identity.user.id);
-    let item_id = query
-        .item_id
-        .or_else(|| body.as_ref().and_then(|body| body.item_id))
-        .ok_or(ApiError::NotFound)?;
-    let open_token = query
-        .open_token
-        .as_deref()
-        .or_else(|| body.as_ref().and_then(|body| body.open_token.as_deref()));
-    let play_session_id = query.play_session_id.as_deref().or_else(|| {
-        body.as_ref()
-            .and_then(|body| body.play_session_id.as_deref())
-    });
-    let mut media_source =
-        media_source(&state, &identity.user, target_user_id, item_id, None).await?;
+    let body = optional_open_live_stream_body(body)?.unwrap_or_default();
+    let identity = playback_request_identity_from_authenticated(
+        &state,
+        authenticated,
+        query.user_id.or(body.user_id),
+    )
+    .await?;
+    let item_id = query.item_id.or(body.item_id).unwrap_or_else(Uuid::nil);
+    let open_token = query.open_token.or(body.open_token);
+    let play_session_id = query.play_session_id.or(body.play_session_id);
+    let max_streaming_bitrate = query.max_streaming_bitrate.or(body.max_streaming_bitrate);
+    let start_time_ticks = query
+        .start_time_ticks
+        .or(body.start_time_ticks)
+        .unwrap_or_default();
+    let audio_stream_index = query.audio_stream_index.or(body.audio_stream_index);
+    let subtitle_stream_index = query.subtitle_stream_index.or(body.subtitle_stream_index);
+    let max_audio_channels = query.max_audio_channels.or(body.max_audio_channels);
+    let enable_direct_play = query
+        .enable_direct_play
+        .or(body.enable_direct_play)
+        .unwrap_or(true);
+    let enable_direct_stream = query
+        .enable_direct_stream
+        .or(body.enable_direct_stream)
+        .unwrap_or(true);
+    let always_burn_in_subtitle_when_transcoding = query
+        .always_burn_in_subtitle_when_transcoding
+        .or(body.always_burn_in_subtitle_when_transcoding)
+        .unwrap_or_default();
+    let device_profile = match body.device_profile {
+        Some(profile) => Some(parse_device_profile(profile).map_err(|error| {
+            tracing::debug!(%error, "invalid open-live-stream device profile");
+            ApiError::InvalidRequest
+        })?),
+        None => identity.stored_device_profile,
+    };
+    // DirectPlayProtocols is part of the official DTO and is consumed by
+    // source providers. The ordinary PostgreSQL source implemented here has
+    // already been opened, but still bind and validate the full wire field.
+    let _direct_play_protocols = body
+        .direct_play_protocols
+        .unwrap_or_else(|| vec![MediaProtocol::Http]);
+
+    let mut media_source = media_source(
+        &state,
+        &identity.user,
+        identity.target_user_id,
+        item_id,
+        None,
+    )
+    .await?;
     media_source.requires_opening = false;
     media_source.requires_closing = true;
-    media_source.live_stream_id = Some(live_stream_id(item_id, play_session_id, open_token));
+    media_source.live_stream_id = Some(live_stream_id(
+        item_id,
+        play_session_id.as_deref(),
+        open_token.as_deref(),
+    ));
+
+    if let Some(device_profile) = device_profile {
+        let selected_source_id = media_source.id.clone();
+        let mut media_sources = vec![media_source];
+        let policy =
+            user_library::media_source_policy_for_user(&state, identity.target_user_id).await?;
+        let options = PlaybackOptions {
+            media_source_id: selected_source_id,
+            max_streaming_bitrate,
+            start_time_ticks,
+            audio_stream_index,
+            subtitle_stream_index,
+            max_audio_channels,
+            device_profile: Some(device_profile),
+            enable_direct_play,
+            enable_direct_stream,
+            // OpenMediaSource passes these three non-query options as true in
+            // the official helper.
+            enable_transcoding: true,
+            allow_video_stream_copy: true,
+            allow_audio_stream_copy: true,
+            always_burn_in_subtitle_when_transcoding,
+        };
+        let mut effective_bitrate = max_streaming_bitrate;
+        apply_stream_builder(
+            &mut media_sources,
+            &policy,
+            &state,
+            item_id,
+            &options,
+            &mut effective_bitrate,
+            &identity.device_id,
+            &identity.access_token,
+            play_session_id.as_deref().unwrap_or_default(),
+            remote_ip,
+        );
+        media_source = media_sources.pop().ok_or(ApiError::NotFound)?;
+    }
     Ok(Json(LiveStreamResponse { media_source }))
 }
 
 pub(crate) async fn close_live_stream(
     State(state): State<Arc<AppState>>,
     headers: axum::http::HeaderMap,
+    OriginalUri(uri): OriginalUri,
     query: Result<Query<CloseLiveStreamQuery>, QueryRejection>,
 ) -> Result<axum::http::StatusCode, ApiError> {
-    authentication::authenticated_session(&state, &headers).await?;
+    authentication::authenticated_identity(&state, &headers, Some(&uri)).await?;
     let Query(query) = query.map_err(|_| ApiError::InvalidRequest)?;
     if query.live_stream_id.trim().is_empty() {
         return Err(ApiError::InvalidRequest);
@@ -748,6 +1039,14 @@ async fn playback_request_identity(
     requested_user_id: Option<Uuid>,
 ) -> Result<PlaybackRequestIdentity, ApiError> {
     let identity = authentication::authenticated_identity(state, headers, Some(uri)).await?;
+    playback_request_identity_from_authenticated(state, identity, requested_user_id).await
+}
+
+async fn playback_request_identity_from_authenticated(
+    state: &AppState,
+    identity: authentication::AuthenticatedIdentity,
+    requested_user_id: Option<Uuid>,
+) -> Result<PlaybackRequestIdentity, ApiError> {
     let target_user_id = identity.target_user_id(requested_user_id)?;
     let access_token = identity.access_token().to_owned();
     match identity {

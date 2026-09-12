@@ -5,8 +5,8 @@ use axum::{
 use jellyfin_api::AppState;
 use jellyfin_controller::{MediaStreamService, UserService};
 use jellyfin_data::{
-    BaseItemRepository, DeviceRepository, NewBaseItem, NewDevice,
-    entities::{base_item, linked_child, user},
+    ApiKeyRepository, BaseItemRepository, DeviceRepository, NewBaseItem, NewDevice,
+    entities::{api_key, base_item, linked_child, user},
 };
 use jellyfin_model::{MediaStream, MediaStreamType, UserPolicy};
 use sea_orm::{ActiveModelTrait, ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter, Set};
@@ -23,7 +23,12 @@ const REPEATING_BLOCK_SIZE: usize = 4 * 1024;
 #[tokio::test]
 async fn official_bitrate_test_default_and_valid_size_contract() {
     let fixture = Fixture::new().await;
-    for uri in ["/Playback/BitrateTest", "/Playback/BitrateTest?size=102400"] {
+    for uri in [
+        "/Playback/BitrateTest",
+        "/Playback/BitrateTest?size=102400",
+        "/playback/bitratetest",
+        "/playback/bitratetest?SIZE=102400",
+    ] {
         let response = fixture.get(uri, Some(&fixture.admin_token)).await;
         assert_bitrate_headers(&response, DEFAULT_SIZE);
         let body = to_bytes(response.into_body(), DEFAULT_SIZE + 1)
@@ -66,6 +71,10 @@ async fn bitrate_test_authentication_and_inclusive_bounds() {
     let fixture = Fixture::new().await;
     assert_eq!(
         fixture.get("/Playback/BitrateTest", None).await.status(),
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        fixture.get("/playback/bitratetest", None).await.status(),
         StatusCode::UNAUTHORIZED
     );
 
@@ -900,6 +909,10 @@ async fn live_stream_routes_open_postgres_media_sources_and_close_by_required_id
         StatusCode::UNAUTHORIZED
     );
     assert_eq!(
+        fixture.post("/livestreams/open", None, None).await.status(),
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
         fixture
             .post("/LiveStreams/Open", Some(&fixture.user_token), None)
             .await
@@ -942,7 +955,7 @@ async fn live_stream_routes_open_postgres_media_sources_and_close_by_required_id
         fixture
             .post(
                 &format!(
-                    "/LiveStreams/Open?itemId={}&playSessionId=query-session&openToken=query-token",
+                    "/livestreams/open?ITEMID={}&PLAYSESSIONID=query-session&OPENTOKEN=query-token",
                     fixture.item_id
                 ),
                 Some(&fixture.user_token),
@@ -978,7 +991,7 @@ async fn live_stream_routes_open_postgres_media_sources_and_close_by_required_id
     assert_eq!(
         fixture
             .post(
-                "/LiveStreams/Close?liveStreamId=body-session",
+                "/livestreams/close?LIVESTREAMID=body-session",
                 Some(&fixture.user_token),
                 None,
             )
@@ -987,6 +1000,112 @@ async fn live_stream_routes_open_postgres_media_sources_and_close_by_required_id
         StatusCode::NO_CONTENT
     );
 
+    fixture.cleanup().await;
+}
+
+#[tokio::test]
+async fn open_live_stream_applies_sdk_options_and_supports_api_key_target_users() {
+    let fixture = Fixture::new().await;
+    let api_key = ApiKeyRepository::new(fixture.database.clone())
+        .create(&format!("media-info-open-{}", Uuid::new_v4().simple()))
+        .await
+        .expect("open-live-stream API key");
+
+    assert_eq!(
+        fixture
+            .post(
+                &format!("/livestreams/open?itemid={}", fixture.item_id),
+                Some(&api_key.access_token),
+                None,
+            )
+            .await
+            .status(),
+        StatusCode::NOT_FOUND,
+        "an API key has no implicit playback user"
+    );
+
+    let route = format!(
+        "/livestreams/open?USERID={}&ITEMID={}&OPENTOKEN=query-token&PLAYSESSIONID=query-session&MAXSTREAMINGBITRATE=4000000&STARTTIMETICKS=456&AUDIOSTREAMINDEX=1&SUBTITLESTREAMINDEX=-1&MAXAUDIOCHANNELS=1&ENABLEDIRECTPLAY=false&ENABLEDIRECTSTREAM=false&ALWAYSBURNINSUBTITLEWHENTRANSCODING=true",
+        fixture.user_id, fixture.item_id
+    );
+    let opened = body_json(
+        fixture
+            .post(
+                &route,
+                Some(&api_key.access_token),
+                Some(&json!({
+                    "userid": fixture.admin_id,
+                    "itemid": Uuid::new_v4(),
+                    "opentoken": "body-token",
+                    "playsessionid": "body-session",
+                    "maxstreamingbitrate": "9000000",
+                    "starttimeticks": "999",
+                    "audiostreamindex": "0",
+                    "subtitlestreamindex": "0",
+                    "maxaudiochannels": "2",
+                    "enabledirectplay": "true",
+                    "enabledirectstream": "true",
+                    "alwaysburninsubtitlewhentranscoding": "false",
+                    "deviceprofile": progressive_video_profile(),
+                    "directplayprotocols": ["http", 0]
+                })),
+            )
+            .await,
+    )
+    .await;
+    let source = &opened["MediaSource"];
+    assert_eq!(source["Id"], fixture.item_id.simple().to_string());
+    assert_eq!(source["SupportsDirectPlay"], false);
+    assert_eq!(source["SupportsDirectStream"], false);
+    assert_eq!(source["SupportsTranscoding"], true);
+    assert_eq!(source["DefaultAudioStreamIndex"], 1);
+    assert_eq!(source["DefaultSubtitleStreamIndex"], -1);
+    assert_eq!(
+        source["LiveStreamId"],
+        format!("{}:query-session:query-token", fixture.item_id.simple())
+    );
+    let url = source["TranscodingUrl"]
+        .as_str()
+        .expect("posted device profile must affect the opened source");
+    assert!(url.contains("/stream.mp4"), "{url}");
+    assert!(url.contains("AudioStreamIndex=1"), "{url}");
+    assert!(url.contains("StartTimeTicks=456"), "{url}");
+    assert!(url.contains("PlaySessionId=query-session"), "{url}");
+    assert!(
+        url.contains(&format!(
+            "LiveStreamId={}:query-session:query-token",
+            fixture.item_id.simple()
+        )),
+        "{url}"
+    );
+
+    assert_eq!(
+        fixture
+            .post(
+                &format!("/LiveStreams/Open?ItemId={}", fixture.item_id),
+                Some(&fixture.user_token),
+                Some(&json!({ "DirectPlayProtocols": ["unknown"] })),
+            )
+            .await
+            .status(),
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        fixture
+            .post(
+                "/livestreams/close?livestreamid=query-session",
+                Some(&api_key.access_token),
+                None,
+            )
+            .await
+            .status(),
+        StatusCode::NO_CONTENT
+    );
+
+    api_key::Entity::delete_by_id(api_key.id)
+        .exec(&fixture.database)
+        .await
+        .expect("API key cleanup");
     fixture.cleanup().await;
 }
 
@@ -1093,6 +1212,26 @@ fn flexible_video_profile(include_direct_play: bool) -> Value {
             "transcodeSeekInfo": "1",
             "minSegments": "2",
             "segmentLength": "6"
+        }]
+    })
+}
+
+fn progressive_video_profile() -> Value {
+    json!({
+        "name": "Open Live Stream HTTP Profile",
+        "directPlayProfiles": [{
+            "container": "mkv",
+            "audioCodec": "aac",
+            "videoCodec": "h264",
+            "type": "video"
+        }],
+        "transcodingProfiles": [{
+            "container": "mp4",
+            "type": "video",
+            "videoCodec": "h264",
+            "audioCodec": "aac",
+            "protocol": "http",
+            "context": "streaming"
         }]
     })
 }
