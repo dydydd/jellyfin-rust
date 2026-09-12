@@ -19,7 +19,9 @@ use axum::{
     http::{Method, Request, StatusCode, header},
 };
 use jellyfin_api::AppState;
-use jellyfin_controller::{MediaStreamService, PersonReconciliationService, UserService};
+use jellyfin_controller::{
+    MediaStreamService, PersonReconciliationService, UserService, VirtualFolderService,
+};
 use jellyfin_data::{
     BaseItemImageRepository, BaseItemImageType, BaseItemRepository, ChapterRepository,
     DatabaseConfig, DeviceRepository, NewBaseItem, NewBaseItemImage, NewChapter, NewDevice,
@@ -45,6 +47,7 @@ const READS: &[(&str, &str, &str)] = &[
     ("/System/Info/Public", "PublicSystemInfo", "none"),
     ("/System/Configuration", "ServerConfiguration", "admin"),
     ("/System/Info/Storage", "SystemStorageDto", "admin"),
+    ("/Auth/Keys", "AuthenticationInfoQueryResult", "admin"),
     (
         "/System/ActivityLog/Entries",
         "ActivityLogEntryQueryResult",
@@ -56,6 +59,11 @@ const READS: &[(&str, &str, &str)] = &[
     ("/Users/{user}", "UserDto", "user"),
     ("/Users/{user}/Views", "BaseItemDtoQueryResult", "user"),
     ("/UserViews", "BaseItemDtoQueryResult", "user"),
+    (
+        "/Library/VirtualFolders",
+        "List<VirtualFolderInfo>",
+        "admin",
+    ),
     ("/Items/Root", "BaseItemDto", "user"),
     ("/Items/Counts", "ItemCounts", "user"),
     ("/Items/Filters", "QueryFiltersLegacy", "user"),
@@ -189,6 +197,21 @@ const READS: &[(&str, &str, &str)] = &[
         "admin",
     ),
     ("/Branding/Configuration", "BrandingOptionsDto", "none"),
+    ("/Localization/Cultures", "List<CultureDto>", "none"),
+    ("/Localization/Countries", "List<CountryInfo>", "none"),
+    (
+        "/Localization/ParentalRatings",
+        "List<ParentalRating>",
+        "none",
+    ),
+    ("/Localization/Options", "List<LocalizationOption>", "none"),
+    (
+        "/Environment/DefaultDirectoryBrowser",
+        "DefaultDirectoryBrowserInfoDto",
+        "admin",
+    ),
+    ("/Environment/Drives", "List<FileSystemEntryInfo>", "admin"),
+    ("/SyncPlay/List", "List<GroupInfoDto>", "user"),
     ("/Movies/{movie}/Similar", "BaseItemDtoQueryResult", "user"),
     ("/Movies/Recommendations", "List<RecommendationDto>", "user"),
     (
@@ -401,6 +424,16 @@ impl Fixture {
         let user = users.create("compat-user").await.unwrap();
         let items = BaseItemRepository::new(database.clone());
         let root = items.ensure_user_root().await.unwrap();
+        VirtualFolderService::new(database.clone())
+            .create(
+                "SDK Compat Movies",
+                Some("movies".to_owned()),
+                json!({}),
+                Vec::new(),
+                false,
+            )
+            .await
+            .unwrap();
         let movies = create_item(&items, "CollectionFolder", Some(root.id), "Movies", None);
         let shows = create_item(&items, "CollectionFolder", Some(root.id), "Shows", None);
         let music = create_item(&items, "CollectionFolder", Some(root.id), "Music", None);
