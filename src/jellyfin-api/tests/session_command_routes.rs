@@ -387,8 +387,42 @@ async fn assert_command_access_and_validation(fixture: &Fixture) {
             )
             .await
             .status(),
-        StatusCode::UNAUTHORIZED
+        StatusCode::NO_CONTENT
     );
+    assert_eq!(
+        fixture
+            .request(
+                "POST",
+                &format!("/Sessions/{}/Message", fixture.target_session_id),
+                Some(&fixture.api_key_token),
+                json_body(&json!({ "Text": "API key message" })),
+            )
+            .await
+            .status(),
+        StatusCode::NO_CONTENT
+    );
+    let queued = SessionCommandRepository::new(fixture.database.clone())
+        .list_for_session(&fixture.target_session_id)
+        .await
+        .expect("API-key commands must load");
+    assert_eq!(queued.len(), 2);
+    assert!(queued.iter().all(|command| {
+        command.controlling_session_id.as_deref()
+            == Some(&jellyfin_session_id(
+                "Session Command Tests",
+                "session-command-tests",
+            ))
+    }));
+    assert_eq!(
+        queued[0].payload["ControllingUserId"],
+        Uuid::nil().simple().to_string()
+    );
+    assert_eq!(queued[1].payload["Arguments"]["Text"], "API key message");
+    session_command::Entity::delete_many()
+        .filter(session_command::Column::TargetSessionId.eq(&fixture.target_session_id))
+        .exec(&fixture.database)
+        .await
+        .expect("API-key command cleanup");
     assert_eq!(
         fixture
             .request(

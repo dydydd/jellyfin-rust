@@ -8,8 +8,8 @@ use axum::{
 use jellyfin_api::AppState;
 use jellyfin_controller::UserService;
 use jellyfin_data::{
-    DeviceRepository, NewDevice,
-    entities::{device, user},
+    ApiKeyRepository, DeviceRepository, NewDevice,
+    entities::{api_key, device, user},
 };
 use md5::{Digest, Md5};
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
@@ -61,7 +61,10 @@ async fn session_capabilities_are_persisted_and_projected_from_postgres_jsonb() 
     let full_response = fixture
         .request(
             "POST",
-            &format!("/Sessions/Capabilities/Full?id={}", fixture.session_id),
+            &format!(
+                "/Sessions/Capabilities/Full?id={}&supportsMediaControl=not-a-bool",
+                fixture.session_id
+            ),
             Some(&fixture.token),
             Body::from(
                 json!({
@@ -82,6 +85,101 @@ async fn session_capabilities_are_persisted_and_projected_from_postgres_jsonb() 
         .await;
     assert_eq!(full_response.status(), StatusCode::NO_CONTENT);
     assert_full_capabilities(&fixture.sessions().await);
+
+    let mixed_case_response = fixture
+        .request(
+            "POST",
+            &format!("/sessions/capabilities/full?id={}", fixture.session_id),
+            Some(&fixture.token),
+            Body::from(
+                json!({
+                    "playableMediaTypes": ["video", 2, "3"],
+                    "supportedCommands": ["play", 41, "42"],
+                    "supportsMediaControl": true,
+                    "supportsPersistentIdentifier": false,
+                    "deviceProfile": {
+                        "name": "Mobile profile",
+                        "maxStreamingBitrate": "456789",
+                        "directPlayProfiles": [{
+                            "container": "mp4",
+                            "type": "video",
+                            "UnknownNestedProperty": true
+                        }],
+                        "UnknownProfileProperty": true
+                    }
+                })
+                .to_string(),
+            ),
+        )
+        .await;
+    assert_eq!(mixed_case_response.status(), StatusCode::NO_CONTENT);
+    let mixed_case = fixture.sessions().await;
+    let capabilities = &only_session(&mixed_case)["Capabilities"];
+    assert_eq!(
+        capabilities["PlayableMediaTypes"],
+        json!(["Video", "Audio", "Photo"])
+    );
+    assert_eq!(
+        capabilities["SupportedCommands"],
+        json!(["Play", "SetMaxStreamingBitrate", "SetPlaybackOrder"])
+    );
+    assert_eq!(capabilities["DeviceProfile"]["Name"], "Mobile profile");
+    assert_eq!(
+        capabilities["DeviceProfile"]["MaxStreamingBitrate"],
+        456_789
+    );
+    assert_eq!(
+        capabilities["DeviceProfile"]["DirectPlayProfiles"][0]["Type"],
+        "Video"
+    );
+    assert!(
+        capabilities["DeviceProfile"]
+            .get("UnknownProfileProperty")
+            .is_none()
+    );
+    assert!(
+        capabilities["DeviceProfile"]["DirectPlayProfiles"][0]
+            .get("UnknownNestedProperty")
+            .is_none()
+    );
+
+    let delimited_response = fixture
+        .request(
+            "POST",
+            &format!("/Sessions/Capabilities/Full?id={}", fixture.session_id),
+            Some(&fixture.token),
+            Body::from(
+                json!({
+                    "PlayableMediaTypes": "video,2,Book,invalid",
+                    "SupportedCommands": "play,41,GoHome,invalid"
+                })
+                .to_string(),
+            ),
+        )
+        .await;
+    assert_eq!(delimited_response.status(), StatusCode::NO_CONTENT);
+    let delimited = fixture.sessions().await;
+    let capabilities = &only_session(&delimited)["Capabilities"];
+    assert_eq!(
+        capabilities["PlayableMediaTypes"],
+        json!(["Video", "Audio", "Book"])
+    );
+    assert_eq!(
+        capabilities["SupportedCommands"],
+        json!(["Play", "SetMaxStreamingBitrate", "GoHome"])
+    );
+
+    for invalid_profile in [json!(42), json!([]), json!("profile")] {
+        let invalid_profile_response = fixture
+            .request(
+                "POST",
+                &format!("/Sessions/Capabilities/Full?id={}", fixture.session_id),
+                Some(&fixture.token),
+                Body::from(json!({ "DeviceProfile": invalid_profile }).to_string()),
+            )
+            .await;
+        assert_eq!(invalid_profile_response.status(), StatusCode::BAD_REQUEST);
+    }
 
     for key in ["id", "Id"] {
         let invalid_id_response = fixture
@@ -116,6 +214,53 @@ async fn directed_capabilities_require_control_and_update_the_target_session() {
         .await;
     assert_eq!(forbidden.status(), StatusCode::FORBIDDEN);
     assert_eq!(fixture.target_capabilities().await, original);
+
+    let api_key_target = fixture
+        .request(
+            "POST",
+            &format!(
+                "/Sessions/Capabilities/Full?id={}",
+                fixture.target_session_id
+            ),
+            Some(&fixture.api_key_token),
+            Body::from(
+                json!({
+                    "PlayableMediaTypes": ["Book"],
+                    "SupportsMediaControl": true
+                })
+                .to_string(),
+            ),
+        )
+        .await;
+    assert_eq!(api_key_target.status(), StatusCode::NO_CONTENT);
+    assert_eq!(
+        fixture.target_capabilities().await["PlayableMediaTypes"],
+        json!(["Book"])
+    );
+
+    let api_key_self = fixture
+        .request_with_authorization(
+            "POST",
+            "/Sessions/Capabilities/Full",
+            &format!(
+                "MediaBrowser Client=\"Target Client\", DeviceId=\"{}\", Device=\"Target Device\", Version=\"1.0\"",
+                fixture.target_device_id
+            ),
+            Some(&fixture.api_key_token),
+            Body::from(
+                json!({
+                    "PlayableMediaTypes": ["Photo"],
+                    "SupportsMediaControl": false
+                })
+                .to_string(),
+            ),
+        )
+        .await;
+    assert_eq!(api_key_self.status(), StatusCode::NO_CONTENT);
+    assert_eq!(
+        fixture.target_capabilities().await["PlayableMediaTypes"],
+        json!(["Photo"])
+    );
 
     let devices = DeviceRepository::new(fixture.database.clone());
     devices
@@ -184,8 +329,11 @@ struct Fixture {
     user_id: Uuid,
     target_user_id: Uuid,
     token: String,
+    api_key_id: i64,
+    api_key_token: String,
     session_id: String,
     target_session_id: String,
+    target_device_id: String,
     target_row_id: i64,
 }
 
@@ -230,6 +378,10 @@ impl Fixture {
             ))
             .await
             .expect("target session creation");
+        let api_key = ApiKeyRepository::new(database.clone())
+            .create(&format!("session-capabilities-key-{suffix}"))
+            .await
+            .expect("API key creation");
         Self {
             database: database.clone(),
             app: jellyfin_api::router(AppState::new(
@@ -240,8 +392,11 @@ impl Fixture {
             user_id: user.id,
             target_user_id: target_user.id,
             token: session.access_token,
+            api_key_id: api_key.id,
+            api_key_token: api_key.access_token,
             session_id: jellyfin_session_id("Jellyfin Web", &device_id),
             target_session_id: jellyfin_session_id("Target Client", &target_device_id),
+            target_device_id,
             target_row_id: target.id,
         }
     }
@@ -253,6 +408,18 @@ impl Fixture {
         token: Option<&str>,
         body: Body,
     ) -> axum::response::Response {
+        self.request_with_authorization(method, uri, AUTHORIZATION, token, body)
+            .await
+    }
+
+    async fn request_with_authorization(
+        &self,
+        method: &str,
+        uri: &str,
+        authorization: &str,
+        token: Option<&str>,
+        body: Body,
+    ) -> axum::response::Response {
         let mut request = Request::builder()
             .method(method)
             .uri(uri)
@@ -260,7 +427,7 @@ impl Fixture {
         if let Some(token) = token {
             request = request.header(
                 header::AUTHORIZATION,
-                format!("{AUTHORIZATION}, Token=\"{token}\""),
+                format!("{authorization}, Token=\"{token}\""),
             );
         }
         self.app
@@ -288,6 +455,10 @@ impl Fixture {
     }
 
     async fn cleanup(self) {
+        api_key::Entity::delete_by_id(self.api_key_id)
+            .exec(&self.database)
+            .await
+            .expect("API key cleanup");
         user::Entity::delete_many()
             .filter(user::Column::Id.is_in([self.user_id, self.target_user_id]))
             .exec(&self.database)

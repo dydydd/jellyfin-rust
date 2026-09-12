@@ -1,16 +1,16 @@
 use chrono::{TimeZone, Timelike, Utc};
 use jellyfin_model::{
     AuthenticationInfo, BackupManifestDto, BackupOptionsDto, BackupRestoreRequestDto,
-    BufferRequestDto, ClientCapabilitiesDto, DeviceInfoDto, DeviceOptionsDto, EndPointInfo,
-    FontFile, ForgotPasswordAction, ForgotPasswordResult, GeneralCommand, GeneralCommandType,
-    GroupInfoDto, GroupQueueMode, GroupRepeatMode, GroupShuffleMode, GroupStateType,
-    GroupStateUpdateDto, GroupUpdateDto, GroupUpdateType, ImageInfo, ImageProviderInfo, ImageType,
-    ItemCounts, MediaSegmentDto, MediaSegmentType, MediaType, MessageCommand, NameIdPair,
-    PackageInfo, PinRedeemResult, PlayCommand, PlayQueueUpdateDto, PlayQueueUpdateReason,
-    PlayRequest, PlaybackRequestType, PlayerStateInfo, PlaystateCommand, PlaystateRequest,
-    PublicSystemInfo, QueryResult, RemoteImageResult, RemoteSearchResult, RemoteSubtitleInfo,
-    RepositoryInfo, SearchHint, SearchHintResult, SendCommandDto, SendCommandType,
-    ServerConfiguration, SessionInfoDto, SessionUserInfo, SyncPlayQueueItemDto,
+    BufferRequestDto, ClientCapabilitiesDto, DeviceInfoDto, DeviceOptionsDto, DeviceProfile,
+    EndPointInfo, FontFile, ForgotPasswordAction, ForgotPasswordResult, GeneralCommand,
+    GeneralCommandType, GroupInfoDto, GroupQueueMode, GroupRepeatMode, GroupShuffleMode,
+    GroupStateType, GroupStateUpdateDto, GroupUpdateDto, GroupUpdateType, ImageInfo,
+    ImageProviderInfo, ImageType, ItemCounts, MediaSegmentDto, MediaSegmentType, MediaType,
+    MessageCommand, NameIdPair, PackageInfo, PinRedeemResult, PlayCommand, PlayQueueUpdateDto,
+    PlayQueueUpdateReason, PlayRequest, PlaybackRequestType, PlayerStateInfo, PlaystateCommand,
+    PlaystateRequest, PublicSystemInfo, QueryResult, RemoteImageResult, RemoteSearchResult,
+    RemoteSubtitleInfo, RepositoryInfo, SearchHint, SearchHintResult, SendCommandDto,
+    SendCommandType, ServerConfiguration, SessionInfoDto, SessionUserInfo, SyncPlayQueueItemDto,
     SyncPlayUserAccessType, UserDto, UserPolicy, UtcTimeResponse,
 };
 use serde_json::json;
@@ -600,9 +600,10 @@ fn session_info_uses_official_wire_names_and_guid_format() {
             supported_commands: vec![GeneralCommandType::Play],
             supports_media_control: true,
             supports_persistent_identifier: true,
-            device_profile: Some(json!({
-                "Name": "Browser profile"
-            })),
+            device_profile: Some(DeviceProfile {
+                name: Some("Browser profile".to_owned()),
+                ..DeviceProfile::default()
+            }),
             ..ClientCapabilitiesDto::default()
         },
         playable_media_types: vec![MediaType::Video],
@@ -682,6 +683,114 @@ fn client_capabilities_distinguish_wire_and_stored_defaults() {
         "SupportsPersistentIdentifier": false
     }));
     assert!(!explicit.supports_persistent_identifier);
+
+    let mixed_case = ClientCapabilitiesDto::from_stored_value(json!({
+        "sUpPoRtSpErSiStEnTiDeNtIfIeR": false
+    }));
+    assert!(!mixed_case.supports_persistent_identifier);
+}
+
+#[test]
+fn client_capabilities_bind_official_json_shapes() {
+    let capabilities: ClientCapabilitiesDto = serde_json::from_value(json!({
+        "pLaYaBlEmEdIaTyPeS": ["video", 2, "3"],
+        "sUpPoRtEdCoMmAnDs": ["play", 41, "42"],
+        "sUpPoRtSmEdIaCoNtRoL": true,
+        "sUpPoRtSpErSiStEnTiDeNtIfIeR": true,
+        "dEvIcEpRoFiLe": {
+            "nAmE": "Mixed-case profile",
+            "mAxStReAmInGbItRaTe": "123456",
+            "dIrEcTpLaYpRoFiLeS": [{
+                "cOnTaInEr": "mp4",
+                "tYpE": "video",
+                "UnknownNestedProperty": true
+            }],
+            "UnknownProfileProperty": "ignored"
+        },
+        "UnknownCapabilityProperty": "ignored"
+    }))
+    .unwrap();
+
+    assert_eq!(
+        capabilities.playable_media_types,
+        [MediaType::Video, MediaType::Audio, MediaType::Photo]
+    );
+    assert_eq!(
+        capabilities.supported_commands,
+        [
+            GeneralCommandType::Play,
+            GeneralCommandType::SetMaxStreamingBitrate,
+            GeneralCommandType::SetPlaybackOrder
+        ]
+    );
+    assert!(capabilities.supports_media_control);
+    assert!(capabilities.supports_persistent_identifier);
+
+    let value = serde_json::to_value(capabilities).unwrap();
+    assert_eq!(value["DeviceProfile"]["Name"], "Mixed-case profile");
+    assert_eq!(value["DeviceProfile"]["MaxStreamingBitrate"], 123_456);
+    assert_eq!(
+        value["DeviceProfile"]["DirectPlayProfiles"][0]["Type"],
+        "Video"
+    );
+    assert!(
+        value["DeviceProfile"]
+            .get("UnknownProfileProperty")
+            .is_none()
+    );
+    assert!(
+        value["DeviceProfile"]["DirectPlayProfiles"][0]
+            .get("UnknownNestedProperty")
+            .is_none()
+    );
+    assert!(value.get("UnknownCapabilityProperty").is_none());
+}
+
+#[test]
+fn client_capabilities_accept_comma_delimited_body_collections() {
+    let capabilities: ClientCapabilitiesDto = serde_json::from_value(json!({
+        "PlayableMediaTypes": "video,2,Book,invalid",
+        "SupportedCommands": "play,41,GoHome,invalid"
+    }))
+    .unwrap();
+
+    assert_eq!(
+        capabilities.playable_media_types,
+        [MediaType::Video, MediaType::Audio, MediaType::Book]
+    );
+    assert_eq!(
+        capabilities.supported_commands,
+        [
+            GeneralCommandType::Play,
+            GeneralCommandType::SetMaxStreamingBitrate,
+            GeneralCommandType::GoHome
+        ]
+    );
+}
+
+#[test]
+fn client_capabilities_reject_invalid_typed_values() {
+    for device_profile in [json!(42), json!([]), json!("profile")] {
+        assert!(
+            serde_json::from_value::<ClientCapabilitiesDto>(json!({
+                "DeviceProfile": device_profile.clone()
+            }))
+            .is_err(),
+            "accepted invalid device profile: {device_profile}"
+        );
+    }
+    assert!(
+        serde_json::from_value::<ClientCapabilitiesDto>(json!({
+            "PlayableMediaTypes": ["Video", "invalid"]
+        }))
+        .is_err()
+    );
+    assert!(
+        serde_json::from_value::<ClientCapabilitiesDto>(json!({
+            "SupportedCommands": [43]
+        }))
+        .is_err()
+    );
 }
 
 #[test]

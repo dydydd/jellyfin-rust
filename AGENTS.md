@@ -844,6 +844,12 @@
   users, callers with `EnableRemoteControlOfOtherUsers`, and privileged API-key contexts where that
   route accepts them; attaching a different user additionally requires an administrator. Never
   authorize a target merely because its session id exists.
+- Bind full client-capability JSON case-insensitively with official enum names, integers, numeric
+  strings, and array-or-comma-string capability collections. Keep `DeviceProfile` strongly typed so
+  primitives fail binding and nested SDK casing/numeric values are normalized before persistence.
+  Full capabilities bind only their official `Id` query and ignore unrelated query keys. Treat API
+  keys as privileged user-less controllers for capabilities, general commands, and messages while
+  retaining the request client's session id and a nil controlling user id.
 - Filter `/Sessions?ControllableByUserId=` through actual media-control capability and a connected
   controller, the caller's remote-control and device-access policy, and the controlled user's shared-
   device policy. A normal session list includes public and additional-user sessions; an explicit nil

@@ -62,6 +62,13 @@ pub(crate) struct CapabilitiesQuery {
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
+pub(crate) struct FullCapabilitiesQuery {
+    #[serde(alias = "Id")]
+    id: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
 pub(crate) struct ViewingQuery {
     #[serde(rename = "itemType", alias = "ItemType", alias = "itemtype")]
     ty: Option<String>,
@@ -316,14 +323,14 @@ pub(crate) async fn send_system_command(
     path: Result<Path<(String, GeneralCommandType)>, PathRejection>,
 ) -> Result<StatusCode, ApiError> {
     let Path((session_id, command)) = path.map_err(|_| ApiError::InvalidRequest)?;
-    let controller = authenticated_device_session(&state, &headers, &uri).await?;
+    let controller = authenticated_session_controller(&state, &headers, &uri).await?;
     enqueue_general_command(
         &state,
         &session_id,
         &controller,
         GeneralCommand {
             name: command,
-            controlling_user_id: controller.user.id,
+            controlling_user_id: controller.user_id(),
             arguments: HashMap::new(),
         },
     )
@@ -343,14 +350,14 @@ pub(crate) async fn display_content(
     let item_type = required_query_value(query.ty)?;
     let item_id = required_query_value(query.id)?;
     let item_name = required_query_value(query.name)?;
-    let controller = authenticated_device_session(&state, &headers, &uri).await?;
+    let controller = authenticated_session_controller(&state, &headers, &uri).await?;
     enqueue_general_command(
         &state,
         &session_id,
         &controller,
         GeneralCommand {
             name: GeneralCommandType::DisplayContent,
-            controlling_user_id: controller.user.id,
+            controlling_user_id: controller.user_id(),
             arguments: HashMap::from([
                 ("ItemId".to_owned(), item_id),
                 ("ItemName".to_owned(), item_name),
@@ -418,9 +425,9 @@ pub(crate) async fn send_full_general_command(
     request: Result<Json<GeneralCommand>, JsonRejection>,
 ) -> Result<StatusCode, ApiError> {
     let Path(session_id) = path.map_err(|_| ApiError::InvalidRequest)?;
-    let controller = authenticated_device_session(&state, &headers, &uri).await?;
+    let controller = authenticated_session_controller(&state, &headers, &uri).await?;
     let Json(mut command) = request.map_err(|_| ApiError::InvalidRequest)?;
-    command.controlling_user_id = controller.user.id;
+    command.controlling_user_id = controller.user_id();
     enqueue_general_command(&state, &session_id, &controller, command).await?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -433,7 +440,7 @@ pub(crate) async fn send_message_command(
     request: Result<Json<MessageCommand>, JsonRejection>,
 ) -> Result<StatusCode, ApiError> {
     let Path(session_id) = path.map_err(|_| ApiError::InvalidRequest)?;
-    let controller = authenticated_device_session(&state, &headers, &uri).await?;
+    let controller = authenticated_session_controller(&state, &headers, &uri).await?;
     let Json(command) = request.map_err(|_| ApiError::InvalidRequest)?;
     let text = command
         .text
@@ -453,7 +460,7 @@ pub(crate) async fn send_message_command(
         &controller,
         GeneralCommand {
             name: GeneralCommandType::DisplayMessage,
-            controlling_user_id: controller.user.id,
+            controlling_user_id: controller.user_id(),
             arguments,
         },
     )
@@ -475,7 +482,7 @@ pub(crate) async fn send_play_command(
         return Err(ApiError::InvalidRequest);
     }
 
-    let controller = authenticated_device_session(&state, &headers, &uri).await?;
+    let controller = authenticated_session_controller(&state, &headers, &uri).await?;
     enqueue_session_command(
         &state,
         &session_id,
@@ -485,7 +492,7 @@ pub(crate) async fn send_play_command(
             item_ids: query.item_ids,
             start_position_ticks: query.start_position_ticks,
             play_command,
-            controlling_user_id: controller.user.id,
+            controlling_user_id: controller.user_id(),
             subtitle_stream_index: query.subtitle_stream_index,
             audio_stream_index: query.audio_stream_index,
             media_source_id: query.media_source_id,
@@ -505,7 +512,7 @@ pub(crate) async fn send_playstate_command(
 ) -> Result<StatusCode, ApiError> {
     let Path((session_id, command)) = path.map_err(|_| ApiError::InvalidRequest)?;
     let Query(query) = query.map_err(|_| ApiError::InvalidRequest)?;
-    let controller = authenticated_device_session(&state, &headers, &uri).await?;
+    let controller = authenticated_session_controller(&state, &headers, &uri).await?;
     enqueue_session_command(
         &state,
         &session_id,
@@ -598,7 +605,8 @@ pub(crate) async fn post_capabilities(
     let identity = authentication::authenticated_identity(&state, &headers, Some(&uri)).await?;
     let Query(query) = query.map_err(|_| ApiError::InvalidRequest)?;
     let access_token =
-        authorized_capabilities_access_token(&state, &identity, query.id.as_deref()).await?;
+        authorized_capabilities_access_token(&state, &identity, &headers, query.id.as_deref())
+            .await?;
     let capabilities = ClientCapabilitiesDto {
         playable_media_types: query.playable_media_types,
         supported_commands: query.supported_commands,
@@ -615,14 +623,15 @@ pub(crate) async fn post_full_capabilities(
     State(state): State<Arc<AppState>>,
     OriginalUri(uri): OriginalUri,
     headers: HeaderMap,
-    query: Result<Query<CapabilitiesQuery>, QueryRejection>,
+    query: Result<Query<FullCapabilitiesQuery>, QueryRejection>,
     request: Result<Json<ClientCapabilitiesDto>, JsonRejection>,
 ) -> Result<StatusCode, ApiError> {
     let identity = authentication::authenticated_identity(&state, &headers, Some(&uri)).await?;
     let Query(query) = query.map_err(|_| ApiError::InvalidRequest)?;
     let Json(capabilities) = request.map_err(|_| ApiError::InvalidRequest)?;
     let access_token =
-        authorized_capabilities_access_token(&state, &identity, query.id.as_deref()).await?;
+        authorized_capabilities_access_token(&state, &identity, &headers, query.id.as_deref())
+            .await?;
     persist_capabilities(&state, &access_token, capabilities).await?;
     crate::websocket::broadcast_sessions(&state).await;
     Ok(StatusCode::NO_CONTENT)
@@ -673,14 +682,53 @@ async fn require_elevated(
         .require_administrator()
 }
 
-async fn authenticated_device_session(
+enum SessionController {
+    Device(Box<authentication::AuthenticatedSession>),
+    ApiKey { session_id: String },
+}
+
+impl SessionController {
+    fn user_id(&self) -> Uuid {
+        match self {
+            Self::Device(session) => session.user.id,
+            Self::ApiKey { .. } => Uuid::nil(),
+        }
+    }
+
+    fn session_id(&self) -> String {
+        match self {
+            Self::Device(session) => {
+                jellyfin_session_id(&session.device.app_name, &session.device.device_id)
+            }
+            Self::ApiKey { session_id } => session_id.clone(),
+        }
+    }
+
+    fn can_control(&self, target: &device::Model) -> Result<(), ApiError> {
+        match self {
+            // The official SessionManager treats an API-key request as a
+            // privileged controller because its request session has no user.
+            Self::ApiKey { .. } => Ok(()),
+            Self::Device(session) => assert_can_control_session(target, session),
+        }
+    }
+}
+
+async fn authenticated_session_controller(
     state: &AppState,
     headers: &HeaderMap,
     uri: &axum::http::Uri,
-) -> Result<Box<authentication::AuthenticatedSession>, ApiError> {
+) -> Result<SessionController, ApiError> {
     match authentication::authenticated_identity(state, headers, Some(uri)).await? {
-        authentication::AuthenticatedIdentity::Device(session) => Ok(session),
-        authentication::AuthenticatedIdentity::ApiKey(_) => Err(ApiError::Unauthorized),
+        authentication::AuthenticatedIdentity::Device(session) => {
+            Ok(SessionController::Device(session))
+        }
+        authentication::AuthenticatedIdentity::ApiKey(_) => {
+            let client = authentication::authorization_info_from_headers(headers)?;
+            Ok(SessionController::ApiKey {
+                session_id: jellyfin_session_id(&client.app_name, &client.device_id),
+            })
+        }
     }
 }
 
@@ -693,7 +741,7 @@ fn required_query_value(value: Option<String>) -> Result<String, ApiError> {
 async fn enqueue_general_command(
     state: &AppState,
     target_session_id: &str,
-    controller: &authentication::AuthenticatedSession,
+    controller: &SessionController,
     command: GeneralCommand,
 ) -> Result<(), ApiError> {
     enqueue_session_command(
@@ -709,7 +757,7 @@ async fn enqueue_general_command(
 async fn enqueue_session_command<T>(
     state: &AppState,
     target_session_id: &str,
-    controller: &authentication::AuthenticatedSession,
+    controller: &SessionController,
     message_type: &str,
     payload: T,
 ) -> Result<(), ApiError>
@@ -717,15 +765,12 @@ where
     T: Serialize,
 {
     let target = find_active_session(state, target_session_id).await?;
-    assert_can_control_session(&target, controller)?;
+    controller.can_control(&target)?;
     let queued = state
         .session_commands
         .enqueue(NewSessionCommand {
             target_session_id: target_session_id.to_owned(),
-            controlling_session_id: Some(jellyfin_session_id(
-                &controller.device.app_name,
-                &controller.device.device_id,
-            )),
+            controlling_session_id: Some(controller.session_id()),
             message_type: message_type.to_owned(),
             payload: serde_json::to_value(payload).map_err(|_| ApiError::Internal)?,
         })
@@ -907,22 +952,37 @@ fn assert_can_attach_user(
 async fn authorized_capabilities_access_token(
     state: &AppState,
     identity: &authentication::AuthenticatedIdentity,
+    headers: &HeaderMap,
     requested_id: Option<&str>,
 ) -> Result<String, ApiError> {
-    let authentication::AuthenticatedIdentity::Device(session) = identity else {
-        return Err(ApiError::Unauthorized);
-    };
     let requested_id = requested_id.filter(|value| !value.trim().is_empty());
-    if requested_id.is_none()
-        || requested_id.is_some_and(|id| {
-            id == session.device.id.to_string()
-                || id == jellyfin_session_id(&session.device.app_name, &session.device.device_id)
-        })
-    {
-        return Ok(session.access_token.clone());
+    if let authentication::AuthenticatedIdentity::Device(session) = identity {
+        if requested_id.is_none()
+            || requested_id.is_some_and(|id| {
+                id == session.device.id.to_string()
+                    || id
+                        == jellyfin_session_id(&session.device.app_name, &session.device.device_id)
+            })
+        {
+            return Ok(session.access_token.clone());
+        }
+        let target = find_active_session(state, requested_id.expect("checked above")).await?;
+        assert_can_control_session(&target, session)?;
+        return Ok(target.access_token);
     }
-    let target = find_active_session(state, requested_id.expect("checked above")).await?;
-    assert_can_control_session(&target, session)?;
+
+    // An API key is an unrestricted, user-less controller in the official
+    // SessionManager. A supplied id may therefore target any active session.
+    // When id is omitted, resolve the request metadata's existing session;
+    // PostgreSQL device rows currently require a user and cannot represent a
+    // newly created anonymous session.
+    let target_session_id = if let Some(requested_id) = requested_id {
+        requested_id.to_owned()
+    } else {
+        let client = authentication::authorization_info_from_headers(headers)?;
+        jellyfin_session_id(&client.app_name, &client.device_id)
+    };
+    let target = find_active_session(state, &target_session_id).await?;
     Ok(target.access_token)
 }
 
