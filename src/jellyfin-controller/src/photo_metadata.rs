@@ -6,6 +6,8 @@ use std::{
 
 const MAX_EXIF_BYTES: usize = 1024 * 1024;
 const MAX_IFD_ENTRIES: usize = 4096;
+const MAX_ISO_BOXES: usize = 4096;
+const MAX_ITEM_EXTENTS: usize = 64;
 
 #[derive(Debug, Clone, Default, PartialEq)]
 pub(crate) struct PhotoMetadata {
@@ -43,6 +45,11 @@ pub(crate) fn read(path: &Path) -> io::Result<Option<PhotoMetadata>> {
     }
     if signature_len >= 12 && signature[..4] == *b"RIFF" && signature[8..12] == *b"WEBP" {
         return webp_exif(&mut file)
+            .and_then(metadata_from_payload)
+            .map(Some);
+    }
+    if signature_len >= 12 && signature[4..8] == *b"ftyp" && avif_container(&mut file)? {
+        return avif_exif(&mut file)
             .and_then(metadata_from_payload)
             .map(Some);
     }
@@ -141,6 +148,289 @@ fn webp_exif(file: &mut File) -> io::Result<Option<Vec<u8>>> {
         let padded = length.saturating_add(length % 2);
         file.seek(SeekFrom::Current(i64::try_from(padded).unwrap_or(i64::MAX)))?;
     }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct IsoBox {
+    data_start: u64,
+    end: u64,
+    kind: [u8; 4],
+}
+
+fn iso_box(file: &mut File, start: u64, parent_end: u64) -> io::Result<Option<IsoBox>> {
+    if parent_end.saturating_sub(start) < 8 {
+        return Ok(None);
+    }
+    file.seek(SeekFrom::Start(start))?;
+    let mut header = [0_u8; 8];
+    file.read_exact(&mut header)?;
+    let short_size = u32::from_be_bytes(header[..4].try_into().unwrap());
+    let kind = header[4..8].try_into().unwrap();
+    let (size, header_size) = match short_size {
+        0 => (parent_end.saturating_sub(start), 8_u64),
+        1 => {
+            let mut extended = [0_u8; 8];
+            file.read_exact(&mut extended)?;
+            (u64::from_be_bytes(extended), 16)
+        }
+        size => (u64::from(size), 8),
+    };
+    let end = start.checked_add(size).ok_or_else(invalid_avif)?;
+    if size < header_size || end > parent_end {
+        return Err(invalid_avif());
+    }
+    Ok(Some(IsoBox {
+        data_start: start + header_size,
+        end,
+        kind,
+    }))
+}
+
+fn find_iso_box(
+    file: &mut File,
+    start: u64,
+    end: u64,
+    wanted: &[u8; 4],
+) -> io::Result<Option<IsoBox>> {
+    let mut position = start;
+    for _ in 0..MAX_ISO_BOXES {
+        let Some(header) = iso_box(file, position, end)? else {
+            return Ok(None);
+        };
+        if &header.kind == wanted {
+            return Ok(Some(header));
+        }
+        if header.end <= position {
+            return Err(invalid_avif());
+        }
+        position = header.end;
+    }
+    Err(invalid_avif())
+}
+
+fn bounded_box_payload(file: &mut File, header: IsoBox) -> io::Result<Vec<u8>> {
+    let length = usize::try_from(header.end.saturating_sub(header.data_start))
+        .map_err(|_| invalid_avif())?;
+    if length > MAX_EXIF_BYTES {
+        return Err(invalid_avif());
+    }
+    let mut payload = vec![0_u8; length];
+    file.seek(SeekFrom::Start(header.data_start))?;
+    file.read_exact(&mut payload)?;
+    Ok(payload)
+}
+
+fn avif_container(file: &mut File) -> io::Result<bool> {
+    let file_end = file.metadata()?.len();
+    let Some(ftyp) = find_iso_box(file, 0, file_end, b"ftyp")? else {
+        return Ok(false);
+    };
+    let payload = bounded_box_payload(file, ftyp)?;
+    if payload.len() < 8 {
+        return Err(invalid_avif());
+    }
+    Ok(matches!(&payload[..4], b"avif" | b"avis")
+        || payload[8..]
+            .chunks_exact(4)
+            .any(|brand| matches!(brand, b"avif" | b"avis")))
+}
+
+fn avif_exif(file: &mut File) -> io::Result<Option<Vec<u8>>> {
+    let file_end = file.metadata()?.len();
+    let Some(meta) = find_iso_box(file, 0, file_end, b"meta")? else {
+        return Ok(None);
+    };
+    let child_start = meta.data_start.checked_add(4).ok_or_else(invalid_avif)?;
+    if child_start > meta.end {
+        return Err(invalid_avif());
+    }
+    let Some(iinf) = find_iso_box(file, child_start, meta.end, b"iinf")? else {
+        return Ok(None);
+    };
+    let Some(item_id) = avif_exif_item_id(file, iinf)? else {
+        return Ok(None);
+    };
+    let Some(iloc) = find_iso_box(file, child_start, meta.end, b"iloc")? else {
+        return Ok(None);
+    };
+    let idat = find_iso_box(file, child_start, meta.end, b"idat")?;
+    let Some(location) = avif_item_location(&bounded_box_payload(file, iloc)?, item_id) else {
+        return Ok(None);
+    };
+    let mut payload = Vec::new();
+    for extent in location.extents {
+        let origin = match location.construction_method {
+            0 => 0,
+            1 => idat
+                .map(|box_header| box_header.data_start)
+                .ok_or_else(invalid_avif)?,
+            _ => return Ok(None),
+        };
+        let start = origin
+            .checked_add(location.base_offset)
+            .and_then(|offset| offset.checked_add(extent.offset))
+            .ok_or_else(invalid_avif)?;
+        let end = start.checked_add(extent.length).ok_or_else(invalid_avif)?;
+        if end > file_end {
+            return Err(invalid_avif());
+        }
+        let length = usize::try_from(extent.length).map_err(|_| invalid_avif())?;
+        if length == 0 || payload.len().saturating_add(length) > MAX_EXIF_BYTES + 4 {
+            return Err(invalid_avif());
+        }
+        let old_len = payload.len();
+        payload.resize(old_len + length, 0);
+        file.seek(SeekFrom::Start(start))?;
+        file.read_exact(&mut payload[old_len..])?;
+    }
+    let offset = payload
+        .get(..4)
+        .and_then(|bytes| <[u8; 4]>::try_from(bytes).ok())
+        .map(u32::from_be_bytes)
+        .and_then(|offset| usize::try_from(offset).ok())
+        .ok_or_else(invalid_avif)?;
+    let tiff_start = 4_usize.checked_add(offset).ok_or_else(invalid_avif)?;
+    let tiff = payload.get(tiff_start..).ok_or_else(invalid_avif)?;
+    if tiff.len() > MAX_EXIF_BYTES {
+        return Err(invalid_avif());
+    }
+    Ok(Some(tiff.to_vec()))
+}
+
+fn avif_exif_item_id(file: &mut File, iinf: IsoBox) -> io::Result<Option<u32>> {
+    let payload = bounded_box_payload(file, iinf)?;
+    let version = *payload.first().ok_or_else(invalid_avif)?;
+    let count_size = if version == 0 { 2 } else { 4 };
+    let child_offset = 4_usize.checked_add(count_size).ok_or_else(invalid_avif)?;
+    let child_start = iinf
+        .data_start
+        .checked_add(u64::try_from(child_offset).unwrap())
+        .ok_or_else(invalid_avif)?;
+    let mut position = child_start;
+    for _ in 0..MAX_ISO_BOXES {
+        let Some(header) = iso_box(file, position, iinf.end)? else {
+            return Ok(None);
+        };
+        if header.kind == *b"infe" {
+            let infe = bounded_box_payload(file, header)?;
+            if let Some(item_id) = parse_exif_infe(&infe) {
+                return Ok(Some(item_id));
+            }
+        }
+        position = header.end;
+    }
+    Err(invalid_avif())
+}
+
+fn parse_exif_infe(bytes: &[u8]) -> Option<u32> {
+    match *bytes.first()? {
+        2 => {
+            let item_id = u32::from(u16::from_be_bytes(bytes.get(4..6)?.try_into().ok()?));
+            (bytes.get(8..12)? == b"Exif").then_some(item_id)
+        }
+        3 => {
+            let item_id = u32::from_be_bytes(bytes.get(4..8)?.try_into().ok()?);
+            (bytes.get(10..14)? == b"Exif").then_some(item_id)
+        }
+        _ => None,
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct AvifExtent {
+    offset: u64,
+    length: u64,
+}
+
+#[derive(Debug)]
+struct AvifItemLocation {
+    construction_method: u16,
+    base_offset: u64,
+    extents: Vec<AvifExtent>,
+}
+
+fn avif_item_location(bytes: &[u8], wanted_item_id: u32) -> Option<AvifItemLocation> {
+    let version = *bytes.first()?;
+    if version > 2 {
+        return None;
+    }
+    let mut cursor = 4_usize;
+    let sizes = *bytes.get(cursor)?;
+    cursor += 1;
+    let offset_size = usize::from(sizes >> 4);
+    let length_size = usize::from(sizes & 0x0f);
+    let sizes = *bytes.get(cursor)?;
+    cursor += 1;
+    let base_offset_size = usize::from(sizes >> 4);
+    let index_size = if version == 0 {
+        0
+    } else {
+        usize::from(sizes & 0x0f)
+    };
+    if [offset_size, length_size, base_offset_size, index_size]
+        .into_iter()
+        .any(|size| size > 8)
+    {
+        return None;
+    }
+    let item_count = if version < 2 {
+        usize::try_from(read_be_uint(bytes, &mut cursor, 2)?).ok()?
+    } else {
+        usize::try_from(read_be_uint(bytes, &mut cursor, 4)?).ok()?
+    };
+    if item_count > MAX_IFD_ENTRIES {
+        return None;
+    }
+    for _ in 0..item_count {
+        let item_id = if version < 2 {
+            u32::try_from(read_be_uint(bytes, &mut cursor, 2)?).ok()?
+        } else {
+            u32::try_from(read_be_uint(bytes, &mut cursor, 4)?).ok()?
+        };
+        let construction_method = if version == 0 {
+            0
+        } else {
+            u16::try_from(read_be_uint(bytes, &mut cursor, 2)? & 0x0fff).ok()?
+        };
+        let data_reference_index = read_be_uint(bytes, &mut cursor, 2)?;
+        let base_offset = read_be_uint(bytes, &mut cursor, base_offset_size)?;
+        let extent_count = usize::try_from(read_be_uint(bytes, &mut cursor, 2)?).ok()?;
+        if extent_count > MAX_ITEM_EXTENTS {
+            return None;
+        }
+        let mut extents = Vec::with_capacity(extent_count);
+        for _ in 0..extent_count {
+            if index_size != 0 {
+                read_be_uint(bytes, &mut cursor, index_size)?;
+            }
+            extents.push(AvifExtent {
+                offset: read_be_uint(bytes, &mut cursor, offset_size)?,
+                length: read_be_uint(bytes, &mut cursor, length_size)?,
+            });
+        }
+        if item_id == wanted_item_id && data_reference_index == 0 && !extents.is_empty() {
+            return Some(AvifItemLocation {
+                construction_method,
+                base_offset,
+                extents,
+            });
+        }
+    }
+    None
+}
+
+fn read_be_uint(bytes: &[u8], cursor: &mut usize, size: usize) -> Option<u64> {
+    let end = cursor.checked_add(size)?;
+    let value = bytes
+        .get(*cursor..end)?
+        .iter()
+        .fold(0_u64, |value, byte| (value << 8) | u64::from(*byte));
+    *cursor = end;
+    Some(value)
+}
+
+fn invalid_avif() -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidData, "invalid AVIF metadata")
 }
 
 fn parse_exif_payload(payload: Vec<u8>) -> Option<PhotoMetadata> {
@@ -436,6 +726,58 @@ mod tests {
         put_u32(bytes, offset + 4, denominator);
     }
 
+    fn iso_box(kind: &[u8; 4], payload: &[u8]) -> Vec<u8> {
+        let size = u32::try_from(payload.len() + 8).unwrap();
+        let mut bytes = Vec::with_capacity(size as usize);
+        bytes.extend_from_slice(&size.to_be_bytes());
+        bytes.extend_from_slice(kind);
+        bytes.extend_from_slice(payload);
+        bytes
+    }
+
+    fn avif_with_exif(tiff: &[u8]) -> Vec<u8> {
+        let mut ftyp_payload = Vec::new();
+        ftyp_payload.extend_from_slice(b"mif1");
+        ftyp_payload.extend_from_slice(&0_u32.to_be_bytes());
+        ftyp_payload.extend_from_slice(b"mif1");
+        ftyp_payload.extend_from_slice(b"avif");
+        let ftyp = iso_box(b"ftyp", &ftyp_payload);
+
+        let mut infe_payload = vec![2, 0, 0, 0];
+        infe_payload.extend_from_slice(&1_u16.to_be_bytes());
+        infe_payload.extend_from_slice(&0_u16.to_be_bytes());
+        infe_payload.extend_from_slice(b"Exif");
+        infe_payload.extend_from_slice(b"Exif metadata\0");
+        let infe = iso_box(b"infe", &infe_payload);
+        let mut iinf_payload = vec![0, 0, 0, 0];
+        iinf_payload.extend_from_slice(&1_u16.to_be_bytes());
+        iinf_payload.extend_from_slice(&infe);
+        let iinf = iso_box(b"iinf", &iinf_payload);
+
+        let exif_length = u32::try_from(tiff.len() + 4).unwrap();
+        let iloc_len = 8 + 4 + 2 + 2 + 2 + 2 + 2 + 4 + 4;
+        let meta_len = 8 + 4 + iinf.len() + iloc_len;
+        let exif_offset = u32::try_from(ftyp.len() + meta_len + 8).unwrap();
+        let mut iloc_payload = vec![0, 0, 0, 0, 0x44, 0];
+        iloc_payload.extend_from_slice(&1_u16.to_be_bytes());
+        iloc_payload.extend_from_slice(&1_u16.to_be_bytes());
+        iloc_payload.extend_from_slice(&0_u16.to_be_bytes());
+        iloc_payload.extend_from_slice(&1_u16.to_be_bytes());
+        iloc_payload.extend_from_slice(&exif_offset.to_be_bytes());
+        iloc_payload.extend_from_slice(&exif_length.to_be_bytes());
+        let iloc = iso_box(b"iloc", &iloc_payload);
+
+        let mut meta_payload = vec![0, 0, 0, 0];
+        meta_payload.extend_from_slice(&iinf);
+        meta_payload.extend_from_slice(&iloc);
+        let meta = iso_box(b"meta", &meta_payload);
+        let mut exif_payload = vec![0, 0, 0, 0];
+        exif_payload.extend_from_slice(tiff);
+        let mdat = iso_box(b"mdat", &exif_payload);
+
+        [ftyp, meta, mdat].concat()
+    }
+
     fn complete_tiff() -> Vec<u8> {
         let mut bytes = vec![0_u8; 512];
         bytes[..8].copy_from_slice(b"II*\0\x08\0\0\0");
@@ -534,6 +876,24 @@ mod tests {
         let metadata = read(&path).unwrap().unwrap();
         fs::remove_file(path).unwrap();
         assert_eq!(metadata.camera_model.as_deref(), Some("EOS R5"));
+        assert_eq!(metadata.iso_speed_rating, Some(640));
+    }
+
+    #[test]
+    fn reads_bounded_exif_item_from_avif_without_decoding_pixels() {
+        let avif = avif_with_exif(&complete_tiff());
+        let path = PathBuf::from(std::env::temp_dir()).join(format!(
+            "jellyfin-photo-metadata-{}-{}.avif",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("test")
+        ));
+        fs::write(&path, avif).unwrap();
+        let metadata = read(&path).unwrap().unwrap();
+        fs::remove_file(path).unwrap();
+
+        assert_eq!(metadata.camera_make.as_deref(), Some("Canon"));
+        assert_eq!(metadata.camera_model.as_deref(), Some("EOS R5"));
+        assert_eq!(metadata.image_orientation, Some("RightTop"));
         assert_eq!(metadata.iso_speed_rating, Some(640));
     }
 }
