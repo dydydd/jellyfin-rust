@@ -234,6 +234,27 @@ impl BaseItemDtoFields {
     pub(crate) const fn wants_remote_trailers(self) -> bool {
         self.remote_trailers
     }
+
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) const fn without_trickplay(mut self) -> Self {
+        self.trickplay = false;
+        self
+    }
+
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) const fn without_chapters(mut self) -> Self {
+        self.chapters = false;
+        self
+    }
+
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) const fn without_external_urls(mut self) -> Self {
+        self.external_urls = false;
+        self
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
