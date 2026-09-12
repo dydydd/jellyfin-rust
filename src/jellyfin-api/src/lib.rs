@@ -125,13 +125,16 @@ mod virtual_folders;
 mod websocket;
 mod years;
 
+pub use backup::restore_backup_at_startup;
 pub use branding::BrandingOptions;
 
 /// Host lifecycle commands exposed by the system API.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum SystemCommand {
     Restart,
     Shutdown,
+    /// Restart the server and restore the validated archive before serving requests.
+    Restore(PathBuf),
 }
 
 #[derive(Clone)]

@@ -30,6 +30,7 @@ static GLOBAL_ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    let restore_archive = restore_archive_argument(std::env::args_os())?;
     let log_directory = std::env::var("JELLYFIN_LOG_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from("logs"));
@@ -52,6 +53,16 @@ async fn main() -> anyhow::Result<()> {
     let database = jellyfin_data::connect(&DatabaseConfig::default())
         .await
         .context("failed to connect to PostgreSQL")?;
+    if let Some(archive_path) = restore_archive.as_deref() {
+        jellyfin_api::restore_backup_at_startup(
+            &database,
+            archive_path,
+            Path::new("programdata"),
+            Path::new("metadata"),
+        )
+        .await
+        .with_context(|| format!("failed to restore backup {}", archive_path.display()))?;
+    }
     jellyfin_data::migrate(&database)
         .await
         .context("failed to migrate PostgreSQL")?;
@@ -189,15 +200,19 @@ async fn main() -> anyhow::Result<()> {
         shutdown_state,
     ))
     .await;
-    let requested_command = *system_command_receiver.borrow();
+    let requested_command = system_command_receiver.borrow().clone();
 
     let database_result = shutdown_database.close_by_ref().await;
 
     server_result.context("server failed")?;
     database_result.context("failed to close PostgreSQL during shutdown")?;
 
-    if requested_command == Some(jellyfin_api::SystemCommand::Restart) {
-        spawn_replacement_process()?;
+    match requested_command {
+        Some(jellyfin_api::SystemCommand::Restart) => spawn_replacement_process(None)?,
+        Some(jellyfin_api::SystemCommand::Restore(archive_path)) => {
+            spawn_replacement_process(Some(&archive_path))?;
+        }
+        _ => {}
     }
     Ok(())
 }
@@ -263,19 +278,64 @@ async fn wait_for_shutdown(
         _ = tokio::signal::ctrl_c() => jellyfin_api::SystemCommand::Shutdown,
         command = command_receiver.wait_for(Option::is_some) => command
             .ok()
-            .and_then(|command| *command)
+            .and_then(|command| command.clone())
             .unwrap_or(jellyfin_api::SystemCommand::Shutdown),
     }
 }
 
-fn spawn_replacement_process() -> anyhow::Result<()> {
+fn spawn_replacement_process(restore_archive: Option<&Path>) -> anyhow::Result<()> {
     let executable = std::env::current_exe().context("failed to locate server executable")?;
-    let arguments = std::env::args_os().skip(1);
+    let mut arguments = std::env::args_os().skip(1).collect::<Vec<_>>();
+    remove_restore_archive_arguments(&mut arguments);
+    if let Some(path) = restore_archive {
+        arguments.push("--restore-archive".into());
+        arguments.push(path.as_os_str().to_owned());
+    }
     Command::new(&executable)
-        .args(arguments)
+        .args(&arguments)
         .spawn()
         .with_context(|| format!("failed to restart {}", executable.display()))?;
     Ok(())
+}
+
+fn restore_archive_argument(
+    arguments: impl IntoIterator<Item = std::ffi::OsString>,
+) -> anyhow::Result<Option<PathBuf>> {
+    let mut arguments = arguments.into_iter().skip(1);
+    let mut restore_archive = None;
+    while let Some(argument) = arguments.next() {
+        if argument == "--restore-archive" {
+            let path = arguments
+                .next()
+                .context("--restore-archive requires a path")?;
+            restore_archive = Some(PathBuf::from(path));
+        } else if let Some(value) = argument
+            .to_str()
+            .and_then(|argument| argument.strip_prefix("--restore-archive="))
+        {
+            restore_archive = Some(PathBuf::from(value));
+        }
+    }
+    Ok(restore_archive)
+}
+
+fn remove_restore_archive_arguments(arguments: &mut Vec<std::ffi::OsString>) {
+    let mut index = 0;
+    while index < arguments.len() {
+        if arguments[index] == "--restore-archive" {
+            arguments.remove(index);
+            if index < arguments.len() {
+                arguments.remove(index);
+            }
+        } else if arguments[index]
+            .to_str()
+            .is_some_and(|argument| argument.starts_with("--restore-archive="))
+        {
+            arguments.remove(index);
+        } else {
+            index += 1;
+        }
+    }
 }
 
 async fn load_network_configuration(
@@ -317,6 +377,8 @@ fn apply_network_environment(config: &mut NetworkConfiguration) -> anyhow::Resul
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
     use super::wait_for_shutdown;
     use jellyfin_api::SystemCommand;
 
@@ -325,6 +387,22 @@ mod tests {
         let (sender, receiver) = tokio::sync::watch::channel(None);
         sender.send(Some(SystemCommand::Restart)).unwrap();
         assert_eq!(wait_for_shutdown(receiver).await, SystemCommand::Restart);
+    }
+
+    #[test]
+    fn restore_archive_argument_supports_both_forms_and_last_value_wins() {
+        let arguments = [
+            "jellyfin-rust",
+            "--restore-archive=first.zip",
+            "--restore-archive",
+            "second.zip",
+        ]
+        .into_iter()
+        .map(Into::into);
+        assert_eq!(
+            super::restore_archive_argument(arguments).unwrap(),
+            Some(PathBuf::from("second.zip"))
+        );
     }
 
     #[tokio::test]

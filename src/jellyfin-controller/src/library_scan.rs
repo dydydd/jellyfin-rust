@@ -773,6 +773,16 @@ impl LibraryScanService {
         });
     }
 
+    /// Returns whether at least one virtual library is currently being scanned.
+    #[must_use]
+    pub fn is_scan_running(&self) -> bool {
+        !self
+            .active_scans
+            .lock()
+            .expect("library active scan lock poisoned")
+            .is_empty()
+    }
+
     pub fn set_ffmpeg_path(&self, ffmpeg_path: impl Into<PathBuf>) {
         self.set_shared_ffmpeg_path(Arc::new(ffmpeg_path.into()));
     }

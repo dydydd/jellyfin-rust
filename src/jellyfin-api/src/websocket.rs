@@ -340,7 +340,7 @@ async fn serve(
         tokio::select! {
             command = wait_for_shutdown(&mut shutdown) => {
                 let message_type = match command {
-                    Some(SystemCommand::Restart) => "ServerRestarting",
+                    Some(SystemCommand::Restart | SystemCommand::Restore(_)) => "ServerRestarting",
                     Some(SystemCommand::Shutdown) => "ServerShuttingDown",
                     None => break,
                 };
@@ -416,7 +416,7 @@ async fn wait_for_shutdown(
         .wait_for(Option::is_some)
         .await
         .ok()
-        .and_then(|command| *command)
+        .and_then(|command| command.clone())
 }
 
 async fn drain_session_commands(
