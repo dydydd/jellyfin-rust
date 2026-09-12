@@ -37,10 +37,11 @@ use jellyfin_providers::media_info::{
     MediaFileSystemEntry, SubtitleResolveRequest, SubtitleResolver,
 };
 use jellyfin_server_implementations::{
-    CoreResolutionIgnoreRule, ExtraDirectoryReader, ExtraFileSystemEntry, ExtraMediaKind,
-    ExtraOwner, ExtraOwnerKind, FilesystemDirectoryReader, LibraryExtrasResolver,
-    LibraryParentKind, LibraryResolveArgs, LibraryResolverChain, ResolutionFileSystemEntry,
-    ResolutionParentContext, ResolutionParentKind, ResolvedLibraryExtra, ResolvedLibraryItemKind,
+    CoreResolutionIgnoreRule, DotIgnoreFileSystemEntry, DotIgnoreIgnoreRule, ExtraDirectoryReader,
+    ExtraFileSystemEntry, ExtraMediaKind, ExtraOwner, ExtraOwnerKind, FilesystemDirectoryReader,
+    LibraryExtrasResolver, LibraryParentKind, LibraryResolveArgs, LibraryResolverChain,
+    ResolutionFileSystemEntry, ResolutionParentContext, ResolutionParentKind, ResolvedLibraryExtra,
+    ResolvedLibraryItemKind,
 };
 use jellyfin_xbmc_metadata::{
     MovieNfo, MovieNfoLocation, MovieVideoType, NfoDocumentKind, NfoMetadata, NfoPerson,
@@ -622,6 +623,7 @@ pub struct LibraryScanService {
     image_cache_directory: RwLock<Arc<PathBuf>>,
     program_data_directory: RwLock<Arc<PathBuf>>,
     internal_metadata_directory: RwLock<Arc<PathBuf>>,
+    dot_ignore_rule: DotIgnoreIgnoreRule,
     media_item_limiter: MediaItemConcurrencyLimiter,
     active_scans: Arc<Mutex<HashSet<Uuid>>>,
 }
@@ -756,6 +758,7 @@ impl LibraryScanService {
             image_cache_directory: RwLock::new(Arc::new(PathBuf::from("cache").join("images"))),
             program_data_directory: RwLock::new(Arc::new(PathBuf::from("programdata"))),
             internal_metadata_directory: RwLock::new(Arc::new(PathBuf::from("metadata"))),
+            dot_ignore_rule: DotIgnoreIgnoreRule::new(),
             media_item_limiter: MediaItemConcurrencyLimiter::new(default_fanout_concurrency()),
             active_scans: Arc::new(Mutex::new(HashSet::new())),
         }
@@ -1110,6 +1113,10 @@ impl LibraryScanService {
         &self,
         on_progress: Option<&(dyn Fn(f64) + Send + Sync)>,
     ) -> Result<LibraryScanSummary, LibraryScanError> {
+        // Official library validation clears the directory-to-.ignore lookup
+        // cache before walking children. This makes a newly added .ignore file
+        // effective on the next scan while retaining parsed-rule caching.
+        self.dot_ignore_rule.clear_directory_cache();
         self.items.ensure_user_root().await?;
         let folders = self.folders.list().await?;
         // Reserve all collections atomically so an overlapping single-library
@@ -1203,6 +1210,7 @@ impl LibraryScanService {
         &self,
         collection_id: Uuid,
     ) -> Result<LibraryScanSummary, LibraryScanError> {
+        self.dot_ignore_rule.clear_directory_cache();
         self.items.ensure_user_root().await?;
         let mut summary = LibraryScanSummary::default();
         let folders = self.folders.list().await?;
@@ -1713,6 +1721,15 @@ impl LibraryScanService {
             while let Some(entry) = entries.next_entry().await? {
                 let metadata = entry.metadata().await?;
                 let path = entry.path();
+                if self
+                    .dot_ignore_rule
+                    .should_ignore(&DotIgnoreFileSystemEntry::new(
+                        path.clone(),
+                        metadata.is_dir(),
+                    ))?
+                {
+                    continue;
+                }
                 directory_snapshot.insert(&path, &metadata);
                 if metadata.is_dir() {
                     let candidate =
@@ -1909,6 +1926,15 @@ impl LibraryScanService {
         while let Some(entry) = entries.next_entry().await? {
             let metadata = entry.metadata().await?;
             let path = entry.path();
+            if self
+                .dot_ignore_rule
+                .should_ignore(&DotIgnoreFileSystemEntry::new(
+                    path.clone(),
+                    metadata.is_dir(),
+                ))?
+            {
+                continue;
+            }
             directory_snapshot.insert(&path, &metadata);
             if metadata.is_dir() {
                 let candidate =
