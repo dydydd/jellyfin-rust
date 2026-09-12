@@ -470,6 +470,11 @@
 - Keep library-creation `CollectionTypeOptions` distinct from `BaseItemDto.CollectionType`: `mixed`
   is valid for a virtual-folder configuration but must be omitted from user-view item DTOs because
   the client DTO enum cannot decode it.
+- Bind `/Libraries/AvailableOptions` nullable `LibraryContentType` with the official enum binder:
+  accept case-insensitive names and every defined integer value, while invalid or undefined values
+  fall back to the omitted/default behavior instead of failing the request. Bind `/UserViews`
+  `PresetViews` with the official collection binder, discarding invalid elements and preserving its
+  single-value comma versus repeated-key semantics; authenticate before malformed query errors.
 - Project the official single-item detail routes with their default all-fields `DtoOptions`: clients must receive media sources, nested and top-level media streams, and trickplay without supplying a non-official `Fields` query.
 - Keep the modern and legacy single-item detail routes reachable through fully lowercase aliases,
   and bind `UserId` case-insensitively. Treat a nil user id as omitted, authorize a regular user's

@@ -71,6 +71,7 @@ async fn exercise_user_view_routes(database_name: &str) {
     let fixture = Fixture::new(database.clone()).await;
     assert_auth_and_target_user_rules(&fixture).await;
     assert_user_views(&fixture).await;
+    assert_collection_type_query_binding(&fixture).await;
     assert_home_query_key_casing(&fixture).await;
     assert_grouped_views(&fixture).await;
     assert_grouping_options(&fixture).await;
@@ -548,6 +549,84 @@ async fn assert_auth_and_target_user_rules(fixture: &Fixture) {
         .await
         .status(),
         StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        request(&fixture.app, "/userviews?includehidden=not-a-bool", None,)
+            .await
+            .status(),
+        StatusCode::UNAUTHORIZED
+    );
+}
+
+async fn assert_collection_type_query_binding(fixture: &Fixture) {
+    for uri in ["/UserViews?presetViews=MoViEs", "/userviews?presetviews=1"] {
+        let views = get_json(&fixture.app, uri, &fixture.user_token).await;
+        let movie_views = views["Items"]
+            .as_array()
+            .expect("view items")
+            .iter()
+            .filter(|item| item["CollectionType"] == "movies")
+            .collect::<Vec<_>>();
+        assert!(!movie_views.is_empty(), "{uri}");
+        assert!(
+            movie_views.iter().all(|item| item["Type"] == "UserView"),
+            "{uri}"
+        );
+    }
+
+    let comma_delimited = get_json(
+        &fixture.app,
+        "/UserViews?presetViews=MoViEs,not-a-collection,2",
+        &fixture.user_token,
+    )
+    .await;
+    let comma_items = comma_delimited["Items"].as_array().expect("view items");
+    assert!(
+        comma_items
+            .iter()
+            .any(|item| { item["CollectionType"] == "movies" && item["Type"] == "UserView" })
+    );
+    assert!(
+        comma_items
+            .iter()
+            .any(|item| { item["CollectionType"] == "tvshows" && item["Type"] == "UserView" })
+    );
+
+    let repeated = get_json(
+        &fixture.app,
+        "/userviews?presetviews=movies,tvshows&presetviews=3",
+        &fixture.user_token,
+    )
+    .await;
+    let repeated_items = repeated["Items"].as_array().expect("view items");
+    assert!(
+        repeated_items
+            .iter()
+            .any(|item| { item["CollectionType"] == "music" && item["Type"] == "UserView" })
+    );
+    assert!(
+        repeated_items.iter().any(|item| {
+            item["CollectionType"] == "movies" && item["Type"] == "CollectionFolder"
+        })
+    );
+    assert!(
+        repeated_items.iter().any(|item| {
+            item["CollectionType"] == "tvshows" && item["Type"] == "CollectionFolder"
+        })
+    );
+
+    let invalid = get_json(
+        &fixture.app,
+        "/UserViews?presetViews=999,not-a-collection",
+        &fixture.user_token,
+    )
+    .await;
+    assert!(
+        invalid["Items"]
+            .as_array()
+            .expect("view items")
+            .iter()
+            .all(|item| item["Type"] == "CollectionFolder")
     );
 }
 

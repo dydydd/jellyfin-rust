@@ -116,15 +116,15 @@ async fn exercise_library_available_options(database_name: &str) {
         1280,
     );
 
+    let invalid_first_time = get_json(
+        &app,
+        "/Libraries/AvailableOptions?libraryContentType=definitely-not-real",
+        None,
+    )
+    .await;
     assert_eq!(
-        get(
-            &app,
-            "/Libraries/AvailableOptions?libraryContentType=definitely-not-real",
-            None
-        )
-        .await
-        .status(),
-        StatusCode::BAD_REQUEST
+        type_names(&invalid_first_time),
+        ["Series", "Season", "Episode", "Movie"]
     );
 
     server_configuration
@@ -143,6 +143,16 @@ async fn exercise_library_available_options(database_name: &str) {
             .await
             .status(),
         StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        get(
+            &app,
+            "/libraries/availableoptions?librarycontenttype=999",
+            None,
+        )
+        .await
+        .status(),
+        StatusCode::UNAUTHORIZED
     );
 
     let tv = get_json(
@@ -172,6 +182,36 @@ async fn exercise_library_available_options(database_name: &str) {
         1,
         0,
     );
+
+    let mixed_case_movies = get_json(
+        &app,
+        "/Libraries/AvailableOptions?libraryContentType=MoViEs",
+        Some(&admin_token),
+    )
+    .await;
+    assert_eq!(type_names(&mixed_case_movies), ["Movie"]);
+
+    let numeric_tv = get_json(
+        &app,
+        "/libraries/availableoptions?librarycontenttype=2",
+        Some(&admin_token),
+    )
+    .await;
+    assert_eq!(type_names(&numeric_tv), ["Series", "Season", "Episode"]);
+
+    for invalid in ["not-a-collection", "999"] {
+        let defaulted = get_json(
+            &app,
+            &format!("/Libraries/AvailableOptions?libraryContentType={invalid}"),
+            Some(&admin_token),
+        )
+        .await;
+        assert_eq!(
+            type_names(&defaulted),
+            ["Series", "Season", "Episode", "Movie"],
+            "libraryContentType={invalid}"
+        );
+    }
 
     let books = get_json(
         &app,

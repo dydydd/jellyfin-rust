@@ -22,7 +22,10 @@ use tower::ServiceExt;
 use tower_http::services::ServeFile;
 use uuid::Uuid;
 
-use crate::{ApiError, AppState, authentication, authorization, user_library};
+use crate::{
+    ApiError, AppState, authentication, authorization, user_library,
+    user_views::CollectionTypeQuery,
+};
 
 #[derive(Debug, Default, Clone, Deserialize)]
 pub(crate) struct LibraryQuery {
@@ -163,9 +166,10 @@ pub(crate) struct AvailableOptionsQuery {
         default,
         rename = "libraryContentType",
         alias = "LibraryContentType",
-        alias = "librarycontenttype"
+        alias = "librarycontenttype",
+        deserialize_with = "deserialize_optional_collection_type"
     )]
-    library_content_type: Option<CollectionType>,
+    library_content_type: Option<CollectionTypeQuery>,
     #[serde(
         default,
         rename = "isNewLibrary",
@@ -1117,8 +1121,8 @@ fn is_hidden(folder: &jellyfin_controller::VirtualFolder) -> bool {
     .unwrap_or(false)
 }
 
-fn representative_item_types(content_type: Option<CollectionType>) -> Vec<&'static str> {
-    match content_type {
+fn representative_item_types(content_type: Option<CollectionTypeQuery>) -> Vec<&'static str> {
+    match content_type.and_then(CollectionTypeQuery::as_collection_type) {
         Some(CollectionType::BoxSets) => vec!["BoxSet"],
         Some(CollectionType::Playlists) => vec!["Playlist"],
         Some(CollectionType::Movies) => vec!["Movie"],
@@ -1137,6 +1141,16 @@ fn representative_item_types(content_type: Option<CollectionType>) -> Vec<&'stat
         )
         | None => vec!["Series", "Season", "Episode", "Movie"],
     }
+}
+
+fn deserialize_optional_collection_type<'de, D>(
+    deserializer: D,
+) -> Result<Option<CollectionTypeQuery>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(Option::<String>::deserialize(deserializer)?
+        .and_then(|value| value.parse::<CollectionTypeQuery>().ok()))
 }
 
 fn distinct_option_infos<'a>(
