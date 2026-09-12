@@ -6,12 +6,12 @@ use jellyfin_model::{
     GeneralCommandType, GroupInfoDto, GroupQueueMode, GroupRepeatMode, GroupShuffleMode,
     GroupStateType, GroupStateUpdateDto, GroupUpdateDto, GroupUpdateType, ImageInfo,
     ImageProviderInfo, ImageType, ItemCounts, MediaSegmentDto, MediaSegmentType, MediaType,
-    MessageCommand, NameIdPair, PackageInfo, PinRedeemResult, PlayCommand, PlayQueueUpdateDto,
-    PlayQueueUpdateReason, PlayRequest, PlaybackRequestType, PlayerStateInfo, PlaystateCommand,
-    PlaystateRequest, PublicSystemInfo, QueryResult, RemoteImageResult, RemoteSearchResult,
-    RemoteSubtitleInfo, RepositoryInfo, SearchHint, SearchHintResult, SendCommandDto,
-    SendCommandType, ServerConfiguration, SessionInfoDto, SessionUserInfo, SyncPlayQueueItemDto,
-    SyncPlayUserAccessType, UserDto, UserPolicy, UtcTimeResponse,
+    MessageCommand, MetadataOptions, NameIdPair, PackageInfo, PinRedeemResult, PlayCommand,
+    PlayQueueUpdateDto, PlayQueueUpdateReason, PlayRequest, PlaybackRequestType, PlayerStateInfo,
+    PlaystateCommand, PlaystateRequest, PublicSystemInfo, QueryResult, RemoteImageResult,
+    RemoteSearchResult, RemoteSubtitleInfo, RepositoryInfo, SearchHint, SearchHintResult,
+    SendCommandDto, SendCommandType, ServerConfiguration, SessionInfoDto, SessionUserInfo,
+    SyncPlayQueueItemDto, SyncPlayUserAccessType, UserDto, UserPolicy, UtcTimeResponse,
 };
 use serde_json::json;
 use std::collections::HashMap;
@@ -379,6 +379,46 @@ fn server_configuration_uses_official_pascal_case_defaults() {
     assert_eq!(value["PluginRepositories"][0]["Name"], "Stable");
     assert!(value.get("server_name").is_none());
     assert!(value.get("UiCulture").is_none());
+}
+
+#[test]
+fn metadata_options_use_official_defaults_and_case_insensitive_input() {
+    assert_eq!(
+        serde_json::to_value(MetadataOptions::default()).unwrap(),
+        json!({
+            "DisabledMetadataSavers": [],
+            "LocalMetadataReaderOrder": [],
+            "DisabledMetadataFetchers": [],
+            "MetadataFetcherOrder": [],
+            "DisabledImageFetchers": [],
+            "ImageFetcherOrder": []
+        })
+    );
+
+    let configuration: ServerConfiguration = serde_json::from_value(json!({
+        "metadataoptions": [{
+            "itemtype": "Movie",
+            "disabledmetadatasavers": ["Nfo"],
+            "localmetadatareaderorder": ["Nfo"],
+            "disabledmetadatafetchers": ["TheMovieDb"],
+            "metadatafetcherorder": ["TheMovieDb"],
+            "disabledimagefetchers": ["TheMovieDb"],
+            "imagefetcherorder": ["TheMovieDb"]
+        }]
+    }))
+    .unwrap();
+    assert_eq!(
+        configuration.metadata_options,
+        vec![MetadataOptions {
+            item_type: "Movie".to_owned(),
+            disabled_metadata_savers: vec!["Nfo".to_owned()],
+            local_metadata_reader_order: vec!["Nfo".to_owned()],
+            disabled_metadata_fetchers: vec!["TheMovieDb".to_owned()],
+            metadata_fetcher_order: vec!["TheMovieDb".to_owned()],
+            disabled_image_fetchers: vec!["TheMovieDb".to_owned()],
+            image_fetcher_order: vec!["TheMovieDb".to_owned()],
+        }]
+    );
 }
 
 #[test]

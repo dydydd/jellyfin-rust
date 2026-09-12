@@ -32,10 +32,12 @@ pub(crate) async fn remote_search(
 ) -> Result<Json<Vec<RemoteSearchResult>>, ApiError> {
     authentication::authenticated_identity(&state, &headers, Some(&uri)).await?;
     let Json(mut request) = request.map_err(|_| ApiError::InvalidRequest)?;
-    apply_configured_locale(&state, &mut request).await?;
+    let configuration = state.server_configuration.load().await?;
+    apply_configured_locale(&configuration, &mut request);
     let kind = remote_search_kind(&uri);
     let api_key = Arc::clone(&*state.tmdb_api_key.read().await);
-    let metadata_options = metadata_options_for(&state, kind);
+    let metadata_options =
+        crate::configuration::metadata_options_for_item_type(&configuration, kind)?;
     Ok(Json(
         state
             .item_lookup
@@ -54,10 +56,12 @@ pub(crate) async fn remote_search_elevated(
         .await?
         .require_administrator()?;
     let Json(mut request) = request.map_err(|_| ApiError::InvalidRequest)?;
-    apply_configured_locale(&state, &mut request).await?;
+    let configuration = state.server_configuration.load().await?;
+    apply_configured_locale(&configuration, &mut request);
     let kind = remote_search_kind(&uri);
     let api_key = Arc::clone(&*state.tmdb_api_key.read().await);
-    let metadata_options = metadata_options_for(&state, kind);
+    let metadata_options =
+        crate::configuration::metadata_options_for_item_type(&configuration, kind)?;
     Ok(Json(
         state
             .item_lookup
@@ -70,32 +74,23 @@ fn remote_search_kind(uri: &axum::http::Uri) -> &str {
     uri.path().rsplit('/').next().unwrap_or_default()
 }
 
-fn metadata_options_for(_state: &AppState, kind: &str) -> jellyfin_model::MetadataOptions {
-    jellyfin_model::MetadataOptions::official_defaults()
-        .into_iter()
-        .find(|options| options.item_type.eq_ignore_ascii_case(kind))
-        .unwrap_or_default()
-}
-
-async fn apply_configured_locale(
-    state: &AppState,
+fn apply_configured_locale(
+    configuration: &jellyfin_data::entities::server_configuration::Model,
     request: &mut RemoteSearchRequest,
-) -> Result<(), ApiError> {
+) {
     if request.search_info.metadata_language.is_some()
         && request.search_info.metadata_country_code.is_some()
     {
-        return Ok(());
+        return;
     }
-    let configuration = state.server_configuration.load().await?;
     request
         .search_info
         .metadata_language
-        .get_or_insert(configuration.preferred_metadata_language);
+        .get_or_insert_with(|| configuration.preferred_metadata_language.clone());
     request
         .search_info
         .metadata_country_code
-        .get_or_insert(configuration.metadata_country_code);
-    Ok(())
+        .get_or_insert_with(|| configuration.metadata_country_code.clone());
 }
 
 pub(crate) async fn apply_remote_search(

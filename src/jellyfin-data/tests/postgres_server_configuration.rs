@@ -4,9 +4,9 @@ use jellyfin_data::{
 };
 use jellyfin_migration::{
     AddCaseSensitiveItemIdsMigration, AddClientLogUploadConfigurationMigration,
-    AddOfficialServerConfigurationFieldsMigration, AddPlaystateResumeConfigurationMigration,
-    AddPluginRepositoriesMigration, AddRemoteAccessConfigurationMigration,
-    CreateServerConfigurationMigration,
+    AddMetadataOptionsConfigurationMigration, AddOfficialServerConfigurationFieldsMigration,
+    AddPlaystateResumeConfigurationMigration, AddPluginRepositoriesMigration,
+    AddRemoteAccessConfigurationMigration, CreateServerConfigurationMigration,
 };
 use sea_orm::{ConnectionTrait, EntityTrait, PaginatorTrait, Statement, TryGetable};
 use sea_orm_migration::{MigrationTrait, SchemaManager};
@@ -92,6 +92,11 @@ async fn exercise_server_configuration(database_name: &str) {
     assert!(seeded.enable_case_sensitive_item_ids);
     assert_eq!(seeded.trickplay_options["Interval"], 10_000);
     assert_eq!(seeded.trickplay_options["ScanBehavior"], "NonBlocking");
+    assert_eq!(seeded.metadata_options[2]["ItemType"], "MusicVideo");
+    assert_eq!(
+        seeded.metadata_options[2]["DisabledMetadataFetchers"],
+        json!(["The Open Movie Database"])
+    );
     // Seeding the default plugin repository and cast receivers counts as real
     // configuration changes, so the row version has already advanced past its
     // initial value.
@@ -240,6 +245,14 @@ async fn assert_configuration_migrations_are_idempotent(schema: &SchemaManager<'
         .up(schema)
         .await
         .expect("case-sensitive item-id DDL must remain idempotent");
+    AddMetadataOptionsConfigurationMigration
+        .up(schema)
+        .await
+        .expect("reapplying metadata-options DDL must succeed");
+    AddMetadataOptionsConfigurationMigration
+        .up(schema)
+        .await
+        .expect("metadata-options DDL must remain idempotent");
 }
 
 async fn assert_content_type_updates(
@@ -394,6 +407,13 @@ async fn assert_server_configuration_update(
     assert!(!updated.enable_normalized_item_by_name_ids);
     assert!(!updated.enable_case_sensitive_item_ids);
     assert_eq!(updated.metadata_path, "/var/lib/jellyfin/metadata");
+    assert_eq!(
+        updated.metadata_options,
+        json!([{
+            "ItemType": "MusicArtist",
+            "DisabledMetadataFetchers": ["MusicBrainz"]
+        }])
+    );
     assert_eq!(updated.sort_replace_characters, json!([".", "+", "%", "!"]));
     assert_eq!(updated.sort_remove_characters, json!(["&", "-", "'"]));
     assert_eq!(updated.sort_remove_words, json!(["the", "a"]));
@@ -497,6 +517,10 @@ fn server_configuration_update(server_name: &str) -> ServerConfigurationUpdate {
         enable_normalized_item_by_name_ids: false,
         enable_case_sensitive_item_ids: false,
         metadata_path: "/var/lib/jellyfin/metadata".to_owned(),
+        metadata_options: json!([{
+            "ItemType": "MusicArtist",
+            "DisabledMetadataFetchers": ["MusicBrainz"]
+        }]),
         sort_replace_characters: json!([".", "+", "%", "!"]),
         sort_remove_characters: json!(["&", "-", "'"]),
         sort_remove_words: json!(["the", "a"]),
@@ -568,6 +592,7 @@ async fn assert_singleton_schema(database: &sea_orm::DatabaseConnection) {
     assert_plugin_repositories_schema(database).await;
     assert_trickplay_configuration_schema(database).await;
     assert_provider_configuration_schema(database).await;
+    assert_metadata_options_schema(database).await;
 
     let row = database
         .query_one(Statement::from_string(
@@ -610,6 +635,38 @@ async fn assert_singleton_schema(database: &sea_orm::DatabaseConnection) {
         .expect("plugin-repositories constraint catalog query")
         .expect("plugin-repositories constraint count row");
     assert_eq!(i64::try_get(&row, "", "count").unwrap(), 1);
+}
+
+async fn assert_metadata_options_schema(database: &sea_orm::DatabaseConnection) {
+    let column = database
+        .query_one(Statement::from_string(
+            database.get_database_backend(),
+            "SELECT data_type, is_nullable, column_default \
+             FROM information_schema.columns \
+             WHERE table_schema = 'jellyfin' \
+               AND table_name = 'server_configuration' \
+               AND column_name = 'metadata_options'"
+                .to_owned(),
+        ))
+        .await
+        .expect("metadata-options column catalog query")
+        .expect("metadata-options column");
+    assert_eq!(String::try_get(&column, "", "data_type").unwrap(), "jsonb");
+    assert_eq!(String::try_get(&column, "", "is_nullable").unwrap(), "NO");
+
+    let constraint = database
+        .query_one(Statement::from_string(
+            database.get_database_backend(),
+            "SELECT count(*)::bigint AS count FROM pg_constraint \
+             WHERE connamespace = 'jellyfin'::regnamespace \
+               AND conrelid = 'jellyfin.server_configuration'::regclass \
+               AND conname = 'server_configuration_metadata_options_array'"
+                .to_owned(),
+        ))
+        .await
+        .expect("metadata-options constraint catalog query")
+        .expect("metadata-options constraint count row");
+    assert_eq!(i64::try_get(&constraint, "", "count").unwrap(), 1);
 }
 
 async fn assert_case_sensitive_item_ids_schema(database: &sea_orm::DatabaseConnection) {

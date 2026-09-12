@@ -164,7 +164,6 @@ async fn exercise_configuration_routes(database_name: &str) {
     assert_eq!(
         metadata_options,
         json!({
-            "ItemType": "",
             "DisabledMetadataSavers": [],
             "LocalMetadataReaderOrder": [],
             "DisabledMetadataFetchers": [],
@@ -447,6 +446,16 @@ async fn exercise_configuration_routes(database_name: &str) {
     updated.insert("EnableNormalizedItemByNameIds".to_owned(), json!(false));
     updated.insert("EnableCaseSensitiveItemIds".to_owned(), json!(false));
     updated.insert("MetadataPath".to_owned(), json!("/media/metadata"));
+    updated
+        .remove("MetadataOptions")
+        .expect("default metadata options");
+    updated.insert(
+        "metadataoptions".to_owned(),
+        json!([{
+            "itemtype": "MusicArtist",
+            "disabledmetadatafetchers": ["MusicBrainz"]
+        }]),
+    );
     updated.insert(
         "SortReplaceCharacters".to_owned(),
         json!([".", "+", "%", "!"]),
@@ -557,6 +566,18 @@ async fn exercise_configuration_routes(database_name: &str) {
     assert_eq!(saved["EnableNormalizedItemByNameIds"], false);
     assert_eq!(saved["EnableCaseSensitiveItemIds"], false);
     assert_eq!(saved["MetadataPath"], "/media/metadata");
+    assert_eq!(
+        saved["MetadataOptions"],
+        json!([{
+            "ItemType": "MusicArtist",
+            "DisabledMetadataSavers": [],
+            "LocalMetadataReaderOrder": [],
+            "DisabledMetadataFetchers": ["MusicBrainz"],
+            "MetadataFetcherOrder": [],
+            "DisabledImageFetchers": [],
+            "ImageFetcherOrder": []
+        }])
+    );
     assert_eq!(saved["SortReplaceCharacters"], json!([".", "+", "%", "!"]));
     assert_eq!(saved["SortRemoveCharacters"], json!(["&", "-", "'"]));
     assert_eq!(saved["SortRemoveWords"], json!(["the", "a"]));
@@ -603,12 +624,26 @@ async fn exercise_configuration_routes(database_name: &str) {
         ])
     );
     assert_eq!(persisted.trickplay_options["Interval"], 2_500);
+    assert_eq!(persisted.metadata_options, saved["MetadataOptions"]);
     assert!(!persisted.quick_connect_available);
     assert!(!persisted.enable_case_sensitive_item_ids);
     assert_eq!(
         body_json(request(&app, "/QuickConnect/Enabled", None).await).await,
         json!(false)
     );
+
+    let disabled_provider_search = post_json(
+        &app,
+        "/Items/RemoteSearch/MusicArtist",
+        Some(&user_token),
+        &json!({
+            "SearchInfo": { "Name": "Configured provider test" },
+            "IncludeDisabledProviders": false
+        }),
+    )
+    .await;
+    assert_eq!(disabled_provider_search.status(), StatusCode::OK);
+    assert_eq!(body_json(disabled_provider_search).await, json!([]));
 
     user::Entity::delete_many()
         .exec(&database)

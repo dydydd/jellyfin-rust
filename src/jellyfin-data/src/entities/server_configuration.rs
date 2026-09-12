@@ -36,6 +36,7 @@ pub struct Model {
     pub enable_normalized_item_by_name_ids: bool,
     pub enable_case_sensitive_item_ids: bool,
     pub metadata_path: String,
+    pub metadata_options: Value,
     pub sort_replace_characters: Value,
     pub sort_remove_characters: Value,
     pub sort_remove_words: Value,

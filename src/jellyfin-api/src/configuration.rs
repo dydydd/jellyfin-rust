@@ -76,6 +76,19 @@ pub(crate) async fn default_metadata_options(
     Ok(Json(MetadataOptions::default()))
 }
 
+pub(crate) fn metadata_options_for_item_type(
+    configuration: &server_configuration::Model,
+    item_type: &str,
+) -> Result<MetadataOptions, ApiError> {
+    let options =
+        serde_json::from_value::<Vec<MetadataOptions>>(configuration.metadata_options.clone())
+            .map_err(|_| ApiError::Internal)?;
+    Ok(options
+        .into_iter()
+        .find(|options| options.item_type.eq_ignore_ascii_case(item_type))
+        .unwrap_or_default())
+}
+
 pub(crate) async fn get_named(
     State(state): State<Arc<AppState>>,
     OriginalUri(uri): OriginalUri,
@@ -163,6 +176,8 @@ fn server_configuration(
         enable_normalized_item_by_name_ids: model.enable_normalized_item_by_name_ids,
         enable_case_sensitive_item_ids: model.enable_case_sensitive_item_ids,
         metadata_path: model.metadata_path,
+        metadata_options: serde_json::from_value::<Vec<MetadataOptions>>(model.metadata_options)
+            .map_err(|_| ApiError::Internal)?,
         sort_replace_characters: serde_json::from_value(model.sort_replace_characters)
             .map_err(|_| ApiError::Internal)?,
         sort_remove_characters: serde_json::from_value(model.sort_remove_characters)
@@ -222,6 +237,8 @@ fn server_configuration_update(
         enable_normalized_item_by_name_ids: configuration.enable_normalized_item_by_name_ids,
         enable_case_sensitive_item_ids: configuration.enable_case_sensitive_item_ids,
         metadata_path: configuration.metadata_path,
+        metadata_options: serde_json::to_value(configuration.metadata_options)
+            .map_err(|_| ApiError::Internal)?,
         sort_replace_characters: serde_json::to_value(configuration.sort_replace_characters)
             .map_err(|_| ApiError::Internal)?,
         sort_remove_characters: serde_json::to_value(configuration.sort_remove_characters)

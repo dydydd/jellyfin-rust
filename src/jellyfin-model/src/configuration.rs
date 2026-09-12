@@ -124,13 +124,32 @@ pub enum TrickplayScanBehavior {
 #[cfg_attr(feature = "openapi", derive(schemars::JsonSchema))]
 #[serde(default, rename_all = "PascalCase")]
 pub struct MetadataOptions {
+    #[serde(
+        alias = "itemType",
+        alias = "itemtype",
+        skip_serializing_if = "String::is_empty",
+        deserialize_with = "deserialize_nullable_string"
+    )]
     pub item_type: String,
+    #[serde(alias = "disabledMetadataSavers", alias = "disabledmetadatasavers")]
     pub disabled_metadata_savers: Vec<String>,
+    #[serde(alias = "localMetadataReaderOrder", alias = "localmetadatareaderorder")]
     pub local_metadata_reader_order: Vec<String>,
+    #[serde(alias = "disabledMetadataFetchers", alias = "disabledmetadatafetchers")]
     pub disabled_metadata_fetchers: Vec<String>,
+    #[serde(alias = "metadataFetcherOrder", alias = "metadatafetcherorder")]
     pub metadata_fetcher_order: Vec<String>,
+    #[serde(alias = "disabledImageFetchers", alias = "disabledimagefetchers")]
     pub disabled_image_fetchers: Vec<String>,
+    #[serde(alias = "imageFetcherOrder", alias = "imagefetcherorder")]
     pub image_fetcher_order: Vec<String>,
+}
+
+fn deserialize_nullable_string<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(Option::<String>::deserialize(deserializer)?.unwrap_or_default())
 }
 
 impl MetadataOptions {
@@ -247,6 +266,7 @@ pub struct ServerConfiguration {
     pub library_update_duration: i32,
     pub cache_size: i32,
     pub image_saving_convention: ImageSavingConvention,
+    #[serde(alias = "metadataOptions", alias = "metadataoptions")]
     pub metadata_options: Vec<MetadataOptions>,
     pub skip_deserialization_for_basic_types: bool,
     pub server_name: String,
