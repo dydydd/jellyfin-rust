@@ -859,6 +859,8 @@ fn base_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
         .route("/branding/configuration", get(branding::get_configuration))
         .route("/Branding/Css", get(branding::get_css))
         .route("/Branding/Css.css", get(branding::get_css))
+        .route("/branding/css", get(branding::get_css))
+        .route("/branding/css.css", get(branding::get_css))
         .route(
             "/Branding/Splashscreen",
             get(branding::get_splashscreen)
@@ -1015,6 +1017,7 @@ fn base_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
             get(dashboard::configuration_pages),
         )
         .route("/Playback/BitrateTest", get(media_info::bitrate_test))
+        .route("/playback/bitratetest", get(media_info::bitrate_test))
         .route(
             "/Items/{item_id}/PlaybackInfo",
             get(media_info::get_playback_info).post(media_info::post_playback_info),
@@ -1025,6 +1028,8 @@ fn base_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
         )
         .route("/LiveStreams/Open", post(media_info::open_live_stream))
         .route("/LiveStreams/Close", post(media_info::close_live_stream))
+        .route("/livestreams/open", post(media_info::open_live_stream))
+        .route("/livestreams/close", post(media_info::close_live_stream))
         .route(
             "/MediaSegments/{item_id}",
             get(media_segments::get_item_segments),
@@ -1478,12 +1483,21 @@ async fn metrics(State(state): State<Arc<AppState>>) -> Response {
 fn sync_play_routes() -> Router<Arc<AppState>> {
     Router::new()
         .route("/SyncPlay/New", post(sync_play::create_group))
+        .route("/syncplay/new", post(sync_play::create_group))
         .route("/SyncPlay/Join", post(sync_play::join_group))
+        .route("/syncplay/join", post(sync_play::join_group))
         .route("/SyncPlay/Leave", post(sync_play::leave_group))
+        .route("/syncplay/leave", post(sync_play::leave_group))
         .route("/SyncPlay/List", get(sync_play::list_groups))
+        .route("/syncplay/list", get(sync_play::list_groups))
         .route("/SyncPlay/SetNewQueue", post(sync_play::set_new_queue))
+        .route("/syncplay/setnewqueue", post(sync_play::set_new_queue))
         .route(
             "/SyncPlay/SetPlaylistItem",
+            post(sync_play::set_playlist_item),
+        )
+        .route(
+            "/syncplay/setplaylistitem",
             post(sync_play::set_playlist_item),
         )
         .route(
@@ -1491,26 +1505,51 @@ fn sync_play_routes() -> Router<Arc<AppState>> {
             post(sync_play::remove_from_playlist),
         )
         .route(
+            "/syncplay/removefromplaylist",
+            post(sync_play::remove_from_playlist),
+        )
+        .route(
             "/SyncPlay/MovePlaylistItem",
             post(sync_play::move_playlist_item),
         )
+        .route(
+            "/syncplay/moveplaylistitem",
+            post(sync_play::move_playlist_item),
+        )
         .route("/SyncPlay/Queue", post(sync_play::queue_items))
+        .route("/syncplay/queue", post(sync_play::queue_items))
         .route("/SyncPlay/Unpause", post(sync_play::unpause))
+        .route("/syncplay/unpause", post(sync_play::unpause))
         .route("/SyncPlay/Pause", post(sync_play::pause))
+        .route("/syncplay/pause", post(sync_play::pause))
         .route("/SyncPlay/Stop", post(sync_play::stop))
+        .route("/syncplay/stop", post(sync_play::stop))
         .route("/SyncPlay/Seek", post(sync_play::seek))
+        .route("/syncplay/seek", post(sync_play::seek))
         .route("/SyncPlay/Buffering", post(sync_play::buffering))
+        .route("/syncplay/buffering", post(sync_play::buffering))
         .route("/SyncPlay/Ready", post(sync_play::ready))
+        .route("/syncplay/ready", post(sync_play::ready))
         .route("/SyncPlay/SetIgnoreWait", post(sync_play::set_ignore_wait))
+        .route("/syncplay/setignorewait", post(sync_play::set_ignore_wait))
         .route("/SyncPlay/NextItem", post(sync_play::next_item))
+        .route("/syncplay/nextitem", post(sync_play::next_item))
         .route("/SyncPlay/PreviousItem", post(sync_play::previous_item))
+        .route("/syncplay/previousitem", post(sync_play::previous_item))
         .route("/SyncPlay/SetRepeatMode", post(sync_play::set_repeat_mode))
+        .route("/syncplay/setrepeatmode", post(sync_play::set_repeat_mode))
         .route(
             "/SyncPlay/SetShuffleMode",
             post(sync_play::set_shuffle_mode),
         )
+        .route(
+            "/syncplay/setshufflemode",
+            post(sync_play::set_shuffle_mode),
+        )
         .route("/SyncPlay/Ping", post(sync_play::ping))
+        .route("/syncplay/ping", post(sync_play::ping))
         .route("/SyncPlay/{id}", get(sync_play::get_group))
+        .route("/syncplay/{id}", get(sync_play::get_group))
 }
 
 fn environment_routes() -> Router<Arc<AppState>> {
@@ -1601,6 +1640,17 @@ fn startup_routes() -> Router<Arc<AppState>> {
         )
         .route("/Startup/FirstUser", get(startup::get_user))
         .route("/Startup/Complete", post(startup::complete))
+        .route(
+            "/startup/configuration",
+            get(startup::get_configuration).post(startup::update_configuration),
+        )
+        .route("/startup/remoteaccess", post(startup::update_remote_access))
+        .route(
+            "/startup/user",
+            get(startup::get_user).post(startup::update_user),
+        )
+        .route("/startup/firstuser", get(startup::get_user))
+        .route("/startup/complete", post(startup::complete))
 }
 
 fn authentication_routes() -> Router<Arc<AppState>> {
@@ -2143,6 +2193,7 @@ fn library_controller_routes() -> Router<Arc<AppState>> {
         .route("/Library/Refresh", post(library::refresh))
         .route("/library/refresh", post(library::refresh))
         .route("/Library/PhysicalPaths", get(library::physical_paths))
+        .route("/library/physicalpaths", get(library::physical_paths))
         .route("/Library/MediaFolders", get(library::media_folders))
         .route("/library/mediafolders", get(library::media_folders))
         .route("/Library/Series/Added", post(library::updated_series))
@@ -2150,6 +2201,11 @@ fn library_controller_routes() -> Router<Arc<AppState>> {
         .route("/Library/Movies/Added", post(library::updated_movies))
         .route("/Library/Movies/Updated", post(library::updated_movies))
         .route("/Library/Media/Updated", post(library::updated_media))
+        .route("/library/series/added", post(library::updated_series))
+        .route("/library/series/updated", post(library::updated_series))
+        .route("/library/movies/added", post(library::updated_movies))
+        .route("/library/movies/updated", post(library::updated_movies))
+        .route("/library/media/updated", post(library::updated_media))
         .route(
             "/Libraries/AvailableOptions",
             get(library::available_options),
@@ -2213,7 +2269,15 @@ fn user_library_routes() -> Router<Arc<AppState>> {
             get(item_update::metadata_editor),
         )
         .route(
+            "/items/{item_id}/metadataeditor",
+            get(item_update::metadata_editor),
+        )
+        .route(
             "/Items/{item_id}/ExternalIdInfos",
+            get(item_lookup::external_id_infos),
+        )
+        .route(
+            "/items/{item_id}/externalidinfos",
             get(item_lookup::external_id_infos),
         )
         .route(
@@ -2221,7 +2285,15 @@ fn user_library_routes() -> Router<Arc<AppState>> {
             post(item_lookup::remote_search),
         )
         .route(
+            "/items/remotesearch/movie",
+            post(item_lookup::remote_search),
+        )
+        .route(
             "/Items/RemoteSearch/Trailer",
+            post(item_lookup::remote_search),
+        )
+        .route(
+            "/items/remotesearch/trailer",
             post(item_lookup::remote_search),
         )
         .route(
@@ -2229,7 +2301,15 @@ fn user_library_routes() -> Router<Arc<AppState>> {
             post(item_lookup::remote_search),
         )
         .route(
+            "/items/remotesearch/musicvideo",
+            post(item_lookup::remote_search),
+        )
+        .route(
             "/Items/RemoteSearch/Series",
+            post(item_lookup::remote_search),
+        )
+        .route(
+            "/items/remotesearch/series",
             post(item_lookup::remote_search),
         )
         .route(
@@ -2237,7 +2317,15 @@ fn user_library_routes() -> Router<Arc<AppState>> {
             post(item_lookup::remote_search),
         )
         .route(
+            "/items/remotesearch/boxset",
+            post(item_lookup::remote_search),
+        )
+        .route(
             "/Items/RemoteSearch/MusicArtist",
+            post(item_lookup::remote_search),
+        )
+        .route(
+            "/items/remotesearch/musicartist",
             post(item_lookup::remote_search),
         )
         .route(
@@ -2245,12 +2333,25 @@ fn user_library_routes() -> Router<Arc<AppState>> {
             post(item_lookup::remote_search),
         )
         .route(
+            "/items/remotesearch/musicalbum",
+            post(item_lookup::remote_search),
+        )
+        .route(
             "/Items/RemoteSearch/Person",
             post(item_lookup::remote_search_elevated),
         )
+        .route(
+            "/items/remotesearch/person",
+            post(item_lookup::remote_search_elevated),
+        )
         .route("/Items/RemoteSearch/Book", post(item_lookup::remote_search))
+        .route("/items/remotesearch/book", post(item_lookup::remote_search))
         .route(
             "/Items/RemoteSearch/Apply/{item_id}",
+            post(item_lookup::apply_remote_search),
+        )
+        .route(
+            "/items/remotesearch/apply/{item_id}",
             post(item_lookup::apply_remote_search),
         )
         .route("/Items/{item_id}/Intros", get(user_library::get_intros))

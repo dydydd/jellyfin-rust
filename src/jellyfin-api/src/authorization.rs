@@ -285,7 +285,7 @@ fn route_policy(method: &Method, path: &str) -> RoutePolicy {
         | ["System", "Ping"]
         | ["system", "ping"] => RoutePolicy::Public,
         ["Branding", "Configuration"] | ["branding", "configuration"] => RoutePolicy::Public,
-        ["Branding", "Css" | "Css.css"] => RoutePolicy::Public,
+        ["Branding", "Css" | "Css.css"] | ["branding", "css" | "css.css"] => RoutePolicy::Public,
         ["Branding", "Splashscreen"] if is_get_or_head(method) => RoutePolicy::Optional,
         ["Branding", "Splashscreen"] if is_write(method) => RoutePolicy::Elevated,
         ["branding", "splashscreen"] if is_get_or_head(method) => RoutePolicy::Optional,
@@ -351,9 +351,13 @@ fn route_policy(method: &Method, path: &str) -> RoutePolicy {
         ["LiveTv", "TunerHosts"] => RoutePolicy::Elevated,
         ["LiveTv", "ListingProviders", ..] => RoutePolicy::Elevated,
         ["Library", "MediaFolders" | "PhysicalPaths" | "Refresh"]
-        | ["library", "mediafolders" | "refresh"] => RoutePolicy::Elevated,
-        ["Items", _, "Refresh" | "MetadataEditor" | "ExternalIdInfos"] => RoutePolicy::Elevated,
+        | ["library", "mediafolders" | "physicalpaths" | "refresh"] => RoutePolicy::Elevated,
+        ["Items", _, "Refresh" | "MetadataEditor" | "ExternalIdInfos"]
+        | ["items", _, "refresh" | "metadataeditor" | "externalidinfos"] => RoutePolicy::Elevated,
         ["Items", "RemoteSearch", "Person"] | ["Items", "RemoteSearch", "Apply", _] => {
+            RoutePolicy::Elevated
+        }
+        ["items", "remotesearch", "person"] | ["items", "remotesearch", "apply", _] => {
             RoutePolicy::Elevated
         }
         ["Items", _, "ContentType"] | ["Items", _, "RemoteImages", "Download"] => {
@@ -634,6 +638,18 @@ mod tests {
         ] {
             assert_eq!(
                 route_policy(&method, route),
+                RoutePolicy::Elevated,
+                "route {route}",
+            );
+        }
+        for route in [
+            "/Items/RemoteSearch/Person",
+            "/items/remotesearch/person",
+            "/Items/RemoteSearch/Apply/{item_id}",
+            "/items/remotesearch/apply/{item_id}",
+        ] {
+            assert_eq!(
+                route_policy(&Method::POST, route),
                 RoutePolicy::Elevated,
                 "route {route}",
             );

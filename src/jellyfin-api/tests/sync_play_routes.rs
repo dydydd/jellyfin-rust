@@ -91,6 +91,39 @@ async fn exercise_sync_play_routes(database_name: &str) {
         "http://127.0.0.1:8096".to_owned(),
     ));
 
+    for route in [
+        "/syncplay/new",
+        "/syncplay/join",
+        "/syncplay/leave",
+        "/syncplay/list",
+        "/syncplay/setnewqueue",
+        "/syncplay/setplaylistitem",
+        "/syncplay/removefromplaylist",
+        "/syncplay/moveplaylistitem",
+        "/syncplay/queue",
+        "/syncplay/unpause",
+        "/syncplay/pause",
+        "/syncplay/stop",
+        "/syncplay/seek",
+        "/syncplay/buffering",
+        "/syncplay/ready",
+        "/syncplay/setignorewait",
+        "/syncplay/nextitem",
+        "/syncplay/previousitem",
+        "/syncplay/setrepeatmode",
+        "/syncplay/setshufflemode",
+        "/syncplay/ping",
+        "/syncplay/00000000000000000000000000000000",
+    ] {
+        assert_eq!(
+            request(&app, "OPTIONS", route, Some(&creator_token), None)
+                .await
+                .status(),
+            StatusCode::METHOD_NOT_ALLOWED,
+            "lowercase route {route}",
+        );
+    }
+
     assert_eq!(
         request(&app, "GET", "/SyncPlay/List", None, None)
             .await

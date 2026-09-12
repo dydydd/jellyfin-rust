@@ -10,7 +10,7 @@ use jellyfin_controller::RemoteSearchRequest;
 use jellyfin_model::{ExternalIdInfo, RemoteSearchResult};
 use uuid::Uuid;
 
-use crate::{ApiError, AppState, authentication, authorization};
+use crate::{ApiError, AppState, authentication};
 
 pub(crate) async fn external_id_infos(
     State(state): State<Arc<AppState>>,
@@ -105,7 +105,7 @@ pub(crate) async fn apply_remote_search(
     Path(item_id): Path<Uuid>,
     request: Result<Json<RemoteSearchResult>, JsonRejection>,
 ) -> Result<StatusCode, ApiError> {
-    authorization::require_default(&state, &headers, &uri)
+    authentication::authenticated_identity(&state, &headers, Some(&uri))
         .await?
         .require_administrator()?;
     let Json(result) = request.map_err(|_| ApiError::InvalidRequest)?;

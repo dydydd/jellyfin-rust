@@ -37,20 +37,30 @@ pub enum ItemLookupError {
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default, rename_all = "PascalCase")]
 pub struct RemoteSearchInfo {
+    #[serde(alias = "name")]
     pub name: Option<String>,
+    #[serde(alias = "year")]
     pub year: Option<i32>,
+    #[serde(alias = "productionYear", alias = "productionyear")]
     pub production_year: Option<i32>,
+    #[serde(alias = "providerIds", alias = "providerids")]
     pub provider_ids: HashMap<String, String>,
+    #[serde(alias = "metadataLanguage", alias = "metadatalanguage")]
     pub metadata_language: Option<String>,
+    #[serde(alias = "metadataCountryCode", alias = "metadatacountrycode")]
     pub metadata_country_code: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default, rename_all = "PascalCase")]
 pub struct RemoteSearchRequest {
+    #[serde(alias = "searchInfo", alias = "searchinfo")]
     pub search_info: RemoteSearchInfo,
+    #[serde(alias = "itemId", alias = "itemid")]
     pub item_id: Option<Uuid>,
+    #[serde(alias = "searchProviderName", alias = "searchprovidername")]
     pub search_provider_name: Option<String>,
+    #[serde(alias = "includeDisabledProviders", alias = "includedisabledproviders")]
     pub include_disabled_providers: bool,
 }
 
@@ -488,32 +498,61 @@ mod tests {
 
     #[test]
     fn remote_search_request_parses_official_body_shape() {
-        let request: RemoteSearchRequest = serde_json::from_value(json!({
-            "SearchInfo": {
-                "Name": "Fallen",
-                "ProviderIds": { "Imdb": "tt0119094" },
-                "Year": 1998,
-                "MetadataLanguage": "zh-cn",
-                "MetadataCountryCode": "CN"
-            },
-            "ItemId": "00000000-0000-0000-0000-000000000000",
-            "SearchProviderName": "TheMovieDb",
-            "IncludeDisabledProviders": true
-        }))
-        .expect("remote search request");
+        for body in [
+            json!({
+                "SearchInfo": {
+                    "Name": "Fallen",
+                    "ProviderIds": { "Imdb": "tt0119094" },
+                    "Year": 1998,
+                    "MetadataLanguage": "zh-cn",
+                    "MetadataCountryCode": "CN"
+                },
+                "ItemId": "00000000-0000-0000-0000-000000000000",
+                "SearchProviderName": "TheMovieDb",
+                "IncludeDisabledProviders": true
+            }),
+            json!({
+                "searchInfo": {
+                    "name": "Fallen",
+                    "providerIds": { "Imdb": "tt0119094" },
+                    "year": 1998,
+                    "metadataLanguage": "zh-cn",
+                    "metadataCountryCode": "CN"
+                },
+                "itemId": "00000000-0000-0000-0000-000000000000",
+                "searchProviderName": "TheMovieDb",
+                "includeDisabledProviders": true
+            }),
+            json!({
+                "searchinfo": {
+                    "name": "Fallen",
+                    "providerids": { "Imdb": "tt0119094" },
+                    "year": 1998,
+                    "metadatalanguage": "zh-cn",
+                    "metadatacountrycode": "CN"
+                },
+                "itemid": "00000000-0000-0000-0000-000000000000",
+                "searchprovidername": "TheMovieDb",
+                "includedisabledproviders": true
+            }),
+        ] {
+            let request: RemoteSearchRequest =
+                serde_json::from_value(body).expect("remote search request");
 
-        assert_eq!(request.search_info.name.as_deref(), Some("Fallen"));
-        assert_eq!(request.search_info.year, Some(1998));
-        assert_eq!(request.search_info.provider_ids["Imdb"], "tt0119094");
-        assert_eq!(
-            request.search_info.metadata_language.as_deref(),
-            Some("zh-cn")
-        );
-        assert_eq!(
-            request.search_info.metadata_country_code.as_deref(),
-            Some("CN")
-        );
-        assert_eq!(request.search_provider_name.as_deref(), Some("TheMovieDb"));
+            assert_eq!(request.search_info.name.as_deref(), Some("Fallen"));
+            assert_eq!(request.search_info.year, Some(1998));
+            assert_eq!(request.search_info.provider_ids["Imdb"], "tt0119094");
+            assert_eq!(
+                request.search_info.metadata_language.as_deref(),
+                Some("zh-cn")
+            );
+            assert_eq!(
+                request.search_info.metadata_country_code.as_deref(),
+                Some("CN")
+            );
+            assert_eq!(request.search_provider_name.as_deref(), Some("TheMovieDb"));
+            assert!(request.include_disabled_providers);
+        }
     }
 
     #[test]

@@ -192,12 +192,14 @@ pub(crate) struct UpdatedMoviesQuery {
 #[derive(Debug, Default, Deserialize)]
 #[serde(default, rename_all = "PascalCase")]
 pub(crate) struct MediaUpdateInfoDto {
+    #[serde(alias = "updates")]
     updates: Vec<MediaUpdateInfoPathDto>,
 }
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(default, rename_all = "PascalCase")]
 pub(crate) struct MediaUpdateInfoPathDto {
+    #[serde(alias = "path")]
     path: Option<String>,
 }
 

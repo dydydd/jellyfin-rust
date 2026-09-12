@@ -32,6 +32,9 @@ async fn assert_incomplete_setup_access(fixture: &Fixture) {
         "/Startup/Configuration",
         "/Startup/User",
         "/Startup/FirstUser",
+        "/startup/configuration",
+        "/startup/user",
+        "/startup/firstuser",
         "/Library/VirtualFolders",
         "/library/virtualfolders",
     ] {
@@ -87,6 +90,9 @@ async fn create_anonymous_real_directory_library(fixture: &Fixture) {
 async fn assert_completed_setup_access(fixture: &Fixture) {
     for uri in [
         "/Startup/Configuration",
+        "/startup/configuration",
+        "/startup/user",
+        "/startup/firstuser",
         "/Library/VirtualFolders",
         "/library/virtualfolders",
     ] {
@@ -162,7 +168,7 @@ async fn assert_completed_setup_access(fixture: &Fixture) {
 async fn complete_startup(fixture: &Fixture, credential: Credential<'_>) {
     assert_eq!(
         fixture
-            .send(Method::POST, "/Startup/Complete", credential, None)
+            .send(Method::POST, "/startup/complete", credential, None)
             .await
             .status(),
         StatusCode::NO_CONTENT
@@ -194,11 +200,11 @@ async fn startup_user_business_rules_remain_separate_from_authorization() {
         fixture
             .send(
                 Method::POST,
-                "/Startup/User",
+                "/startup/user",
                 Credential::None,
                 Some(json!({
-                    "Name": format!("configured-{}", fixture.suffix),
-                    "Password": "first password"
+                    "name": format!("configured-{}", fixture.suffix),
+                    "password": "first password"
                 })),
             )
             .await

@@ -162,6 +162,10 @@ async fn exercise_library_maintenance_routes(database_name: &str) {
         "/Library/Series/Updated?TvdbId=121361",
         "/Library/Movies/Added?imdbId=tt0133093",
         "/Library/Movies/Updated?TmdbId=603",
+        "/library/series/added?tvdbid=missing",
+        "/library/series/updated?tvdbid=missing",
+        "/library/movies/added?imdbid=missing",
+        "/library/movies/updated?tmdbid=missing",
     ] {
         assert_eq!(
             request(&app, route, None, None).await.status(),
@@ -181,6 +185,42 @@ async fn exercise_library_maintenance_routes(database_name: &str) {
             &format!("/Library/Series/Added?api_key={api_key_token}&tvdbId=121361"),
             None,
             None
+        )
+        .await
+        .status(),
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        request(
+            &app,
+            "/library/media/updated",
+            Some(&user_token),
+            Some(json!({ "updates": [{ "path": null }] })),
+        )
+        .await
+        .status(),
+        StatusCode::BAD_REQUEST,
+        "lowercase DTO properties must not be ignored as an empty update report"
+    );
+    assert_eq!(
+        request(
+            &app,
+            "/library/media/updated",
+            Some(&user_token),
+            Some(json!({
+                "updates": [{ "path": "/media/Movies/The Matrix.mkv" }]
+            })),
+        )
+        .await
+        .status(),
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        request(
+            &app,
+            &format!("/library/media/updated?api_key={api_key_token}"),
+            None,
+            Some(json!({ "updates": [] })),
         )
         .await
         .status(),

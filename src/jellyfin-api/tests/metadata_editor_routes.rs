@@ -121,6 +121,14 @@ async fn exercise_route(database_name: &str) {
     assert_real_contract(&configured);
     assert_eq!(configured["ContentType"], "tvshows");
     assert_eq!(option_values(&configured), ["", "movies", "tvshows"]);
+    let lowercase = get_uri(
+        &route_app,
+        &format!("/items/{}/metadataeditor", movie.id),
+        Some(&administrator_token),
+    )
+    .await;
+    assert_eq!(lowercase.status(), StatusCode::OK);
+    assert_eq!(body_json(lowercase).await, configured);
 
     configuration
         .update_content_type_override("/media/movies", None)
@@ -230,7 +238,11 @@ async fn create_session(devices: &DeviceRepository, user_id: Uuid, device_id: &s
 }
 
 async fn get(app: &Router, item_id: Uuid, token: Option<&str>) -> axum::response::Response {
-    let mut request = Request::get(format!("/Items/{item_id}/MetadataEditor"));
+    get_uri(app, &format!("/Items/{item_id}/MetadataEditor"), token).await
+}
+
+async fn get_uri(app: &Router, uri: &str, token: Option<&str>) -> axum::response::Response {
+    let mut request = Request::get(uri);
     if let Some(token) = token {
         request = request.header("x-emby-token", token);
     }

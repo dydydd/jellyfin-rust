@@ -142,12 +142,18 @@ async fn exercise_library_media_folders(database_name: &str) {
         get(&app, "/Library/MediaFolders", None).await.status(),
         StatusCode::UNAUTHORIZED
     );
-    assert_eq!(
-        get(&app, "/Library/PhysicalPaths", Some(&user_token))
-            .await
-            .status(),
-        StatusCode::FORBIDDEN
-    );
+    for route in ["/Library/PhysicalPaths", "/library/physicalpaths"] {
+        assert_eq!(
+            get(&app, route, None).await.status(),
+            StatusCode::UNAUTHORIZED,
+            "anonymous {route}"
+        );
+        assert_eq!(
+            get(&app, route, Some(&user_token)).await.status(),
+            StatusCode::FORBIDDEN,
+            "ordinary user {route}"
+        );
+    }
     assert_eq!(
         get(&app, "/Library/MediaFolders", Some(&user_token))
             .await
@@ -217,13 +223,16 @@ async fn exercise_library_media_folders(database_name: &str) {
         string_array(&physical_paths),
         vec![hidden_path.clone(), movies_path.clone()]
     );
-    let api_key_paths = get_json(
-        &app,
-        &format!("/Library/PhysicalPaths?api_key={api_key_token}"),
-        "",
-    )
-    .await;
-    assert_eq!(string_array(&api_key_paths), vec![hidden_path, movies_path]);
+    let lowercase_paths = get_json(&app, "/library/physicalpaths", &admin_token).await;
+    assert_eq!(lowercase_paths, physical_paths);
+    for route in ["/Library/PhysicalPaths", "/library/physicalpaths"] {
+        let api_key_paths = get_json(&app, &format!("{route}?api_key={api_key_token}"), "").await;
+        assert_eq!(
+            string_array(&api_key_paths),
+            vec![hidden_path.clone(), movies_path.clone()],
+            "API key {route}"
+        );
+    }
 
     std::fs::remove_dir_all(&temp_root).expect("temporary media path cleanup");
     database.close().await.expect("database pool cleanup");

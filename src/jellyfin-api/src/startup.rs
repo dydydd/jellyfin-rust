@@ -17,23 +17,32 @@ use crate::{ApiError, AppState, authorization};
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, rename_all = "PascalCase")]
 pub struct StartupConfiguration {
+    #[serde(alias = "serverName", alias = "servername")]
     pub server_name: Option<String>,
-    #[serde(rename = "UICulture")]
+    #[serde(rename = "UICulture", alias = "uiCulture", alias = "uiculture")]
     pub ui_culture: Option<String>,
+    #[serde(alias = "metadataCountryCode", alias = "metadatacountrycode")]
     pub metadata_country_code: Option<String>,
+    #[serde(
+        alias = "preferredMetadataLanguage",
+        alias = "preferredmetadatalanguage"
+    )]
     pub preferred_metadata_language: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, rename_all = "PascalCase")]
 pub struct StartupUser {
+    #[serde(alias = "name")]
     pub name: Option<String>,
+    #[serde(alias = "password")]
     pub password: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, rename_all = "PascalCase")]
 pub struct StartupRemoteAccess {
+    #[serde(alias = "enableRemoteAccess", alias = "enableremoteaccess")]
     pub enable_remote_access: bool,
 }
 

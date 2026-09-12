@@ -26,7 +26,12 @@ async fn default_branding_routes_match_the_official_contract() {
         BrandingOptions::default()
     );
 
-    for route in ["/Branding/Css", "/Branding/Css.css"] {
+    for route in [
+        "/Branding/Css",
+        "/Branding/Css.css",
+        "/branding/css",
+        "/branding/css.css",
+    ] {
         let response = get(&app, route).await;
         assert_eq!(response.status(), StatusCode::OK);
         assert_eq!(
@@ -61,7 +66,12 @@ async fn configured_branding_is_projected_without_leaking_server_paths() {
     assert!(configuration.get("SplashscreenLocation").is_none());
     assert!(configuration.get("custom_css").is_none());
 
-    for route in ["/Branding/Css", "/Branding/Css.css"] {
+    for route in [
+        "/Branding/Css",
+        "/Branding/Css.css",
+        "/branding/css",
+        "/branding/css.css",
+    ] {
         let response = get(&app, route).await;
         assert_eq!(response.status(), StatusCode::OK);
         assert_eq!(

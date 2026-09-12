@@ -116,24 +116,41 @@ pub struct RemoteSubtitleInfo {
 #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "PascalCase")]
 pub struct RemoteSearchResult {
+    #[serde(alias = "name")]
     pub name: Option<String>,
-    #[serde(rename = "Type", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "Type",
+        alias = "type",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub r#type: Option<String>,
+    #[serde(alias = "providerIds", alias = "providerids")]
     pub provider_ids: HashMap<String, String>,
+    #[serde(alias = "productionYear", alias = "productionyear")]
     pub production_year: Option<i32>,
+    #[serde(alias = "indexNumber", alias = "indexnumber")]
     pub index_number: Option<i32>,
+    #[serde(alias = "indexNumberEnd", alias = "indexnumberend")]
     pub index_number_end: Option<i32>,
+    #[serde(alias = "parentIndexNumber", alias = "parentindexnumber")]
     pub parent_index_number: Option<i32>,
     #[serde(
         default,
+        alias = "premiereDate",
+        alias = "premieredate",
         skip_serializing_if = "Option::is_none",
         with = "crate::serde_datetime::option"
     )]
     pub premiere_date: Option<DateTime<Utc>>,
+    #[serde(alias = "imageUrl", alias = "imageurl")]
     pub image_url: Option<String>,
+    #[serde(alias = "searchProviderName", alias = "searchprovidername")]
     pub search_provider_name: Option<String>,
+    #[serde(alias = "overview")]
     pub overview: Option<String>,
+    #[serde(alias = "albumArtist", alias = "albumartist")]
     pub album_artist: Option<Box<RemoteSearchResult>>,
+    #[serde(alias = "artists")]
     pub artists: Vec<RemoteSearchResult>,
 }
 
