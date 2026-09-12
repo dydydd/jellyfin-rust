@@ -26,6 +26,7 @@ async fn session_command_routes_queue_official_commands_in_postgres() {
     let _guard = TEST_LOCK.lock().await;
     let fixture = Fixture::new().await;
 
+    assert_lowercase_session_routes(&fixture).await;
     assert_command_access_and_validation(&fixture).await;
     assert_play_command_validation(&fixture).await;
     assert_playstate_command_validation(&fixture).await;
@@ -33,6 +34,54 @@ async fn session_command_routes_queue_official_commands_in_postgres() {
     assert_queued_commands(&fixture).await;
 
     fixture.cleanup().await;
+}
+
+async fn assert_lowercase_session_routes(fixture: &Fixture) {
+    let item_id = Uuid::new_v4();
+    let paths = [
+        format!("/sessions/{}/system/GoHome", fixture.target_session_id),
+        format!(
+            "/sessions/{}/viewing?itemType=Movie&itemId={item_id}&itemName=Movie",
+            fixture.target_session_id
+        ),
+        format!(
+            "/sessions/{}/playing?playCommand=PlayNow&itemIds={item_id}",
+            fixture.target_session_id
+        ),
+        format!("/sessions/{}/playing/Pause", fixture.target_session_id),
+        format!("/sessions/{}/command/GoHome", fixture.target_session_id),
+        format!("/sessions/{}/command", fixture.target_session_id),
+        format!("/sessions/{}/message", fixture.target_session_id),
+        format!(
+            "/sessions/{}/user/{}",
+            fixture.target_session_id, fixture.user_id
+        ),
+        format!("/sessions/viewing?itemId={item_id}"),
+        "/sessions/capabilities".to_owned(),
+        "/sessions/capabilities/full".to_owned(),
+        "/sessions/logout".to_owned(),
+    ];
+    for path in paths {
+        assert_eq!(
+            fixture
+                .request("POST", &path, None, Body::empty())
+                .await
+                .status(),
+            StatusCode::UNAUTHORIZED,
+            "lowercase SDK-compatible route must keep its canonical authorization: {path}"
+        );
+    }
+    let remove_user = format!(
+        "/sessions/{}/user/{}",
+        fixture.target_session_id, fixture.user_id
+    );
+    assert_eq!(
+        fixture
+            .request("DELETE", &remove_user, None, Body::empty())
+            .await
+            .status(),
+        StatusCode::UNAUTHORIZED
+    );
 }
 
 #[tokio::test]

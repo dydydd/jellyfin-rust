@@ -1660,7 +1660,15 @@ fn session_routes() -> Router<Arc<AppState>> {
             post(session::send_system_command),
         )
         .route(
+            "/sessions/{session_id}/system/{command}",
+            post(session::send_system_command),
+        )
+        .route(
             "/Sessions/{session_id}/Viewing",
+            post(session::display_content),
+        )
+        .route(
+            "/sessions/{session_id}/viewing",
             post(session::display_content),
         )
         .route(
@@ -1668,7 +1676,15 @@ fn session_routes() -> Router<Arc<AppState>> {
             post(session::send_play_command),
         )
         .route(
+            "/sessions/{session_id}/playing",
+            post(session::send_play_command),
+        )
+        .route(
             "/Sessions/{session_id}/Playing/{command}",
+            post(session::send_playstate_command),
+        )
+        .route(
+            "/sessions/{session_id}/playing/{command}",
             post(session::send_playstate_command),
         )
         .route(
@@ -1676,7 +1692,15 @@ fn session_routes() -> Router<Arc<AppState>> {
             post(session::send_general_command),
         )
         .route(
+            "/sessions/{session_id}/command/{command}",
+            post(session::send_general_command),
+        )
+        .route(
             "/Sessions/{session_id}/Command",
+            post(session::send_full_general_command),
+        )
+        .route(
+            "/sessions/{session_id}/command",
             post(session::send_full_general_command),
         )
         .route(
@@ -1684,17 +1708,31 @@ fn session_routes() -> Router<Arc<AppState>> {
             post(session::send_message_command),
         )
         .route(
+            "/sessions/{session_id}/message",
+            post(session::send_message_command),
+        )
+        .route(
             "/Sessions/{session_id}/User/{user_id}",
             post(session::add_user_to_session).delete(session::remove_user_from_session),
         )
+        .route(
+            "/sessions/{session_id}/user/{user_id}",
+            post(session::add_user_to_session).delete(session::remove_user_from_session),
+        )
         .route("/Sessions/Viewing", post(session::report_viewing))
+        .route("/sessions/viewing", post(session::report_viewing))
         .route("/Sessions/Capabilities", post(session::post_capabilities))
         .route("/sessions/capabilities", post(session::post_capabilities))
         .route(
             "/Sessions/Capabilities/Full",
             post(session::post_full_capabilities),
         )
+        .route(
+            "/sessions/capabilities/full",
+            post(session::post_full_capabilities),
+        )
         .route("/Sessions/Logout", post(session::logout))
+        .route("/sessions/logout", post(session::logout))
         .route("/Auth/Providers", get(session::authentication_providers))
         .route(
             "/Auth/PasswordResetProviders",

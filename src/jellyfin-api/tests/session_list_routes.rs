@@ -318,6 +318,20 @@ async fn assert_recent_scope(fixture: &Fixture) {
         .await;
         assert_device_ids(&recent, &[&fixture.user_device_id]);
     }
+
+    for value in ["2147483648", "-2147483649"] {
+        assert_eq!(
+            fixture
+                .get(
+                    &format!("/Sessions?activeWithinSeconds={value}"),
+                    Some(&fixture.user_token),
+                )
+                .await
+                .status(),
+            StatusCode::BAD_REQUEST,
+            "activeWithinSeconds uses the SDK/ASP.NET signed Int32 contract"
+        );
+    }
 }
 
 async fn assert_device_filter(fixture: &Fixture) {

@@ -29,7 +29,7 @@ pub(crate) struct SessionQuery {
     #[serde(alias = "DeviceId", alias = "deviceid")]
     device_id: Option<String>,
     #[serde(alias = "ActiveWithinSeconds", alias = "activewithinseconds")]
-    active_within_seconds: Option<i64>,
+    active_within_seconds: Option<i32>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -155,7 +155,7 @@ pub(crate) async fn list(
         active_since: query
             .active_within_seconds
             .filter(|seconds| *seconds > 0)
-            .map(|seconds| Utc::now() - Duration::seconds(seconds)),
+            .map(|seconds| Utc::now() - Duration::seconds(i64::from(seconds))),
         ..DeviceQuery::default()
     };
     if let authentication::AuthenticatedIdentity::Device(session) = &identity
