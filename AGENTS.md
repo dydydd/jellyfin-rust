@@ -218,6 +218,10 @@
   aliases. Preserve first-time setup access for Environment and Localization, public UTC/Ping,
   LocalOrElevated restart, and Elevated log/shutdown/task/configuration mutations; adding an Axum
   alias without its canonical authorization policy is a security regression.
+- Keep ActivityLog pagination on the official signed `Int32` contract: a negative `StartIndex`
+  skips nothing but is echoed in `StartIndex`, a negative `Limit` follows the official SQLite
+  unlimited-limit behavior, zero returns an empty page, and out-of-range values fail binding for
+  canonical and fully lowercase routes.
 - Keep `/Users/Public` available as `/users/public`; otherwise Axum's dynamic `/users/{id}` route
   treats the SDK's lowercase public-user request as a UUID binding failure.
 - Keep login case-insensitive through both static segments: `/users/authenticatebyname` must retain

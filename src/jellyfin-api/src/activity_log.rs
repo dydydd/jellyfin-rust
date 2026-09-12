@@ -53,7 +53,7 @@ pub(crate) struct ActivityLogParameters {
 pub(crate) struct ActivityLogResult {
     items: Vec<ActivityLogEntry>,
     total_record_count: u64,
-    start_index: u64,
+    start_index: i32,
 }
 
 #[derive(Debug, Serialize)]
@@ -84,13 +84,14 @@ pub(crate) async fn entries(
     let identity = authentication::authenticated_identity(&state, &headers, Some(&uri)).await?;
     identity.require_administrator()?;
     let Query(parameters) = parameters.map_err(|_| ApiError::InvalidRequest)?;
+    let requested_start_index = parameters.start_index.unwrap_or(0);
     let query = parameters.try_into_query()?;
     let page = state.activity_logs.query(&query).await?;
 
     Ok(Json(ActivityLogResult {
         items: page.items.into_iter().map(ActivityLogEntry::from).collect(),
         total_record_count: page.total_record_count,
-        start_index: page.start_index.unwrap_or(0),
+        start_index: requested_start_index,
     }))
 }
 
@@ -103,16 +104,17 @@ impl ActivityLogParameters {
             .as_deref()
             .map(|value| parse_severity(value).ok_or(ApiError::InvalidRequest))
             .transpose()?;
-        let start_index = self
-            .start_index
-            .map(u64::try_from)
-            .transpose()
-            .map_err(|_| ApiError::InvalidRequest)?;
-        let limit = self
-            .limit
-            .map(u64::try_from)
-            .transpose()
-            .map_err(|_| ApiError::InvalidRequest)?;
+        // EF/SQLite preserves the signed controller values in the response,
+        // while Skip treats a negative count as zero and SQLite's negative
+        // LIMIT is unlimited. Normalize only at the PostgreSQL query boundary.
+        let start_index = self.start_index.map(|value| value.max(0) as u64);
+        let limit = self.limit.map(|value| {
+            if value < 0 {
+                i64::MAX as u64
+            } else {
+                value as u64
+            }
+        });
         if sort_order.len() > sort_by.len() {
             return Err(ApiError::InvalidRequest);
         }

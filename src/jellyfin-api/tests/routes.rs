@@ -371,12 +371,31 @@ async fn activity_log_routes_match_the_official_controller_contract() {
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(body_json(response).await["Items"][0]["Id"], oldest.id);
 
+    for route in ["/System/ActivityLog/Entries", "/system/activitylog/entries"] {
+        let response = app
+            .clone()
+            .oneshot(authenticated_request(
+                "GET",
+                &format!("{route}?name={marker}&startIndex=-1&limit=-1"),
+                &administrator_session.access_token,
+                Body::empty(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK, "{route}");
+        let page = body_json(response).await;
+        assert_eq!(page["StartIndex"], -1, "{route}");
+        assert_eq!(page["TotalRecordCount"], 3, "{route}");
+        assert_eq!(page["Items"].as_array().unwrap().len(), 3, "{route}");
+    }
+
     for invalid_query in [
         "severity=Verbose",
         "sortBy=Item",
         "sortBy=Name&sortOrder=Ascending%2CDescending",
         "minDate=not-a-date",
-        "startIndex=-1",
+        "startIndex=-2147483649",
+        "startIndex=2147483648",
         "limit=2147483648",
     ] {
         let response = app
