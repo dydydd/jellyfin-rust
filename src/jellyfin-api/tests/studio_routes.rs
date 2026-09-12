@@ -677,6 +677,91 @@ async fn studio_image_routes_resolve_public_base_item_ordinals() {
     fixture.cleanup().await;
 }
 
+#[tokio::test]
+async fn studios_list_honors_official_dto_options_and_query_casing() {
+    let fixture = Fixture::new().await;
+    BaseItemImageRepository::new(fixture.database.clone())
+        .replace(
+            fixture.alpha_studio_item_id,
+            &[
+                NewBaseItemImage {
+                    image_type: BaseItemImageType::Primary,
+                    image_index: 0,
+                    path: "/metadata/Studio/primary.jpg".to_owned(),
+                    date_modified: Utc::now(),
+                    width: Some(400),
+                    height: Some(600),
+                    blurhash: None,
+                },
+                NewBaseItemImage {
+                    image_type: BaseItemImageType::Backdrop,
+                    image_index: 0,
+                    path: "/metadata/Studio/backdrop.jpg".to_owned(),
+                    date_modified: Utc::now(),
+                    width: Some(1280),
+                    height: Some(720),
+                    blurhash: None,
+                },
+            ],
+        )
+        .await
+        .expect("studio images");
+    let search = encoded(&fixture.alpha_studio);
+
+    for query in [
+        "fields=Overview&enableUserData=false&imageTypeLimit=1&enableImageTypes=Primary&enableImages=true",
+        "Fields=Overview&EnableUserData=false&ImageTypeLimit=1&EnableImageTypes=Primary&EnableImages=true",
+        "fields=Overview&enableuserdata=false&imagetypelimit=1&enableimagetypes=Primary&enableimages=true",
+    ] {
+        let page = body_json(
+            fixture
+                .request(
+                    Method::GET,
+                    &format!("/Studios?searchTerm={search}&{query}"),
+                    Credential::Device(&fixture.user_token),
+                )
+                .await,
+        )
+        .await;
+        let studio = &page["Items"][0];
+        assert_eq!(studio["Overview"], "Persisted Studio overview", "{query}");
+        assert!(studio["ImageTags"]["Primary"].is_string(), "{query}");
+        assert!(studio.get("BackdropImageTags").is_none(), "{query}");
+        assert!(studio.get("UserData").is_none(), "{query}");
+    }
+
+    let default_page = body_json(
+        fixture
+            .request(
+                Method::GET,
+                &format!("/Studios?searchTerm={search}"),
+                Credential::Device(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert_eq!(default_page["Items"][0]["UserData"]["IsFavorite"], true);
+    assert!(default_page["Items"][0]["ImageTags"]["Primary"].is_string());
+    assert!(default_page["Items"][0]["BackdropImageTags"][0].is_string());
+
+    for enable_images in ["enableImages", "EnableImages", "enableimages"] {
+        let page = body_json(
+            fixture
+                .request(
+                    Method::GET,
+                    &format!("/Studios?searchTerm={search}&{enable_images}=false"),
+                    Credential::Device(&fixture.user_token),
+                )
+                .await,
+        )
+        .await;
+        assert!(page["Items"][0].get("ImageTags").is_none());
+        assert!(page["Items"][0].get("BackdropImageTags").is_none());
+    }
+
+    fixture.cleanup().await;
+}
+
 fn assert_studios(
     body: &Value,
     expected_names: &[&str],
@@ -965,6 +1050,7 @@ async fn create_item_by_name(
     item.name = Some(name.to_owned());
     item.sort_name = Some(name.to_owned());
     item.path = Some(format!("metadata/{item_type}/{name}"));
+    item.overview = Some(format!("Persisted {item_type} overview"));
     item.is_folder = true;
     item.presentation_unique_key = Some(presentation_unique_key.to_owned());
     repository

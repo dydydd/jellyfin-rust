@@ -7,7 +7,7 @@ use axum::{
     response::Response,
 };
 use jellyfin_controller::UserError;
-use jellyfin_data::ItemValueQuery;
+use jellyfin_data::{BaseItemPage, ItemValueQuery};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -41,6 +41,32 @@ pub(crate) struct StudiosQuery {
         deserialize_with = "crate::query::comma::deserialize"
     )]
     fields: Vec<String>,
+    #[serde(
+        rename = "enableUserData",
+        alias = "EnableUserData",
+        alias = "enableuserdata"
+    )]
+    enable_user_data: Option<bool>,
+    #[serde(
+        rename = "imageTypeLimit",
+        alias = "ImageTypeLimit",
+        alias = "imagetypelimit"
+    )]
+    image_type_limit: Option<i32>,
+    #[serde(
+        default,
+        rename = "enableImageTypes",
+        alias = "EnableImageTypes",
+        alias = "enableimagetypes",
+        deserialize_with = "crate::query::comma::deserialize"
+    )]
+    enable_image_types: Vec<String>,
+    #[serde(
+        rename = "enableImages",
+        alias = "EnableImages",
+        alias = "enableimages"
+    )]
+    enable_images: Option<bool>,
     #[serde(
         default,
         rename = "includeItemTypes",
@@ -155,18 +181,55 @@ pub(crate) async fn list(
         }
     }
     let page = state.studios.list_authorized(item_query).await?;
-    let items = page
+    let studio_ids = page
         .studios
-        .into_iter()
-        .map(|studio| user_library::studio_to_dto(studio, state.server_id(), include_item_counts))
+        .iter()
+        .map(|studio| studio.id)
         .collect::<Vec<_>>();
+    let mut persisted_by_id = state
+        .base_items
+        .get_many(&studio_ids)
+        .await?
+        .into_iter()
+        .map(|item| (item.id, item))
+        .collect::<std::collections::HashMap<_, _>>();
+    let persisted_studios = page
+        .studios
+        .iter()
+        .map(|studio| persisted_by_id.remove(&studio.id).ok_or(ApiError::Internal))
+        .collect::<Result<Vec<_>, _>>()?;
+    let dto_options = crate::items::PageDtoOptions {
+        enable_images: query.enable_images.unwrap_or(true),
+        image_type_limit: query
+            .image_type_limit
+            .map_or(usize::MAX, |limit| usize::try_from(limit).unwrap_or(0)),
+        enable_image_types: crate::items::parse_image_type_selectors(&query.enable_image_types),
+        enable_user_data: query.enable_user_data.unwrap_or(true),
+    };
+    let mut projected = crate::items::page_to_dto_with_options(
+        state.as_ref(),
+        BaseItemPage {
+            items: persisted_studios,
+            total_record_count: page.total_record_count,
+            start_index: page.start_index,
+        },
+        query.fields,
+        target_user_id,
+        &dto_options,
+    )
+    .await?;
+    if include_item_counts {
+        for (dto, studio) in projected.items.iter_mut().zip(page.studios) {
+            apply_studio_counts(dto, studio.item_count, studio.counts);
+        }
+    }
     let total_record_count = if enable_total_record_count {
         usize::try_from(page.total_record_count).unwrap_or(usize::MAX)
     } else {
         0
     };
     Ok(Json(StudiosResult {
-        items,
+        items: projected.items,
         total_record_count,
         start_index: requested_start_index,
     }))
