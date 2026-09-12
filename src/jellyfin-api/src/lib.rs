@@ -3498,6 +3498,10 @@ fn item_lookup_error_response(error: &ItemLookupError) -> (StatusCode, &'static 
             StatusCode::INTERNAL_SERVER_ERROR,
             "Item lookup data could not be loaded",
         ),
+        ItemLookupError::VirtualFolder(_) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Library options could not be loaded",
+        ),
         ItemLookupError::Metadata(_) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             "TMDB metadata provider failed",
