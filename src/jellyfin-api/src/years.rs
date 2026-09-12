@@ -6,7 +6,7 @@ use axum::{
     http::HeaderMap,
 };
 use jellyfin_controller::{UserError, YearItem};
-use jellyfin_data::{BaseItemQuery, ProductionYearOrder};
+use jellyfin_data::{BaseItemPage, BaseItemQuery, ProductionYearOrder};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -73,6 +73,39 @@ pub(crate) struct YearsQuery {
         deserialize_with = "crate::query::comma::deserialize"
     )]
     sort_order: Vec<String>,
+    #[serde(
+        default,
+        rename = "fields",
+        alias = "Fields",
+        deserialize_with = "crate::query::comma::deserialize"
+    )]
+    fields: Vec<String>,
+    #[serde(
+        rename = "enableUserData",
+        alias = "EnableUserData",
+        alias = "enableuserdata"
+    )]
+    enable_user_data: Option<bool>,
+    #[serde(
+        rename = "imageTypeLimit",
+        alias = "ImageTypeLimit",
+        alias = "imagetypelimit"
+    )]
+    image_type_limit: Option<i32>,
+    #[serde(
+        default,
+        rename = "enableImageTypes",
+        alias = "EnableImageTypes",
+        alias = "enableimagetypes",
+        deserialize_with = "crate::query::comma::deserialize"
+    )]
+    enable_image_types: Vec<String>,
+    #[serde(
+        rename = "enableImages",
+        alias = "EnableImages",
+        alias = "enableimages"
+    )]
+    enable_images: Option<bool>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -153,12 +186,43 @@ pub(crate) async fn list(
         None
     };
     let page = state.years.list_authorized(item_query, order).await?;
+    let year_ids = page.years.iter().map(|year| year.id).collect::<Vec<_>>();
+    let mut persisted_by_id = state
+        .base_items
+        .get_many(&year_ids)
+        .await?
+        .into_iter()
+        .map(|item| (item.id, item))
+        .collect::<std::collections::HashMap<_, _>>();
+    let persisted_years = page
+        .years
+        .iter()
+        .map(|year| persisted_by_id.remove(&year.id).ok_or(ApiError::Internal))
+        .collect::<Result<Vec<_>, _>>()?;
+    let dto_options = crate::items::PageDtoOptions {
+        enable_images: query.enable_images.unwrap_or(true),
+        image_type_limit: query
+            .image_type_limit
+            .map_or(usize::MAX, |limit| usize::try_from(limit).unwrap_or(0)),
+        enable_image_types: crate::items::parse_image_type_selectors(&query.enable_image_types),
+        enable_user_data: query.enable_user_data.unwrap_or(true),
+    };
+    // Official `GetYears` projects the persisted item-by-name rows through
+    // `GetItemByNameDto`, carrying the endpoint's DTO options with it.
+    let projected = crate::items::page_to_dto_with_options(
+        state.as_ref(),
+        BaseItemPage {
+            items: persisted_years,
+            total_record_count: page.total_record_count,
+            start_index: page.start_index,
+        },
+        query.fields,
+        target_user_id,
+        &dto_options,
+    )
+    .await?;
     Ok(Json(YearsResult {
-        items: page
-            .years
-            .into_iter()
-            .map(|year| user_library::year_to_dto(year, state.server_id()))
-            .collect(),
+        items: projected.items,
         total_record_count: usize::try_from(
             recursive_item_total.unwrap_or(page.total_record_count),
         )

@@ -13,7 +13,7 @@ use axum_extra::extract::Query;
 use chrono::{DateTime, NaiveDate, SecondsFormat, Utc};
 use jellyfin_controller::{
     Artist, Genre, GenreKind, LocalizationService, MusicGenre, RelatedItemKind, Studio,
-    TrickplayManifest, Year, item_can_delete, item_can_download,
+    TrickplayManifest, item_can_delete, item_can_download,
     library::{get_common_media_source_prefix, get_media_source_name},
 };
 use jellyfin_data::{
@@ -3245,56 +3245,6 @@ fn apply_item_value_counts(
     dto.program_count = Some(counts.program_count);
     dto.series_count = Some(counts.series_count);
     dto.trailer_count = Some(counts.trailer_count);
-}
-
-pub(crate) fn year_to_dto(year: Year, server_id: &str) -> BaseItemDto {
-    let presentation_unique_key = Some(format!("Year-{}", year.name));
-    let name = year.name;
-    BaseItemDto {
-        // ALLOW: Jellyfin exposes name and sort name as separate owned fields.
-        name: Some(name.clone()),
-        server_id: server_id.to_owned(),
-        id: year.id.simple().to_string(),
-        playlist_item_id: None,
-        item_type: "Year".to_owned(),
-        etag: year.id.simple().to_string(),
-        date_created: None,
-        sort_name: Some(name),
-        path: None,
-        overview: None,
-        media_type: None,
-        collection_type: None,
-        is_folder: true,
-        is_virtual_item: false,
-        parent_id: None,
-        index_number: None,
-        parent_index_number: None,
-        production_year: None,
-        premiere_date: None,
-        run_time_ticks: None,
-        presentation_unique_key,
-        series_id: None,
-        season_id: None,
-        extra_type: None,
-        has_lyrics: None,
-        provider_ids: None,
-        image_tags: Some(HashMap::new()),
-        backdrop_image_tags: Some(Vec::new()),
-        parent_primary_image_item_id: None,
-        parent_primary_image_tag: None,
-        parent_logo_item_id: None,
-        parent_logo_image_tag: None,
-        parent_thumb_item_id: None,
-        parent_thumb_image_tag: None,
-        primary_image_aspect_ratio: None,
-        series_primary_image_tag: None,
-        parent_backdrop_image_item_id: None,
-        parent_backdrop_image_tags: Vec::new(),
-        media_sources: None,
-        media_streams: None,
-        trickplay: None,
-        ..BaseItemDto::default()
-    }
 }
 
 fn metadata_value(data: Option<&Value>, keys: &[&str]) -> Option<Value> {

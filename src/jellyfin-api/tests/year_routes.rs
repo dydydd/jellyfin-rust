@@ -4,11 +4,13 @@ use axum::{
     body::{Body, to_bytes},
     http::{Method, Request, StatusCode, header},
 };
+use chrono::Utc;
 use jellyfin_api::AppState;
 use jellyfin_controller::UserService;
 use jellyfin_data::{
-    BaseItemRepository, DatabaseConfig, DeviceRepository, ItemValueRepository, NewBaseItem,
-    NewDevice, NewUserData, UserDataRepository, entities::item_value,
+    BaseItemImageRepository, BaseItemImageType, BaseItemRepository, DatabaseConfig,
+    DeviceRepository, ItemValueRepository, NewBaseItem, NewBaseItemImage, NewDevice, NewUserData,
+    UserDataRepository, entities::item_value,
 };
 use jellyfin_model::UserPolicy;
 use md5::{Digest, Md5};
@@ -696,6 +698,116 @@ async fn recursive_year_totals_count_visible_primary_items_before_year_extractio
 }
 
 #[tokio::test]
+async fn years_list_honors_official_dto_options_and_query_casing() {
+    let fixture = Fixture::new().await;
+    let items = BaseItemRepository::new(fixture.database.clone());
+    let mut movie = NewBaseItem::new(Uuid::new_v4(), "Movie");
+    movie.name = Some("1984 DTO options movie".to_owned());
+    movie.production_year = Some(1984);
+    let movie = items.create(movie).await.expect("1984 movie creation");
+    BaseItemImageRepository::new(fixture.database.clone())
+        .replace(
+            fixture.persisted_year_id,
+            &[
+                NewBaseItemImage {
+                    image_type: BaseItemImageType::Primary,
+                    image_index: 0,
+                    path: "/metadata/Year/1984/primary.jpg".to_owned(),
+                    date_modified: Utc::now(),
+                    width: Some(400),
+                    height: Some(600),
+                    blurhash: None,
+                },
+                NewBaseItemImage {
+                    image_type: BaseItemImageType::Backdrop,
+                    image_index: 0,
+                    path: "/metadata/Year/1984/backdrop.jpg".to_owned(),
+                    date_modified: Utc::now(),
+                    width: Some(1280),
+                    height: Some(720),
+                    blurhash: None,
+                },
+            ],
+        )
+        .await
+        .expect("year images");
+
+    for query in [
+        "fields=Overview&enableUserData=false&imageTypeLimit=1&enableImageTypes=Primary&enableImages=true",
+        "Fields=Overview&EnableUserData=false&ImageTypeLimit=1&EnableImageTypes=Primary&EnableImages=true",
+        "fields=Overview&enableuserdata=false&imagetypelimit=1&enableimagetypes=Primary&enableimages=true",
+    ] {
+        let page = body_json(
+            fixture
+                .request(
+                    Method::GET,
+                    &format!("/Years?parentId={}&recursive=true&{query}", movie.id),
+                    Credential::Device(&fixture.user_token),
+                )
+                .await,
+        )
+        .await;
+        let year = &page["Items"][0];
+        assert_eq!(year["Overview"], "Persisted Year overview", "{query}");
+        assert!(year["ImageTags"]["Primary"].is_string(), "{query}");
+        assert!(year.get("UserData").is_none(), "{query}");
+    }
+
+    let default_page = body_json(
+        fixture
+            .request(
+                Method::GET,
+                &format!("/Years?parentId={}&recursive=true", movie.id),
+                Credential::Device(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert_eq!(default_page["Items"][0]["UserData"]["IsFavorite"], true);
+    assert!(default_page["Items"][0]["ImageTags"]["Primary"].is_string());
+    assert!(default_page["Items"][0]["BackdropImageTags"][0].is_string());
+
+    for enable_images in ["enableImages", "EnableImages", "enableimages"] {
+        let page = body_json(
+            fixture
+                .request(
+                    Method::GET,
+                    &format!(
+                        "/Years?parentId={}&recursive=true&{enable_images}=false",
+                        movie.id
+                    ),
+                    Credential::Device(&fixture.user_token),
+                )
+                .await,
+        )
+        .await;
+        assert!(page["Items"][0].get("ImageTags").is_none());
+        assert!(page["Items"][0].get("BackdropImageTags").is_none());
+    }
+
+    let backdrops_only = body_json(
+        fixture
+            .request(
+                Method::GET,
+                &format!(
+                    "/Years?parentId={}&recursive=true&enableImageTypes=Backdrop&imageTypeLimit=1",
+                    movie.id
+                ),
+                Credential::Device(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert_eq!(
+        backdrops_only["Items"][0]["ImageTags"],
+        serde_json::json!({})
+    );
+    assert!(backdrops_only["Items"][0]["BackdropImageTags"][0].is_string());
+
+    fixture.cleanup().await;
+}
+
+#[tokio::test]
 async fn exact_year_counts_primary_versions_and_legacy_types_once() {
     let fixture = Fixture::new().await;
     let items = BaseItemRepository::new(fixture.database.clone());
@@ -971,6 +1083,7 @@ impl Fixture {
         year.name = Some("1984".to_owned());
         year.sort_name = Some("1984".to_owned());
         year.path = Some("metadata/Year/1984".to_owned());
+        year.overview = Some("Persisted Year overview".to_owned());
         year.is_folder = true;
         items.create(year).await.expect("year item creation");
         let mut year_favorite = NewUserData::new(persisted_year_id, user.id, "YearFavorite");
