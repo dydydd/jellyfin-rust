@@ -288,11 +288,12 @@ pub(crate) async fn search_remote_subtitles(
         return Err(ApiError::Forbidden);
     }
     let item = ensure_video_item(&state, &authenticated.user, item_id).await?;
+    let series_name = subtitle_search_series_name(&state, &item).await?;
     let request = SubtitleSearchRequest {
         language,
         is_perfect_match: query.is_perfect_match.unwrap_or(false),
         name: item.name,
-        series_name: None,
+        series_name,
         index_number: item.index_number,
         parent_index_number: item.parent_index_number,
         production_year: item.production_year,
@@ -300,6 +301,44 @@ pub(crate) async fn search_remote_subtitles(
     };
     let results = state.subtitles.search(&request);
     Ok(Json(results))
+}
+
+async fn subtitle_search_series_name(
+    state: &AppState,
+    item: &jellyfin_data::entities::base_item::Model,
+) -> Result<Option<String>, ApiError> {
+    if item.item_type != "Episode" {
+        return Ok(None);
+    }
+    if let Some(name) = item.data.as_ref().and_then(|data| {
+        data.as_object()?.iter().find_map(|(key, value)| {
+            key.eq_ignore_ascii_case("SeriesName")
+                .then(|| value.as_str())
+                .flatten()
+                .filter(|name| !name.trim().is_empty())
+                .map(str::to_owned)
+        })
+    }) {
+        return Ok(Some(name));
+    }
+    let series_id = if let Some(series_id) = item.series_id {
+        Some(series_id)
+    } else {
+        state
+            .base_items
+            .nearest_ancestor_ids_by_type(&[item.id], &["Series".to_owned()])
+            .await?
+            .remove(&item.id)
+    };
+    let Some(series_id) = series_id else {
+        return Ok(None);
+    };
+    Ok(state
+        .base_items
+        .get_many(&[series_id])
+        .await?
+        .into_iter()
+        .find_map(|series| series.name.filter(|name| !name.trim().is_empty())))
 }
 
 pub(crate) async fn download_remote_subtitles(

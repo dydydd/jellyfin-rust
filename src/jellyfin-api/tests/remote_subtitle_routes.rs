@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use axum::{
     body::{Body, to_bytes},
@@ -19,7 +19,9 @@ const AUTHORIZATION: &str = "MediaBrowser Client=\"Remote Subtitle Tests\", Devi
 const DATABASE_PREFIX: &str = "jellyfin_remote_subtitle_routes_";
 const SUBTITLE: &[u8] = b"1\n00:00:01,000 --> 00:00:02,000\nHello from provider\n";
 
-struct TestSubtitleProvider;
+struct TestSubtitleProvider {
+    searches: Arc<Mutex<Vec<SubtitleSearchRequest>>>,
+}
 
 impl SubtitleProvider for TestSubtitleProvider {
     fn name(&self) -> &'static str {
@@ -27,10 +29,11 @@ impl SubtitleProvider for TestSubtitleProvider {
     }
 
     fn supported_media_types(&self) -> &[&str] {
-        &["Movie"]
+        &["Movie", "Episode"]
     }
 
-    fn search(&self, _request: &SubtitleSearchRequest) -> Vec<RemoteSubtitleInfo> {
+    fn search(&self, request: &SubtitleSearchRequest) -> Vec<RemoteSubtitleInfo> {
+        self.searches.lock().unwrap().push(request.clone());
         Vec::new()
     }
 
@@ -111,6 +114,24 @@ async fn exercise_routes(database_name: &str) {
         .create(movie)
         .await
         .unwrap();
+    let mut series = NewBaseItem::new(Uuid::new_v4(), "Series");
+    series.name = Some("Linked Series".to_owned());
+    series.is_folder = true;
+    let series = BaseItemRepository::new(database.clone())
+        .create(series)
+        .await
+        .unwrap();
+    let mut episode = NewBaseItem::new(Uuid::new_v4(), "Episode");
+    episode.name = Some("Linked Episode".to_owned());
+    episode.media_type = Some("Video".to_owned());
+    episode.path = Some(media_path.to_string_lossy().into_owned());
+    episode.parent_id = Some(series.id);
+    episode.series_id = Some(series.id);
+    let episode = BaseItemRepository::new(database.clone())
+        .create(episode)
+        .await
+        .unwrap();
+    let searches = Arc::new(Mutex::new(Vec::new()));
     let app = jellyfin_api::router(
         AppState::new(
             database.clone(),
@@ -124,12 +145,14 @@ async fn exercise_routes(database_name: &str) {
             storage_root.join("cache"),
             storage_root.join("metadata"),
         )
-        .with_subtitle_providers(vec![Arc::new(TestSubtitleProvider)]),
+        .with_subtitle_providers(vec![Arc::new(TestSubtitleProvider {
+            searches: Arc::clone(&searches),
+        })]),
     );
 
     let preview = request(
         &app,
-        "/Providers/Subtitles/Subtitles/TestSubtitles_eng",
+        "/providers/subtitles/subtitles/TestSubtitles_eng",
         "GET",
         &token,
     )
@@ -153,7 +176,7 @@ async fn exercise_routes(database_name: &str) {
     let download = request(
         &app,
         &format!(
-            "/Items/{}/RemoteSearch/Subtitles/TestSubtitles_eng",
+            "/items/{}/remotesearch/subtitles/TestSubtitles_eng",
             movie.id
         ),
         "POST",
@@ -178,6 +201,24 @@ async fn exercise_routes(database_name: &str) {
         std::fs::read(streams[0].path.as_deref().unwrap()).unwrap(),
         SUBTITLE
     );
+
+    let search = request(
+        &app,
+        &format!(
+            "/items/{}/remotesearch/subtitles/eng?isperfectmatch=true",
+            episode.id
+        ),
+        "GET",
+        &token,
+    )
+    .await;
+    assert_eq!(search.status(), StatusCode::OK);
+    {
+        let searches = searches.lock().unwrap();
+        assert_eq!(searches.len(), 1);
+        assert_eq!(searches[0].series_name.as_deref(), Some("Linked Series"));
+        assert!(searches[0].is_perfect_match);
+    }
 
     database.close().await.unwrap();
     std::fs::remove_dir_all(storage_root).unwrap();
