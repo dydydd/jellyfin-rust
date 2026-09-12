@@ -101,12 +101,25 @@ async fn exercise_fallback_font_routes(database_name: &str) {
     assert_eq!(body[1]["Name"], "Bigger.woff2");
     assert_eq!(body[1]["Size"], 11);
 
+    let lowercase = fixture
+        .get("/fallbackfont/fonts", Some(&fixture.user_token))
+        .await;
+    assert_eq!(lowercase.status(), StatusCode::OK);
+    assert_eq!(body_json(lowercase).await, body);
+
     let file = fixture
         .get("/FallbackFont/Fonts/small.ttf", Some(&fixture.user_token))
         .await;
     assert_eq!(file.status(), StatusCode::OK);
     assert_eq!(file.headers()[header::CONTENT_TYPE], "font/ttf");
     assert_eq!(body_bytes(file).await.as_ref(), b"tiny");
+
+    let lowercase_file = fixture
+        .get("/fallbackfont/fonts/small.ttf", Some(&fixture.user_token))
+        .await;
+    assert_eq!(lowercase_file.status(), StatusCode::OK);
+    assert_eq!(lowercase_file.headers()[header::CONTENT_TYPE], "font/ttf");
+    assert_eq!(body_bytes(lowercase_file).await.as_ref(), b"tiny");
 
     let unsupported = fixture
         .get("/FallbackFont/Fonts/ignored.txt", Some(&fixture.user_token))

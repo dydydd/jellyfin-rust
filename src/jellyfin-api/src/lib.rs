@@ -1015,6 +1015,11 @@ fn base_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
         )
         .route("/FallbackFont/Fonts", get(subtitles::fallback_fonts))
         .route("/FallbackFont/Fonts/{name}", get(subtitles::fallback_font))
+        .route("/fallbackfont/fonts", get(subtitles::fallback_fonts))
+        .route(
+            "/fallbackfont/fonts/{name}",
+            get(subtitles::fallback_font),
+        )
         .route(
             "/Audio/{item_id}/hls/{*legacy_path}",
             get(hls_segment::audio),
