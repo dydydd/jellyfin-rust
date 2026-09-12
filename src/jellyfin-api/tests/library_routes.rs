@@ -1295,7 +1295,7 @@ async fn assert_ancestors(fixture: &Fixture) {
             Some(&json!("ancestor-blurhash")),
             "{route}"
         );
-        assert_eq!(movie["MediaSourceCount"], 1, "{route}");
+        assert!(movie.get("MediaSourceCount").is_none(), "{route}");
         assert_eq!(movie["MediaSources"][0]["MediaStreams"][0]["Type"], "Video");
         assert_eq!(movie["MediaStreams"][0]["Type"], "Video", "{route}");
         assert_eq!(
