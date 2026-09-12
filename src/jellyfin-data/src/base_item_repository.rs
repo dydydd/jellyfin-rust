@@ -472,7 +472,7 @@ struct ResumePageId {
 
 #[derive(Debug, Clone, Copy, FromQueryResult)]
 struct NextUpPageId {
-    id: Uuid,
+    id: Option<Uuid>,
     total_record_count: i64,
 }
 
@@ -3379,10 +3379,16 @@ impl BaseItemRepository {
         let mut page_values = values;
         let mut page_sql = if count_enabled {
             format!(
-                "{sql} SELECT id, COUNT(*) OVER () AS total_record_count FROM selected \
-                 ORDER BY series_last_played_date DESC NULLS LAST, \
-                          result_rank, \
-                          series_presentation_unique_key, id"
+                "{sql}, page_ids AS MATERIALIZED (\
+                     SELECT id, ROW_NUMBER() OVER (\
+                         ORDER BY series_last_played_date DESC NULLS LAST, \
+                                  result_rank, \
+                                  series_presentation_unique_key, id\
+                     ) AS page_order \
+                     FROM selected \
+                     ORDER BY series_last_played_date DESC NULLS LAST, \
+                              result_rank, \
+                              series_presentation_unique_key, id"
             )
         } else {
             format!(
@@ -3406,6 +3412,15 @@ impl BaseItemRepository {
                 " LIMIT ",
             );
         }
+        if count_enabled {
+            page_sql.push_str(
+                ") \
+                 SELECT total.total_record_count, page_ids.id \
+                 FROM (SELECT COUNT(*)::bigint AS total_record_count FROM selected) AS total \
+                 LEFT JOIN page_ids ON true \
+                 ORDER BY page_ids.page_order",
+            );
+        }
         let (items, total_record_count) = if count_enabled {
             let page_rows = NextUpPageId::find_by_statement(Statement::from_sql_and_values(
                 DbBackend::Postgres,
@@ -3418,7 +3433,10 @@ impl BaseItemRepository {
                 .first()
                 .map(|row| u64::try_from(row.total_record_count).unwrap_or_default())
                 .unwrap_or_default();
-            let page_ids = page_rows.iter().map(|row| row.id).collect::<Vec<_>>();
+            let page_ids = page_rows
+                .iter()
+                .filter_map(|row| row.id)
+                .collect::<Vec<_>>();
             let page_items = if page_ids.is_empty() {
                 Vec::new()
             } else {
