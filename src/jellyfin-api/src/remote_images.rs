@@ -73,17 +73,19 @@ pub(crate) async fn images(
             usize::try_from(limit).unwrap_or_default()
         }
     });
-    state
+    let item = state
         .user_library
         .item(&authenticated.user, authenticated.user.id, item_id)
         .await?;
 
     let api_key = Arc::clone(&*state.tmdb_api_key.read().await);
     let configuration = state.server_configuration.load().await?;
+    let metadata_options =
+        crate::configuration::metadata_options_for_item_type(&configuration, &item.item_type)?;
     let result = state
         .item_lookup
         .remote_images(
-            item_id,
+            &item,
             image_type,
             query.provider_name.as_deref(),
             query.include_all_languages,
@@ -92,6 +94,7 @@ pub(crate) async fn images(
             &api_key,
             &configuration.preferred_metadata_language,
             &configuration.metadata_country_code,
+            &metadata_options,
         )
         .await?;
     Ok(Json(result))
@@ -103,26 +106,19 @@ pub(crate) async fn providers(
     Path(item_id): Path<Uuid>,
 ) -> Result<Json<Vec<ImageProviderInfo>>, ApiError> {
     let authenticated = authentication::authenticated_session(&state, &headers).await?;
-    state
+    let item = state
         .user_library
         .item(&authenticated.user, authenticated.user.id, item_id)
         .await?;
     let api_key = Arc::clone(&*state.tmdb_api_key.read().await);
-    let metadata_options = metadata_options_for(&state);
-    Ok(Json(
-        state
-            .item_lookup
-            .remote_image_providers(item_id, &api_key, &metadata_options)
-            .await?,
-    ))
-}
-
-fn metadata_options_for(state: &AppState) -> jellyfin_model::MetadataOptions {
-    let _ = state;
-    jellyfin_model::MetadataOptions::official_defaults()
-        .into_iter()
-        .find(|options| options.item_type == "Movie")
-        .unwrap_or_default()
+    let configuration = state.server_configuration.load().await?;
+    let metadata_options =
+        crate::configuration::metadata_options_for_item_type(&configuration, &item.item_type)?;
+    Ok(Json(state.item_lookup.remote_image_providers(
+        &item,
+        &api_key,
+        &metadata_options,
+    )?))
 }
 
 pub(crate) async fn download(

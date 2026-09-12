@@ -161,6 +161,43 @@ async fn exercise_remote_image_routes(database_name: &str) {
             "SupportedImages": ["Primary", "Backdrop", "Logo", "Thumb"]
         }])
     );
+    let lowercase_configured_providers = fixture
+        .get_configured(
+            &format!("/items/{}/remoteimages/providers", fixture.item_id),
+            &fixture.user_token,
+        )
+        .await;
+    assert_eq!(lowercase_configured_providers.status(), StatusCode::OK);
+    assert_eq!(
+        body_json(lowercase_configured_providers).await,
+        json!([{
+            "Name": "TheMovieDb",
+            "SupportedImages": ["Primary", "Backdrop", "Logo", "Thumb"]
+        }])
+    );
+
+    for route in [
+        format!(
+            "/Items/{}/RemoteImages?ProviderName=Example",
+            fixture.item_id
+        ),
+        format!(
+            "/items/{}/remoteimages?providername=Example",
+            fixture.item_id
+        ),
+    ] {
+        let response = fixture.get_configured(&route, &fixture.user_token).await;
+        assert_eq!(response.status(), StatusCode::OK, "{route}");
+        assert_eq!(
+            body_json(response).await,
+            json!({
+                "Images": [],
+                "TotalRecordCount": 0,
+                "Providers": ["TheMovieDb"]
+            }),
+            "{route}"
+        );
+    }
 
     let missing_download_type = fixture
         .post(
@@ -300,6 +337,20 @@ impl Fixture {
             .create(item)
             .await
             .expect("movie item creation");
+        database
+            .execute_unprepared(
+                r#"
+                UPDATE jellyfin.server_configuration
+                SET metadata_options = '[{
+                    "ItemType": "Movie",
+                    "DisabledImageFetchers": ["TheMovieDb"],
+                    "ImageFetcherOrder": ["Unimplemented Provider"]
+                }]'::jsonb
+                WHERE id = 1
+                "#,
+            )
+            .await
+            .expect("persist remote-image metadata options");
 
         let storage_root = std::env::temp_dir().join(format!("remote-image-routes-{suffix}"));
         let program_data = storage_root.join("programdata");

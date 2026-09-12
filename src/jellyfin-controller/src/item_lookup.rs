@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use jellyfin_data::{BaseItemError, BaseItemRepository};
+use jellyfin_data::{BaseItemError, BaseItemRepository, entities::base_item};
 use jellyfin_model::{
     ExternalIdInfo, ImageProviderInfo, ImageType, RemoteImageResult, RemoteSearchResult,
     order_by_language_descending,
@@ -226,7 +226,7 @@ impl ItemLookupService {
     #[allow(clippy::too_many_arguments)]
     pub async fn remote_images(
         &self,
-        item_id: Uuid,
+        item: &base_item::Model,
         image_type: Option<ImageType>,
         provider_name: Option<&str>,
         include_all_languages: bool,
@@ -235,22 +235,26 @@ impl ItemLookupService {
         api_key: &str,
         metadata_language: &str,
         metadata_country_code: &str,
+        metadata_options: &jellyfin_model::MetadataOptions,
     ) -> Result<RemoteImageResult, ItemLookupError> {
-        if api_key.trim().is_empty() {
-            return Ok(empty_remote_images());
+        let providers =
+            remote_image_provider_infos(&item.item_type, api_key, metadata_options, image_type)
+                .into_iter()
+                .map(|provider| provider.name)
+                .collect::<Vec<_>>();
+        if providers.is_empty()
+            || provider_name.is_some_and(|name| {
+                !providers
+                    .iter()
+                    .any(|provider| provider.eq_ignore_ascii_case(name))
+            })
+        {
+            return Ok(empty_remote_images_with_providers(providers));
         }
-        if provider_name.is_some_and(|name| !name.eq_ignore_ascii_case(TMDB_PROVIDER_NAME)) {
-            return Ok(empty_remote_images());
-        }
-        let item = self
-            .items
-            .get(item_id)
-            .await?
-            .ok_or(ItemLookupError::NotFound)?;
         let Some(tmdb_id) =
             provider_id(item.data.as_ref(), "Tmdb").and_then(|id| id.parse::<i64>().ok())
         else {
-            return Ok(empty_remote_images());
+            return Ok(empty_remote_images_with_providers(providers));
         };
 
         let client =
@@ -259,7 +263,7 @@ impl ItemLookupService {
             "Movie" | "MusicVideo" | "Trailer" => client.movie_images(tmdb_id).await?,
             "Series" => client.tv_images(tmdb_id).await?,
             "Person" => client.person_images(tmdb_id).await?,
-            _ => return Ok(empty_remote_images()),
+            _ => return Ok(empty_remote_images_with_providers(providers)),
         };
         let mut images =
             images_to_remote_images(images, include_all_languages, Some(metadata_language));
@@ -278,7 +282,7 @@ impl ItemLookupService {
         Ok(RemoteImageResult {
             images,
             total_record_count,
-            providers: vec![TMDB_PROVIDER_NAME.to_owned()],
+            providers,
         })
     }
 
@@ -287,64 +291,18 @@ impl ItemLookupService {
     /// # Errors
     ///
     /// Returns not-found for a missing item.
-    pub async fn remote_image_providers(
+    pub fn remote_image_providers(
         &self,
-        item_id: Uuid,
+        item: &base_item::Model,
         api_key: &str,
         metadata_options: &jellyfin_model::MetadataOptions,
     ) -> Result<Vec<ImageProviderInfo>, ItemLookupError> {
-        if api_key.trim().is_empty() {
-            return Ok(Vec::new());
-        }
-        let item = self
-            .items
-            .get(item_id)
-            .await?
-            .ok_or(ItemLookupError::NotFound)?;
-        let Some(supported_images) = supported_remote_image_types(&item.item_type) else {
-            return Ok(Vec::new());
-        };
-        let provider_names = [TMDB_PROVIDER_NAME]
-            .into_iter()
-            .filter(|name| {
-                !metadata_options
-                    .disabled_image_fetchers
-                    .iter()
-                    .any(|disabled| disabled.eq_ignore_ascii_case(name))
-            })
-            .filter(|name| {
-                metadata_options.image_fetcher_order.is_empty()
-                    || metadata_options
-                        .image_fetcher_order
-                        .iter()
-                        .any(|ordered| ordered.eq_ignore_ascii_case(name))
-            })
-            .map(str::to_owned)
-            .collect::<Vec<_>>();
-        let mut remaining = provider_names.len();
-        let mut supported_images = Some(supported_images);
-        Ok(provider_names
-            .into_iter()
-            .map(|name| {
-                remaining -= 1;
-                let images = if remaining == 0 {
-                    supported_images
-                        .take()
-                        .expect("supported image types must be available")
-                } else {
-                    // ALLOW: each provider response owns its image-type list; the final provider
-                    // takes the original list to avoid one unnecessary allocation.
-                    supported_images
-                        .as_ref()
-                        .expect("supported image types must be available")
-                        .clone()
-                };
-                ImageProviderInfo {
-                    name,
-                    supported_images: images,
-                }
-            })
-            .collect())
+        Ok(remote_image_provider_infos(
+            &item.item_type,
+            api_key,
+            metadata_options,
+            None,
+        ))
     }
 
     /// Applies remote-search provider identifiers to a persisted item.
@@ -416,12 +374,43 @@ fn sort_remote_search_results(
     results
 }
 
-fn empty_remote_images() -> RemoteImageResult {
+fn empty_remote_images_with_providers(providers: Vec<String>) -> RemoteImageResult {
     RemoteImageResult {
         images: Vec::new(),
         total_record_count: 0,
-        providers: Vec::new(),
+        providers,
     }
+}
+
+fn remote_image_provider_infos(
+    item_type: &str,
+    api_key: &str,
+    metadata_options: &jellyfin_model::MetadataOptions,
+    image_type: Option<ImageType>,
+) -> Vec<ImageProviderInfo> {
+    if api_key.trim().is_empty() {
+        return Vec::new();
+    }
+    let Some(supported_images) = supported_remote_image_types(item_type) else {
+        return Vec::new();
+    };
+    if image_type.is_some_and(|image_type| !supported_images.contains(&image_type)) {
+        return Vec::new();
+    }
+
+    // RemoteImageController explicitly requests disabled providers for both search and provider
+    // discovery. The global order still applies, and unlisted providers remain enabled at the end.
+    let mut providers = vec![ImageProviderInfo {
+        name: TMDB_PROVIDER_NAME.to_owned(),
+        supported_images,
+    }];
+    sort_remote_image_providers(&mut providers, &metadata_options.image_fetcher_order);
+    providers
+}
+
+fn sort_remote_image_providers(providers: &mut [ImageProviderInfo], configured_order: &[String]) {
+    providers
+        .sort_by_key(|provider| configured_provider_order(configured_order, Some(&provider.name)));
 }
 
 fn provider_disabled(
@@ -637,5 +626,39 @@ mod tests {
                 "{item_type}"
             );
         }
+    }
+
+    #[test]
+    fn remote_image_providers_include_disabled_and_keep_unlisted_providers() {
+        let options = jellyfin_model::MetadataOptions {
+            disabled_image_fetchers: vec![TMDB_PROVIDER_NAME.to_owned()],
+            image_fetcher_order: vec!["Unimplemented Provider".to_owned()],
+            ..Default::default()
+        };
+        let providers = remote_image_provider_infos("Movie", "test-key", &options, None);
+        assert_eq!(providers.len(), 1);
+        assert_eq!(providers[0].name, TMDB_PROVIDER_NAME);
+    }
+
+    #[test]
+    fn remote_image_provider_order_keeps_unlisted_entries_at_the_end() {
+        let mut providers = ["Unlisted", TMDB_PROVIDER_NAME, "Preferred"]
+            .into_iter()
+            .map(|name| ImageProviderInfo {
+                name: name.to_owned(),
+                supported_images: Vec::new(),
+            })
+            .collect::<Vec<_>>();
+        sort_remote_image_providers(
+            &mut providers,
+            &["Preferred".to_owned(), TMDB_PROVIDER_NAME.to_owned()],
+        );
+        assert_eq!(
+            providers
+                .iter()
+                .map(|provider| provider.name.as_str())
+                .collect::<Vec<_>>(),
+            ["Preferred", TMDB_PROVIDER_NAME, "Unlisted"]
+        );
     }
 }
