@@ -9,7 +9,8 @@ use jellyfin_controller::{MediaStreamService, UserService};
 use jellyfin_data::{
     ApiKeyRepository, BaseItemImageRepository, BaseItemImageType, BaseItemRepository,
     DatabaseConfig, DeviceRepository, ItemValueRepository, LinkedChildRepository, NewBaseItem,
-    NewBaseItemImage, NewDevice, NewUserData, PlaylistRepository, UserDataRepository,
+    NewBaseItemImage, NewDevice, NewTrickplayInfo, NewUserData, PlaylistRepository,
+    TrickplayInfoRepository, UserDataRepository,
     entities::item_value,
     entities::{user, user_data},
 };
@@ -985,25 +986,117 @@ async fn assert_instant_mix(fixture: &Fixture) {
 }
 
 async fn assert_ancestors(fixture: &Fixture) {
-    let ancestors = fixture
-        .json(
-            "GET",
-            &format!("/Items/{}/Ancestors", fixture.child_id),
-            &fixture.user_token,
+    BaseItemImageRepository::new(fixture.database.clone())
+        .replace(
+            fixture.child_id,
+            &[NewBaseItemImage {
+                image_type: BaseItemImageType::Primary,
+                image_index: 0,
+                path: "/media/ancestor-primary.jpg".to_owned(),
+                date_modified: Utc::now(),
+                width: Some(600),
+                height: Some(900),
+                blurhash: Some("ancestor-blurhash".to_owned()),
+            }],
         )
-        .await;
-    let ancestor_ids = ancestors
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|item| item["Id"].as_str().unwrap())
-        .collect::<Vec<_>>();
+        .await
+        .expect("ancestor primary image");
+    MediaStreamService::new(fixture.database.clone())
+        .save_media_streams(
+            fixture.child_id,
+            vec![MediaStream {
+                index: 0,
+                stream_type: MediaStreamType::Video,
+                codec: Some("h264".to_owned()),
+                ..MediaStream::default()
+            }],
+        )
+        .await
+        .expect("ancestor media stream");
+    TrickplayInfoRepository::new(fixture.database.clone())
+        .upsert(
+            fixture.child_id,
+            NewTrickplayInfo {
+                width: 320,
+                height: 180,
+                tile_width: 5,
+                tile_height: 5,
+                thumbnail_count: 25,
+                interval: 10_000,
+                bandwidth: 42_000,
+            },
+        )
+        .await
+        .expect("ancestor trickplay metadata");
+
+    for route in [
+        format!(
+            "/Items/{}/Ancestors?userId={}",
+            fixture.grandchild_id, fixture.user_id
+        ),
+        format!(
+            "/items/{}/ancestors?UserId={}",
+            fixture.grandchild_id, fixture.user_id
+        ),
+        format!(
+            "/Items/{}/Ancestors?userid={}",
+            fixture.grandchild_id, fixture.user_id
+        ),
+    ] {
+        let ancestors = fixture.json("GET", &route, &fixture.user_token).await;
+        let ancestors = ancestors.as_array().expect("ancestor array");
+        let ancestor_ids = ancestors
+            .iter()
+            .map(|item| item["Id"].as_str().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            ancestor_ids,
+            vec![
+                fixture.child_id.simple().to_string(),
+                fixture.parent_id.simple().to_string(),
+                jellyfin_data::USER_ROOT_FOLDER_ID.simple().to_string()
+            ],
+            "{route}"
+        );
+
+        let movie = &ancestors[0];
+        assert_eq!(movie["UserData"]["IsFavorite"], true, "{route}");
+        assert!(movie["ImageTags"]["Primary"].is_string(), "{route}");
+        assert_eq!(
+            movie["ImageBlurHashes"]["Primary"]
+                .as_object()
+                .expect("primary blur hashes")
+                .values()
+                .next(),
+            Some(&json!("ancestor-blurhash")),
+            "{route}"
+        );
+        assert_eq!(movie["MediaSourceCount"], 1, "{route}");
+        assert_eq!(movie["MediaSources"][0]["MediaStreams"][0]["Type"], "Video");
+        assert_eq!(movie["MediaStreams"][0]["Type"], "Video", "{route}");
+        assert_eq!(
+            movie["Trickplay"][fixture.child_id.simple().to_string()]["320"]["Bandwidth"],
+            42_000,
+            "{route}"
+        );
+        assert!(movie["Chapters"].is_array(), "{route}");
+        assert!(movie["ExternalUrls"].is_array(), "{route}");
+        assert!(movie["RemoteTrailers"].is_array(), "{route}");
+    }
+
     assert_eq!(
-        ancestor_ids,
-        vec![
-            fixture.parent_id.simple().to_string(),
-            jellyfin_data::USER_ROOT_FOLDER_ID.simple().to_string()
-        ]
+        fixture
+            .request(
+                "GET",
+                &format!(
+                    "/Items/{}/Ancestors?UserId={}",
+                    fixture.grandchild_id, fixture.admin_id
+                ),
+                Some(&fixture.user_token),
+            )
+            .await
+            .status(),
+        StatusCode::FORBIDDEN
     );
 }
 

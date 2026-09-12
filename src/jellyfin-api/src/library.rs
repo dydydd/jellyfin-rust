@@ -320,12 +320,18 @@ pub(crate) async fn ancestors(
         .library_controller
         .ancestors(&authenticated.user, target_user_id, item_id)
         .await?;
-    Ok(Json(
-        items
-            .into_iter()
-            .map(|item| user_library::item_to_dto(item, state.server_id()))
-            .collect(),
-    ))
+    let total_record_count = u64::try_from(items.len()).unwrap_or(u64::MAX);
+    let projected = crate::items::page_to_dto_all_fields(
+        state.as_ref(),
+        BaseItemPage {
+            items,
+            total_record_count,
+            start_index: 0,
+        },
+        target_user_id,
+    )
+    .await?;
+    Ok(Json(projected.items))
 }
 
 pub(crate) async fn collections(
