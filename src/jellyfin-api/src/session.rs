@@ -2,12 +2,10 @@ use std::{collections::HashMap, fmt::Write as _, sync::Arc};
 
 use axum::{
     Json,
-    extract::{
-        OriginalUri, Path, Query, State, rejection::JsonRejection, rejection::PathRejection,
-        rejection::QueryRejection,
-    },
+    extract::{OriginalUri, Path, State, rejection::JsonRejection, rejection::PathRejection},
     http::{HeaderMap, StatusCode},
 };
+use axum_extra::extract::{Query, QueryRejection};
 use chrono::{Duration, Utc};
 use jellyfin_data::{DeviceQuery, NewActivityLog, NewSessionCommand, entities::device};
 use jellyfin_model::{
@@ -96,7 +94,7 @@ pub(crate) struct PlayCommandQuery {
         default,
         alias = "ItemIds",
         alias = "itemids",
-        deserialize_with = "crate::query::comma::deserialize"
+        deserialize_with = "crate::query::comma::deserialize_model_binder"
     )]
     item_ids: Vec<Uuid>,
     #[serde(alias = "StartPositionTicks", alias = "startpositionticks")]
@@ -322,8 +320,8 @@ pub(crate) async fn send_system_command(
     headers: HeaderMap,
     path: Result<Path<(String, GeneralCommandType)>, PathRejection>,
 ) -> Result<StatusCode, ApiError> {
-    let Path((session_id, command)) = path.map_err(|_| ApiError::InvalidRequest)?;
     let controller = authenticated_session_controller(&state, &headers, &uri).await?;
+    let Path((session_id, command)) = path.map_err(|_| ApiError::InvalidRequest)?;
     enqueue_general_command(
         &state,
         &session_id,
@@ -345,12 +343,12 @@ pub(crate) async fn display_content(
     path: Result<Path<String>, PathRejection>,
     query: Result<Query<ViewingQuery>, QueryRejection>,
 ) -> Result<StatusCode, ApiError> {
+    let controller = authenticated_session_controller(&state, &headers, &uri).await?;
     let Path(session_id) = path.map_err(|_| ApiError::InvalidRequest)?;
     let Query(query) = query.map_err(|_| ApiError::InvalidRequest)?;
     let item_type = required_query_value(query.ty)?;
     let item_id = required_query_value(query.id)?;
     let item_name = required_query_value(query.name)?;
-    let controller = authenticated_session_controller(&state, &headers, &uri).await?;
     enqueue_general_command(
         &state,
         &session_id,
@@ -424,8 +422,8 @@ pub(crate) async fn send_full_general_command(
     path: Result<Path<String>, PathRejection>,
     request: Result<Json<GeneralCommand>, JsonRejection>,
 ) -> Result<StatusCode, ApiError> {
-    let Path(session_id) = path.map_err(|_| ApiError::InvalidRequest)?;
     let controller = authenticated_session_controller(&state, &headers, &uri).await?;
+    let Path(session_id) = path.map_err(|_| ApiError::InvalidRequest)?;
     let Json(mut command) = request.map_err(|_| ApiError::InvalidRequest)?;
     command.controlling_user_id = controller.user_id();
     enqueue_general_command(&state, &session_id, &controller, command).await?;
@@ -439,12 +437,12 @@ pub(crate) async fn send_message_command(
     path: Result<Path<String>, PathRejection>,
     request: Result<Json<MessageCommand>, JsonRejection>,
 ) -> Result<StatusCode, ApiError> {
-    let Path(session_id) = path.map_err(|_| ApiError::InvalidRequest)?;
     let controller = authenticated_session_controller(&state, &headers, &uri).await?;
+    let Path(session_id) = path.map_err(|_| ApiError::InvalidRequest)?;
     let Json(command) = request.map_err(|_| ApiError::InvalidRequest)?;
     let text = command
         .text
-        .filter(|text| !text.is_empty())
+        .filter(|text| !text.trim().is_empty())
         .ok_or(ApiError::InvalidRequest)?;
     let header = command
         .header
@@ -475,6 +473,7 @@ pub(crate) async fn send_play_command(
     path: Result<Path<String>, PathRejection>,
     query: Result<Query<PlayCommandQuery>, QueryRejection>,
 ) -> Result<StatusCode, ApiError> {
+    let controller = authenticated_session_controller(&state, &headers, &uri).await?;
     let Path(session_id) = path.map_err(|_| ApiError::InvalidRequest)?;
     let Query(query) = query.map_err(|_| ApiError::InvalidRequest)?;
     let play_command = query.play_command.ok_or(ApiError::InvalidRequest)?;
@@ -482,7 +481,6 @@ pub(crate) async fn send_play_command(
         return Err(ApiError::InvalidRequest);
     }
 
-    let controller = authenticated_session_controller(&state, &headers, &uri).await?;
     enqueue_session_command(
         &state,
         &session_id,
@@ -510,9 +508,9 @@ pub(crate) async fn send_playstate_command(
     path: Result<Path<(String, PlaystateCommand)>, PathRejection>,
     query: Result<Query<PlaystateCommandQuery>, QueryRejection>,
 ) -> Result<StatusCode, ApiError> {
+    let controller = authenticated_session_controller(&state, &headers, &uri).await?;
     let Path((session_id, command)) = path.map_err(|_| ApiError::InvalidRequest)?;
     let Query(query) = query.map_err(|_| ApiError::InvalidRequest)?;
-    let controller = authenticated_session_controller(&state, &headers, &uri).await?;
     enqueue_session_command(
         &state,
         &session_id,

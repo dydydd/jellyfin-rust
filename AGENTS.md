@@ -855,6 +855,11 @@
   Full capabilities bind only their official `Id` query and ignore unrelated query keys. Treat API
   keys as privileged user-less controllers for capabilities, general commands, and messages while
   retaining the request client's session id and a nil controlling user id.
+- Bind general-command and message JSON properties case-insensitively; accept official command enum
+  names, integers, and numeric strings, and reject whitespace-only required message text. Apply the
+  same enum rules to play and playstate query/path commands, preserve the collection binder's
+  single-value versus repeated-key `ItemIds` behavior, and authenticate every command route before
+  returning path, query, or body binding errors.
 - Filter `/Sessions?ControllableByUserId=` through actual media-control capability and a connected
   controller, the caller's remote-control and device-access policy, and the controlled user's shared-
   device policy. A normal session list includes public and additional-user sessions; an explicit nil

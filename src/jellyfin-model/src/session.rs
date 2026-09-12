@@ -537,9 +537,9 @@ fn canonical_device_profile_key(name: &str) -> Option<&'static str> {
     })
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[cfg_attr(feature = "openapi", derive(schemars::JsonSchema))]
-#[serde(default, rename_all = "PascalCase")]
+#[serde(rename_all = "PascalCase")]
 pub struct GeneralCommand {
     pub name: GeneralCommandType,
     #[serde(
@@ -549,6 +549,49 @@ pub struct GeneralCommand {
     )]
     pub controlling_user_id: Uuid,
     pub arguments: HashMap<String, String>,
+}
+
+#[derive(Deserialize)]
+#[serde(default, rename_all = "PascalCase")]
+struct GeneralCommandWire {
+    name: GeneralCommandType,
+    #[serde(default, deserialize_with = "crate::serde_guid::single::deserialize")]
+    controlling_user_id: Uuid,
+    arguments: HashMap<String, String>,
+}
+
+impl Default for GeneralCommandWire {
+    fn default() -> Self {
+        Self {
+            name: GeneralCommandType::MoveUp,
+            controlling_user_id: Uuid::nil(),
+            arguments: HashMap::new(),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for GeneralCommand {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let mut value = Value::deserialize(deserializer)?;
+        normalize_command_body_json(
+            &mut value,
+            &[
+                ("name", "Name"),
+                ("controllinguserid", "ControllingUserId"),
+                ("arguments", "Arguments"),
+            ],
+        )
+        .map_err(D::Error::custom)?;
+        let value: GeneralCommandWire = serde_json::from_value(value).map_err(D::Error::custom)?;
+        Ok(Self {
+            name: value.name,
+            controlling_user_id: value.controlling_user_id,
+            arguments: value.arguments,
+        })
+    }
 }
 
 impl Default for GeneralCommand {
@@ -561,7 +604,7 @@ impl Default for GeneralCommand {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "PascalCase")]
 #[cfg_attr(feature = "openapi", derive(schemars::JsonSchema))]
 pub enum PlayCommand {
@@ -570,6 +613,23 @@ pub enum PlayCommand {
     PlayLast,
     PlayInstantMix,
     PlayShuffle,
+}
+
+const PLAY_COMMANDS: [PlayCommand; 5] = [
+    PlayCommand::PlayNow,
+    PlayCommand::PlayNext,
+    PlayCommand::PlayLast,
+    PlayCommand::PlayInstantMix,
+    PlayCommand::PlayShuffle,
+];
+
+impl<'de> Deserialize<'de> for PlayCommand {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        deserialize_official_enum(deserializer, &PLAY_COMMANDS)
+    }
 }
 
 impl std::str::FromStr for PlayCommand {
@@ -623,7 +683,7 @@ impl Default for PlayRequest {
     }
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "PascalCase")]
 #[cfg_attr(feature = "openapi", derive(schemars::JsonSchema))]
 pub enum PlaystateCommand {
@@ -637,6 +697,27 @@ pub enum PlaystateCommand {
     Rewind,
     FastForward,
     PlayPause,
+}
+
+const PLAYSTATE_COMMANDS: [PlaystateCommand; 9] = [
+    PlaystateCommand::Stop,
+    PlaystateCommand::Pause,
+    PlaystateCommand::Unpause,
+    PlaystateCommand::NextTrack,
+    PlaystateCommand::PreviousTrack,
+    PlaystateCommand::Seek,
+    PlaystateCommand::Rewind,
+    PlaystateCommand::FastForward,
+    PlaystateCommand::PlayPause,
+];
+
+impl<'de> Deserialize<'de> for PlaystateCommand {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        deserialize_official_enum(deserializer, &PLAYSTATE_COMMANDS)
+    }
 }
 
 impl std::str::FromStr for PlaystateCommand {
@@ -724,9 +805,9 @@ impl Default for SessionUserInfo {
     }
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 #[cfg_attr(feature = "openapi", derive(schemars::JsonSchema))]
-#[serde(default, rename_all = "PascalCase")]
+#[serde(rename_all = "PascalCase")]
 pub struct MessageCommand {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub header: Option<String>,
@@ -734,6 +815,74 @@ pub struct MessageCommand {
     pub text: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub timeout_ms: Option<i64>,
+}
+
+#[derive(Default, Deserialize)]
+#[serde(default, rename_all = "PascalCase")]
+struct MessageCommandWire {
+    header: Option<String>,
+    text: Option<String>,
+    #[serde(deserialize_with = "deserialize_optional_i64_from_number_or_string")]
+    timeout_ms: Option<i64>,
+}
+
+impl<'de> Deserialize<'de> for MessageCommand {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let mut value = Value::deserialize(deserializer)?;
+        normalize_command_body_json(
+            &mut value,
+            &[
+                ("header", "Header"),
+                ("text", "Text"),
+                ("timeoutms", "TimeoutMs"),
+            ],
+        )
+        .map_err(D::Error::custom)?;
+        let value: MessageCommandWire = serde_json::from_value(value).map_err(D::Error::custom)?;
+        Ok(Self {
+            header: value.header,
+            text: value.text,
+            timeout_ms: value.timeout_ms,
+        })
+    }
+}
+
+fn normalize_command_body_json(
+    value: &mut Value,
+    properties: &[(&str, &str)],
+) -> Result<(), &'static str> {
+    let Value::Object(object) = value else {
+        return Err("command body must be a JSON object");
+    };
+    let original = std::mem::take(object);
+    for (name, value) in original {
+        let canonical_name = properties
+            .iter()
+            .find(|(candidate, _)| name.eq_ignore_ascii_case(candidate))
+            .map(|(_, canonical)| *canonical);
+        object.insert(canonical_name.unwrap_or(name.as_str()).to_owned(), value);
+    }
+    Ok(())
+}
+
+fn deserialize_optional_i64_from_number_or_string<'de, D>(
+    deserializer: D,
+) -> Result<Option<i64>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    match Option::<Value>::deserialize(deserializer)? {
+        None => Ok(None),
+        Some(Value::Number(value)) => value
+            .as_i64()
+            .map(Some)
+            .ok_or_else(|| D::Error::custom("integer is outside Int64 range")),
+        Some(Value::String(value)) => value.parse().map(Some).map_err(D::Error::custom),
+        Some(_) => Err(D::Error::custom("expected an integer or numeric string")),
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]

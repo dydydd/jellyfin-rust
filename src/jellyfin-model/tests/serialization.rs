@@ -583,6 +583,55 @@ fn session_commands_use_official_wire_names() {
 }
 
 #[test]
+fn session_command_bodies_bind_case_insensitively_and_accept_official_enums() {
+    for (name, expected) in [
+        (json!("play"), GeneralCommandType::Play),
+        (json!(40), GeneralCommandType::Play),
+        (json!("40"), GeneralCommandType::Play),
+    ] {
+        let command: GeneralCommand = serde_json::from_value(json!({
+            "nAmE": name,
+            "cOnTrOlLiNgUsErId": "f9c1ad0c820f44df8db852fbfc0d3d93",
+            "aRgUmEnTs": { "Volume": "50" }
+        }))
+        .unwrap();
+        assert_eq!(command.name, expected);
+        assert_eq!(command.arguments["Volume"], "50");
+    }
+
+    let message: MessageCommand = serde_json::from_value(json!({
+        "hEaDeR": "Header",
+        "tExT": "Text",
+        "tImEoUtMs": "1500"
+    }))
+    .unwrap();
+    assert_eq!(message.header.as_deref(), Some("Header"));
+    assert_eq!(message.text.as_deref(), Some("Text"));
+    assert_eq!(message.timeout_ms, Some(1500));
+
+    for (value, expected) in [
+        (json!("playnext"), PlayCommand::PlayNext),
+        (json!(1), PlayCommand::PlayNext),
+        (json!("1"), PlayCommand::PlayNext),
+    ] {
+        assert_eq!(
+            serde_json::from_value::<PlayCommand>(value).unwrap(),
+            expected
+        );
+    }
+    for (value, expected) in [
+        (json!("seek"), PlaystateCommand::Seek),
+        (json!(5), PlaystateCommand::Seek),
+        (json!("5"), PlaystateCommand::Seek),
+    ] {
+        assert_eq!(
+            serde_json::from_value::<PlaystateCommand>(value).unwrap(),
+            expected
+        );
+    }
+}
+
+#[test]
 fn session_info_uses_official_wire_names_and_guid_format() {
     let session = SessionInfoDto {
         play_state: PlayerStateInfo {
