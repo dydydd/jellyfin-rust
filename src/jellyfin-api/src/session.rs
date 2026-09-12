@@ -109,6 +109,8 @@ pub(crate) struct PlayCommandQuery {
 pub(crate) struct PlaystateCommandQuery {
     #[serde(alias = "SeekPositionTicks", alias = "seekpositionticks")]
     seek_position_ticks: Option<i64>,
+    #[serde(alias = "ControllingUserId", alias = "controllinguserid")]
+    controlling_user_id: Option<String>,
 }
 
 impl Default for CapabilitiesQuery {
@@ -461,7 +463,9 @@ pub(crate) async fn send_playstate_command(
         PlaystateRequest {
             command,
             seek_position_ticks: query.seek_position_ticks,
-            controlling_user_id: Some(controller.user.id.simple().to_string()),
+            // Unlike PlayRequest and GeneralCommand, the official endpoint
+            // exposes this as an optional query value and forwards it verbatim.
+            controlling_user_id: query.controlling_user_id,
         },
     )
     .await?;

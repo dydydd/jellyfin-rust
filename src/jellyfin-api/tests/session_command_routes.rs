@@ -51,7 +51,7 @@ async fn session_command_query_names_accept_official_casing() {
                 item_ids[0].simple(),
                 item_ids[1].simple()
             ),
-            "Playing/Seek?seekPositionTicks=987",
+            "Playing/Seek?seekPositionTicks=987&controllingUserId=camel-controller",
             "camel",
         ),
         (
@@ -64,7 +64,7 @@ async fn session_command_query_names_accept_official_casing() {
                 item_ids[0].simple(),
                 item_ids[1].simple()
             ),
-            "Playing/Seek?SeekPositionTicks=987",
+            "Playing/Seek?SeekPositionTicks=987&ControllingUserId=pascal-controller",
             "pascal",
         ),
         (
@@ -77,7 +77,7 @@ async fn session_command_query_names_accept_official_casing() {
                 item_ids[0].simple(),
                 item_ids[1].simple()
             ),
-            "Playing/Seek?seekpositionticks=987",
+            "Playing/Seek?seekpositionticks=987&controllinguserid=lower-controller",
             "lower",
         ),
     ];
@@ -121,6 +121,10 @@ async fn session_command_query_names_accept_official_casing() {
         let playstate = &commands[2].payload;
         assert_eq!(playstate["Command"], "Seek");
         assert_eq!(playstate["SeekPositionTicks"], 987);
+        assert_eq!(
+            playstate["ControllingUserId"],
+            format!("{label}-controller")
+        );
     }
 
     fixture.cleanup().await;
@@ -396,7 +400,7 @@ async fn enqueue_official_session_commands(fixture: &Fixture) {
         .await;
     fixture
         .post_command(
-            "Playing/Seek?seekPositionTicks=987&controllingUserId=ignored",
+            "Playing/Seek?seekPositionTicks=987&controllingUserId=sdk-controller-id",
             Body::empty(),
         )
         .await;
@@ -456,7 +460,7 @@ async fn assert_queued_commands(fixture: &Fixture) {
     assert_eq!(queued[2].payload["Arguments"]["ItemName"], "The Matrix");
     assert!(queued[2].payload["Arguments"]["ItemId"].as_str().is_some());
     assert_queued_play_command(&queued[3], fixture.user_id);
-    assert_queued_playstate_command(&queued[4], fixture.user_id);
+    assert_queued_playstate_command(&queued[4], "sdk-controller-id");
     assert_eq!(queued[5].payload["Name"], "SetVolume");
     assert_eq!(queued[5].payload["Arguments"]["Volume"], "50");
     assert_eq!(
@@ -508,13 +512,10 @@ fn assert_queued_play_command(command: &session_command::Model, controlling_user
     assert_eq!(command.payload["StartIndex"], 1);
 }
 
-fn assert_queued_playstate_command(command: &session_command::Model, controlling_user_id: Uuid) {
+fn assert_queued_playstate_command(command: &session_command::Model, controlling_user_id: &str) {
     assert_eq!(command.payload["Command"], "Seek");
     assert_eq!(command.payload["SeekPositionTicks"], 987);
-    assert_eq!(
-        command.payload["ControllingUserId"],
-        controlling_user_id.simple().to_string()
-    );
+    assert_eq!(command.payload["ControllingUserId"], controlling_user_id);
 }
 
 struct Fixture {
