@@ -1913,8 +1913,13 @@ fn item_query_routes() -> Router<Arc<AppState>> {
 fn collection_routes() -> Router<Arc<AppState>> {
     Router::new()
         .route("/Collections", post(collections::create))
+        .route("/collections", post(collections::create))
         .route(
             "/Collections/{collection_id}/Items",
+            post(collections::add_items).delete(collections::remove_items),
+        )
+        .route(
+            "/collections/{collection_id}/items",
             post(collections::add_items).delete(collections::remove_items),
         )
         .route("/Playlists", post(playlists::create))

@@ -21,9 +21,9 @@ pub(crate) struct CreateQuery {
         deserialize_with = "crate::query::comma::deserialize"
     )]
     ids: Vec<String>,
-    #[serde(alias = "ParentId")]
+    #[serde(alias = "ParentId", alias = "parentid")]
     parent_id: Option<Uuid>,
-    #[serde(alias = "IsLocked")]
+    #[serde(alias = "IsLocked", alias = "islocked")]
     is_locked: bool,
 }
 
