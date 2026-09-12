@@ -188,6 +188,156 @@ async fn settings_fields_are_requested_for_pages_and_defaulted_for_item_details(
 }
 
 #[tokio::test]
+async fn series_display_and_folder_cumulative_runtime_match_official_projection() {
+    let _guard = ITEMS_TEST_LOCK.lock().await;
+    let fixture = Fixture::new().await;
+    let items = BaseItemRepository::new(fixture.database.clone());
+    let root = items.ensure_user_root().await.expect("user root");
+
+    let mut folder = NewBaseItem::new(Uuid::new_v4(), "Folder");
+    folder.name = Some(format!("SD Runtime folder {}", fixture.suffix));
+    folder.sort_name = folder.name.clone();
+    folder.parent_id = Some(root.id);
+    folder.is_folder = true;
+    folder.runtime_ticks = Some(91_000_000);
+    let folder = items.create(folder).await.expect("runtime folder");
+
+    let mut series = NewBaseItem::new(Uuid::new_v4(), "Series");
+    series.name = Some(format!("SD Air time series {}", fixture.suffix));
+    series.sort_name = series.name.clone();
+    series.parent_id = Some(root.id);
+    series.is_folder = true;
+    series.runtime_ticks = Some(92_000_000);
+    series.data = Some(serde_json::json!({
+        "air_time": "20:30",
+        "displayOrder": "Aired"
+    }));
+    let series = items.create(series).await.expect("series projection item");
+
+    let mut box_set = NewBaseItem::new(Uuid::new_v4(), "BoxSet");
+    box_set.name = Some(format!("SD Display order box set {}", fixture.suffix));
+    box_set.sort_name = box_set.name.clone();
+    box_set.parent_id = Some(root.id);
+    box_set.is_folder = true;
+    box_set.runtime_ticks = Some(93_000_000);
+    box_set.data = Some(serde_json::json!({
+        "AirTime": "must-not-leak",
+        "DisplayOrder": "PremiereDate"
+    }));
+    let box_set = items
+        .create(box_set)
+        .await
+        .expect("box set projection item");
+
+    let mut movie = NewBaseItem::new(Uuid::new_v4(), "Movie");
+    movie.name = Some(format!("SD Runtime movie {}", fixture.suffix));
+    movie.sort_name = movie.name.clone();
+    movie.parent_id = Some(root.id);
+    movie.runtime_ticks = Some(94_000_000);
+    movie.data = Some(serde_json::json!({
+        "AirTime": "must-not-leak",
+        "DisplayOrder": "must-not-leak"
+    }));
+    let movie = items.create(movie).await.expect("movie projection item");
+
+    for (query_name, field_name) in [
+        ("Fields", "CumulativeRunTimeTicks"),
+        ("fields", "cumulativeruntimeticks"),
+        ("Fields", "7"),
+    ] {
+        let route = format!(
+            "/Items?ids={},{}&{query_name}={field_name}",
+            folder.id, movie.id
+        );
+        let response = fixture.request(&route, Some(&fixture.user_token)).await;
+        assert_eq!(response.status(), StatusCode::OK, "{route}");
+        let page = body_json(response).await;
+        let page = page["Items"].as_array().expect("runtime item page");
+        let folder_dto = page
+            .iter()
+            .find(|dto| dto["Id"] == folder.id.simple().to_string())
+            .expect("folder dto");
+        let movie_dto = page
+            .iter()
+            .find(|dto| dto["Id"] == movie.id.simple().to_string())
+            .expect("movie dto");
+        assert_eq!(folder_dto["CumulativeRunTimeTicks"], 91_000_000, "{route}");
+        assert!(
+            movie_dto.get("CumulativeRunTimeTicks").is_none(),
+            "non-folder leaked cumulative runtime: {route}: {movie_dto}"
+        );
+    }
+
+    let unrelated_fields_route = format!(
+        "/Items?ids={},{},{},{}&Fields=CanDelete",
+        folder.id, series.id, box_set.id, movie.id
+    );
+    let page = body_json(
+        fixture
+            .request(&unrelated_fields_route, Some(&fixture.user_token))
+            .await,
+    )
+    .await;
+    let page = page["Items"].as_array().expect("ordinary field page");
+    let find = |id: Uuid| {
+        page.iter()
+            .find(|dto| dto["Id"] == id.simple().to_string())
+            .expect("requested dto")
+    };
+    assert!(find(folder.id).get("CumulativeRunTimeTicks").is_none());
+    assert_eq!(find(series.id)["AirTime"], "20:30");
+    assert_eq!(find(series.id)["DisplayOrder"], "Aired");
+    assert_eq!(find(box_set.id)["DisplayOrder"], "PremiereDate");
+    assert!(find(box_set.id).get("AirTime").is_none());
+    assert!(find(movie.id).get("AirTime").is_none());
+    assert!(find(movie.id).get("DisplayOrder").is_none());
+
+    for route in [
+        format!("/Items/{}?UserId={}", folder.id, fixture.user_id),
+        format!("/items/{}?userid={}", folder.id, fixture.user_id),
+    ] {
+        let response = fixture.request(&route, Some(&fixture.user_token)).await;
+        assert_eq!(response.status(), StatusCode::OK, "{route}");
+        let dto = body_json(response).await;
+        assert_eq!(dto["CumulativeRunTimeTicks"], 91_000_000, "{route}");
+    }
+
+    for (item, expected_air_time, expected_display_order) in [
+        (&series, Some("20:30"), Some("Aired")),
+        (&box_set, None, Some("PremiereDate")),
+        (&movie, None, None),
+    ] {
+        for route in [
+            format!("/Items/{}?UserId={}", item.id, fixture.user_id),
+            format!("/items/{}?userid={}", item.id, fixture.user_id),
+        ] {
+            let response = fixture.request(&route, Some(&fixture.user_token)).await;
+            assert_eq!(response.status(), StatusCode::OK, "{route}");
+            let dto = body_json(response).await;
+            assert_eq!(
+                dto.get("AirTime").and_then(Value::as_str),
+                expected_air_time
+            );
+            assert_eq!(
+                dto.get("DisplayOrder").and_then(Value::as_str),
+                expected_display_order
+            );
+            if item.id == movie.id {
+                assert!(dto.get("CumulativeRunTimeTicks").is_none(), "{route}");
+            }
+        }
+    }
+
+    for item_id in [movie.id, box_set.id, series.id, folder.id] {
+        items
+            .delete(item_id)
+            .await
+            .expect("projection item cleanup");
+    }
+    fixture.cleanup().await;
+}
+
+#[tokio::test]
 async fn external_urls_follow_official_field_and_tv_hierarchy_contract() {
     let _guard = ITEMS_TEST_LOCK.lock().await;
     let fixture = Fixture::new().await;

@@ -69,6 +69,7 @@ pub(crate) struct BaseItemDtoFields {
     external_urls: bool,
     remote_trailers: bool,
     is_hd: bool,
+    cumulative_run_time_ticks: bool,
 }
 
 impl BaseItemDtoFields {
@@ -91,6 +92,7 @@ impl BaseItemDtoFields {
             external_urls: true,
             remote_trailers: true,
             is_hd: true,
+            cumulative_run_time_ticks: true,
         }
     }
 
@@ -113,6 +115,7 @@ impl BaseItemDtoFields {
             external_urls: false,
             remote_trailers: false,
             is_hd: false,
+            cumulative_run_time_ticks: false,
         }
     }
 
@@ -152,6 +155,8 @@ impl BaseItemDtoFields {
                 result.remote_trailers = true;
             } else if field.eq_ignore_ascii_case("IsHD") || field.trim() == "47" {
                 result.is_hd = true;
+            } else if field.eq_ignore_ascii_case("CumulativeRunTimeTicks") || field.trim() == "7" {
+                result.cumulative_run_time_ticks = true;
             }
         }
         result
@@ -247,6 +252,11 @@ impl BaseItemDtoFields {
         self.is_hd
     }
 
+    #[must_use]
+    pub(crate) const fn wants_cumulative_run_time_ticks(self) -> bool {
+        self.cumulative_run_time_ticks
+    }
+
     #[cfg(test)]
     #[must_use]
     pub(crate) const fn without_chapters(mut self) -> Self {
@@ -310,6 +320,8 @@ pub struct BaseItemDto {
     pub media_type: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub collection_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub display_order: Option<String>,
     pub is_folder: bool,
     pub is_virtual_item: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -348,6 +360,8 @@ pub struct BaseItemDto {
     pub premiere_date: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub run_time_ticks: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cumulative_run_time_ticks: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub media_source_count: Option<i32>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -408,6 +422,8 @@ pub struct BaseItemDto {
     pub taglines: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub status: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub air_time: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub custom_rating: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1116,6 +1132,18 @@ pub(crate) fn item_to_dto(item: base_item::Model, server_id: &str) -> BaseItemDt
         ISO_TYPES,
     );
     let original_language = original_language_from_item(&item);
+    let display_order = (is_item_type(&item.item_type, "Series")
+        || is_item_type(&item.item_type, "BoxSet"))
+    .then(|| {
+        metadata_string(
+            item.data.as_ref(),
+            &["DisplayOrder", "displayOrder", "display_order"],
+        )
+    })
+    .flatten();
+    let air_time = is_item_type(&item.item_type, "Series")
+        .then(|| metadata_string(item.data.as_ref(), &["AirTime", "airTime", "air_time"]))
+        .flatten();
     BaseItemDto {
         name: item.name,
         server_id: server_id.to_owned(),
@@ -1152,6 +1180,7 @@ pub(crate) fn item_to_dto(item: base_item::Model, server_id: &str) -> BaseItemDt
         } else {
             None
         },
+        display_order,
         is_folder: item.is_folder,
         is_virtual_item: item.is_virtual_item,
         parent_id: item.parent_id.map(|id| id.simple().to_string()),
@@ -1172,6 +1201,7 @@ pub(crate) fn item_to_dto(item: base_item::Model, server_id: &str) -> BaseItemDt
         production_year: item.production_year,
         premiere_date: item.premiere_date.map(|date| date.to_rfc3339()),
         run_time_ticks: item.runtime_ticks,
+        cumulative_run_time_ticks: None,
         media_source_count: None,
         presentation_unique_key: item.presentation_unique_key,
         series_id: item.series_id.map(|id| id.simple().to_string()),
@@ -1210,6 +1240,7 @@ pub(crate) fn item_to_dto(item: base_item::Model, server_id: &str) -> BaseItemDt
         original_language,
         taglines: metadata_taglines(item.data.as_ref()),
         status: metadata_string(item.data.as_ref(), &["Status", "status"]),
+        air_time,
         custom_rating: metadata_string(item.data.as_ref(), &["CustomRating", "custom_rating"]),
         collection_name: metadata_string(
             item.data.as_ref(),
@@ -1285,12 +1316,16 @@ pub(crate) fn item_to_dto_with_fields(
     let remote_trailers = fields
         .wants_remote_trailers()
         .then(|| metadata_remote_trailers(item.data.as_ref()));
+    let cumulative_run_time_ticks = (fields.wants_cumulative_run_time_ticks() && item.is_folder)
+        .then_some(item.runtime_ticks)
+        .flatten();
     let mut dto = item_to_dto(item, server_id);
     dto.can_delete = can_delete;
     dto.can_download = can_download;
     dto.chapters = fields.wants_chapters().then(Vec::new);
     dto.external_urls = fields.wants_external_urls().then(Vec::new);
     dto.remote_trailers = remote_trailers;
+    dto.cumulative_run_time_ticks = cumulative_run_time_ticks;
     // `BaseItem.IsHD` is derived from the persisted item height. For legacy
     // compatibility the official projector writes the property only when it
     // is requested and true; its wire name retains the uppercase acronym.
