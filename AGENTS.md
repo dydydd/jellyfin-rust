@@ -113,6 +113,12 @@
 - Project `HasSubtitles` only for Video items with at least one persisted Subtitle media stream.
   Omit false and non-Video values, ignore stale item JSON, and use one set-based existence query for
   item and playlist pages instead of maintaining a second scan-time boolean.
+- Return remote subtitle previews as the provider's original bytes with the MIME inferred from the
+  provider format. Remote subtitle downloads must reuse the external-subtitle atomic persistence
+  path and register the resulting Subtitle stream; isolate provider/download failures as the
+  official 204 response does. Keep search, download, and preview routes reachable through fully
+  lowercase static aliases, and populate Episode subtitle searches with the persisted or
+  relational Series name without a per-item query.
 - Project intros, local trailers, special features, and video additional parts with the official
   default all-fields DTO options through one batched projector. Apply the target user's policy to
   both the requested owner and every resolved child before returning the original response shape.
@@ -201,6 +207,10 @@
   treats the SDK's lowercase public-user request as a UUID binding failure.
 - Keep login case-insensitive through both static segments: `/users/authenticatebyname` must retain
   the canonical route's public authorization policy as well as its handler.
+- Keep the mobile authentication helpers fully lowercase too: auth providers, password-reset
+  providers, API-key CRUD, forgot-password/PIN, and user-view grouping options must reuse the
+  canonical Public, Elevated, or default authorization policy rather than falling through to a
+  different middleware default.
 - Treat valid API keys as administrators for user creation, deletion, profile/configuration updates,
   and password changes through modern and legacy routes. An omitted or nil target for an API key's
   profile/configuration/password update remains a 404; ordinary user mutations still require self
@@ -213,6 +223,9 @@
 - Keep lower-case aliases for item details, root/counts, suggestions, themes, collections,
   intros/special features, show pages, InstantMix, search hints, trailers, and video additional
   parts on the same handler and authorization contract as their canonical routes.
+- Keep collection creation and membership mutation reachable as `/collections` and
+  `/collections/{collectionId}/items`; bind compound query names such as `ParentId` and `IsLocked`
+  case-insensitively and retain the canonical collection-management authorization.
 - Keep Android and Swift user-data routes case-insensitive too: `UserItems` user-data and rating,
   resume, `UserFavoriteItems`, `UserPlayedItems`, and legacy user item-data routes need fully
   lowercase aliases with the same authorization and mutation semantics.
@@ -258,6 +271,10 @@
 - Preserve the `/Years` recursive-folder total-count quirk: report the number of policy-visible,
   filtered primary descendants before extracting distinct positive production years. For a
   non-recursive folder or a non-folder parent, report the distinct-year count instead.
+- Project `/Years` and `/Studios` through their persisted item-by-name rows and the shared batched
+  DTO projector. Honor `Fields`, `EnableImages`, `EnableUserData`, `ImageTypeLimit`, and
+  `EnableImageTypes` with case-insensitive query binding while preserving endpoint-specific totals,
+  ordering, and item-count overlays.
 - Keep `/Persons` pagination signed as well, but preserve its different limit rule: a non-positive
   `Limit` is unlimited, while a non-positive `StartIndex` skips nothing and is still echoed.
 - Keep item-by-name pagination such as `/Genres`, `/MusicGenres`, and `/Studios` signed: a negative
@@ -267,6 +284,10 @@
 - Keep `/Artists` and `/Artists/AlbumArtists` on the same signed `Int32` item-by-name pagination
   contract: a negative `StartIndex` skips nothing but is echoed, `Limit=0` is empty, a negative
   `Limit` is unlimited, and out-of-range query values fail binding for every supported casing.
+- Project `/Genres` image options through persisted item-by-name rows while keeping user-data
+  disabled as the official controller does. Project `/Artists` and `/Artists/AlbumArtists` with
+  their image and user-data DTO options, resolving existing backing rows in one batch without
+  creating rows during a filtered read; preserve the minimal fallback for legacy missing rows.
 - Keep the modern and legacy `/Items` and Resume pages on their signed `Int32` pagination contract
   used by Android and Swift: negative `StartIndex` skips nothing but is echoed, `Limit=0` is empty,
   negative `Limit` is unlimited, and out-of-range values fail query binding.
@@ -279,6 +300,10 @@
 - Honor `/Playlists/{playlistId}/Items` DTO options exactly like the official controller: bind
   case-insensitive `EnableImages`, `EnableUserData`, `ImageTypeLimit`, and `EnableImageTypes`, then
   pass them through the shared batched projector instead of silently ignoring SDK query values.
+- Keep every PlaylistApi operation reachable through fully lowercase static aliases, including
+  create, detail/update, users, item membership, move, and InstantMix. Bind compound creation and
+  mutation query names such as `UserId`, `MediaType`, and `EntryIds` case-insensitively while
+  reusing the canonical handlers and authorization checks.
 - Bind `UpdatePlaylistUserDto.CanEdit` case-insensitively, ignore unknown JSON properties, and let
   the last case-insensitive duplicate win. A casing mismatch must not silently turn an editable
   playlist share into a read-only one.
@@ -650,6 +675,11 @@
   comparer. Apply played/rewatch semantics before final count and pagination; keep ordinary season-zero
   ordering by `SortName` on episode-list routes.
 - Metadata providers must have deterministic priority and merge behavior. Network calls need timeouts, bounded concurrency, and useful error context.
+- Do not implement `ReplaceAllMetadata` as a direct switch on the current provider-by-provider
+  writes. Match the official success-dependent replace decision: collect provider patches before
+  persistence, preserve locked fields, replace missing metadata and normalized relations only
+  after at least one remote provider succeeds, retain all existing metadata when every provider
+  fails, and commit the final JSON, provider ids, studios, and people atomically.
 - Lazy `.strm` probing must have a process-level deadline that terminates FFprobe before returning; an async timeout around an uncancelled blocking child is not sufficient because client retries can accumulate processes and memory.
 - Coordinate lazy `.strm` probes by item and resolved target so concurrent playback requests share one bounded flight. Keep failure backoff state short-lived and hard-bounded so retries do not repeatedly pay the probe timeout or grow memory without limit.
 - Recognize failed-probe placeholder streams semantically across nullable boolean persistence shapes, and inspect only embedded streams when deciding whether to retry. An external subtitle must not suppress a later successful media probe.
@@ -668,6 +698,15 @@
   official nullable string and forward it verbatim in `PlaystateRequest`. Keep the authenticated
   controller session id for authorization and command routing; do not synthesize the controlling
   user from the authenticated user's UUID when the query value was omitted.
+- Apply the official session-control boundary before remote commands, viewing reports, additional-
+  user mutations, and targeted capability updates. Allow a public target, its primary or additional
+  users, callers with `EnableRemoteControlOfOtherUsers`, and privileged API-key contexts where that
+  route accepts them; attaching a different user additionally requires an administrator. Never
+  authorize a target merely because its session id exists.
+- Filter `/Sessions?ControllableByUserId=` through actual media-control capability and a connected
+  controller, the caller's remote-control and device-access policy, and the controlled user's shared-
+  device policy. A normal session list includes public and additional-user sessions; an explicit nil
+  target follows `RequestHelpers.GetUserId`, and API keys retain the official privileged context.
 - Persist playback progress against the authorized selected `MediaSourceId`, but when projecting a
   displayed primary item's `UserData`, fall back to the latest visible alternate-version row when
   the primary has no row. This keeps ISO and alternate playback resume positions visible on item
@@ -720,6 +759,11 @@
 Prepare focused regression tests while implementing several related fixes, then run their narrow
 targets together using the remote host's existing builder cache. Avoid local or per-edit rebuilds.
 Broaden validation for that completed batch before committing its independently reviewable fixes:
+
+Treat the union of generated Kotlin and Swift operation method/path templates as a route-coverage
+gate, excluding only explicitly out-of-scope APIs. Keep the Rust OpenAPI inventory aligned with
+the real router, including Swift's explicit image `HEAD` operations and the concrete trickplay
+`{index}.jpg` template rather than exposing only an internal catch-all route.
 
 ```bash
 cargo fmt --all -- --check
