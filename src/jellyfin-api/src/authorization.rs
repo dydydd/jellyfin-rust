@@ -303,7 +303,7 @@ fn route_policy(method: &Method, path: &str) -> RoutePolicy {
         ["Startup" | "startup" | "Environment" | "environment", ..]
         | ["Library", "VirtualFolders", ..]
         | ["Libraries", "AvailableOptions"] => RoutePolicy::FirstTimeSetupOrElevated,
-        ["Localization", ..] => RoutePolicy::FirstTimeSetupOrDefault,
+        ["Localization" | "localization", ..] => RoutePolicy::FirstTimeSetupOrDefault,
         ["System", "Info"] | ["system", "info"] => {
             RoutePolicy::FirstTimeSetupOrIgnoreParentalControl
         }

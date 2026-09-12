@@ -18,13 +18,17 @@ use uuid::Uuid;
 
 const DATABASE_PREFIX: &str = "jellyfin_localization_routes_";
 const MAX_RESPONSE_SIZE: usize = 2 * 1024 * 1024;
-const ROUTES: [&str; 6] = [
+const ROUTES: [&str; 10] = [
     "/Localization/Cultures",
     "/Localization/cultures",
+    "/localization/cultures",
     "/Localization/Countries",
     "/Localization/countries",
+    "/localization/countries",
     "/Localization/ParentalRatings",
+    "/localization/parentalratings",
     "/Localization/Options",
+    "/localization/options",
 ];
 
 #[tokio::test]
@@ -162,6 +166,9 @@ async fn assert_anonymous_de_contract(app: &Router) {
     let lowercase_cultures = get(app, "/Localization/cultures", None).await;
     assert_eq!(lowercase_cultures.status(), StatusCode::OK);
     assert_eq!(body_json(lowercase_cultures).await, cultures);
+    let fully_lowercase_cultures = get(app, "/localization/cultures", None).await;
+    assert_eq!(fully_lowercase_cultures.status(), StatusCode::OK);
+    assert_eq!(body_json(fully_lowercase_cultures).await, cultures);
 
     let countries = get(app, "/Localization/Countries", None).await;
     assert_eq!(countries.status(), StatusCode::OK);
@@ -170,14 +177,25 @@ async fn assert_anonymous_de_contract(app: &Router) {
     let lowercase_countries = get(app, "/Localization/countries", None).await;
     assert_eq!(lowercase_countries.status(), StatusCode::OK);
     assert_eq!(body_json(lowercase_countries).await, countries);
+    let fully_lowercase_countries = get(app, "/localization/countries", None).await;
+    assert_eq!(fully_lowercase_countries.status(), StatusCode::OK);
+    assert_eq!(body_json(fully_lowercase_countries).await, countries);
 
     let ratings = get(app, "/Localization/ParentalRatings", None).await;
     assert_eq!(ratings.status(), StatusCode::OK);
-    assert_de_ratings(&body_json(ratings).await);
+    let ratings = body_json(ratings).await;
+    assert_de_ratings(&ratings);
+    let lowercase_ratings = get(app, "/localization/parentalratings", None).await;
+    assert_eq!(lowercase_ratings.status(), StatusCode::OK);
+    assert_eq!(body_json(lowercase_ratings).await, ratings);
 
     let options = get(app, "/Localization/Options", None).await;
     assert_eq!(options.status(), StatusCode::OK);
-    assert_options(&body_json(options).await);
+    let options = body_json(options).await;
+    assert_options(&options);
+    let lowercase_options = get(app, "/localization/options", None).await;
+    assert_eq!(lowercase_options.status(), StatusCode::OK);
+    assert_eq!(body_json(lowercase_options).await, options);
 }
 
 async fn assert_completed_authorization(
