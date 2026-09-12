@@ -120,6 +120,7 @@ async fn exercise_channels_route(database_name: &str) {
             .all(|item| item["Type"] == "Channel")
     );
 
+    assert_signed_channel_pagination(&fixture).await;
     assert_channel_features(&fixture).await;
     assert_channel_items(&fixture).await;
     assert_latest_channel_items(&fixture).await;
@@ -264,6 +265,108 @@ async fn session(repository: &DeviceRepository, user_id: Uuid, device_id: &str) 
 
 async fn body_json(response: axum::response::Response) -> Value {
     serde_json::from_slice(&body_bytes(response).await).expect("JSON response")
+}
+
+async fn assert_signed_channel_pagination(fixture: &Fixture) {
+    // ChannelManager.GetChannelsInternalAsync uses List.GetRange rather than
+    // InternalItemsQuery. Its non-positive limits are unlimited, while invalid
+    // list offsets retain the official server-error behavior.
+    for (route, start_index_name, limit_name) in [
+        ("/Channels", "StartIndex", "Limit"),
+        ("/channels", "startindex", "limit"),
+    ] {
+        for start_index in [-1_i64, i64::from(i32::MIN), 3, i64::from(i32::MAX)] {
+            let uri = format!("{route}?{start_index_name}={start_index}");
+            assert_eq!(
+                fixture.get(&uri, Some(&fixture.user_token)).await.status(),
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "{uri}"
+            );
+        }
+
+        let end = body_json(
+            fixture
+                .get(
+                    &format!("{route}?{start_index_name}=2"),
+                    Some(&fixture.user_token),
+                )
+                .await,
+        )
+        .await;
+        assert_page(&end, 2, 2, 0);
+
+        for limit in [0, -1, i32::MIN, i32::MAX] {
+            let uri = format!("{route}?{limit_name}={limit}");
+            let page = body_json(fixture.get(&uri, Some(&fixture.user_token)).await).await;
+            assert_page(&page, 0, 2, 2);
+        }
+    }
+
+    let channel_item_routes = [
+        format!("/Channels/{}/Items", fixture.first_channel_id),
+        format!("/channels/{}/items", fixture.first_channel_id),
+    ];
+    assert_internal_channel_pagination(fixture, &channel_item_routes).await;
+    let latest_routes = [
+        "/Channels/Items/Latest".to_owned(),
+        "/channels/items/latest".to_owned(),
+    ];
+    assert_internal_channel_pagination(fixture, &latest_routes).await;
+
+    for route in [
+        "/Channels".to_owned(),
+        "/channels".to_owned(),
+        format!("/Channels/{}/Items", fixture.first_channel_id),
+        format!("/channels/{}/items", fixture.first_channel_id),
+        "/Channels/Items/Latest".to_owned(),
+        "/channels/items/latest".to_owned(),
+    ] {
+        for query in [
+            "startIndex=2147483648",
+            "startindex=-2147483649",
+            "limit=2147483648",
+            "Limit=-2147483649",
+        ] {
+            let uri = format!("{route}?{query}");
+            assert_eq!(
+                fixture.get(&uri, Some(&fixture.user_token)).await.status(),
+                StatusCode::BAD_REQUEST,
+                "{uri}"
+            );
+        }
+    }
+}
+
+async fn assert_internal_channel_pagination(fixture: &Fixture, routes: &[String]) {
+    for (index, route) in routes.iter().enumerate() {
+        let (start_index_name, limit_name) = if index == 0 {
+            ("StartIndex", "Limit")
+        } else {
+            ("startindex", "limit")
+        };
+
+        for start_index in [-1, i32::MIN] {
+            let uri = format!("{route}?{start_index_name}={start_index}&{limit_name}=1");
+            let page = body_json(fixture.get(&uri, Some(&fixture.user_token)).await).await;
+            assert_page(&page, start_index, 3, 1);
+        }
+
+        let maximum_start = format!("{route}?{start_index_name}={}&{limit_name}=1", i32::MAX);
+        let page = body_json(fixture.get(&maximum_start, Some(&fixture.user_token)).await).await;
+        assert_page(&page, i32::MAX, 3, 0);
+
+        for (limit, expected_items) in [(0, 0), (-1, 3), (i32::MIN, 3), (i32::MAX, 3)] {
+            let uri = format!("{route}?{limit_name}={limit}");
+            let page = body_json(fixture.get(&uri, Some(&fixture.user_token)).await).await;
+            assert_page(&page, 0, 3, expected_items);
+        }
+    }
+}
+
+fn assert_page(page: &Value, start_index: i32, total_record_count: u64, item_count: usize) {
+    assert_eq!(page["StartIndex"], start_index);
+    assert_eq!(page["TotalRecordCount"], total_record_count);
+    assert_eq!(page["Items"].as_array().expect("items").len(), item_count);
 }
 
 async fn assert_channel_features(fixture: &Fixture) {

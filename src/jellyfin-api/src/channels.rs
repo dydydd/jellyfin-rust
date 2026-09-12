@@ -22,8 +22,9 @@ pub(crate) struct ChannelsQuery {
         alias = "StartIndex",
         alias = "startindex"
     )]
-    start_index: u64,
-    limit: Option<u64>,
+    start_index: Option<i32>,
+    #[serde(default, rename = "limit", alias = "Limit")]
+    limit: Option<i32>,
     #[serde(
         rename = "supportsLatestItems",
         alias = "SupportsLatestItems",
@@ -52,8 +53,9 @@ pub(crate) struct ChannelItemsQuery {
         alias = "StartIndex",
         alias = "startindex"
     )]
-    start_index: u64,
-    limit: Option<u64>,
+    start_index: Option<i32>,
+    #[serde(default, rename = "limit", alias = "Limit")]
+    limit: Option<i32>,
     #[serde(
         default,
         rename = "sortBy",
@@ -96,8 +98,9 @@ pub(crate) struct LatestChannelItemsQuery {
         alias = "StartIndex",
         alias = "startindex"
     )]
-    start_index: u64,
-    limit: Option<u64>,
+    start_index: Option<i32>,
+    #[serde(default, rename = "limit", alias = "Limit")]
+    limit: Option<i32>,
     #[serde(
         default,
         rename = "filters",
@@ -147,6 +150,7 @@ pub(crate) async fn list(
 ) -> Result<Json<user_library::BaseItemQueryResult>, ApiError> {
     let authenticated = authentication::authenticated_session(&state, &headers).await?;
     let target_user_id = query.user_id.unwrap_or(authenticated.user.id);
+    let requested_start_index = query.start_index.unwrap_or_default();
     let _ = (
         query.supports_latest_items,
         query.supports_media_deletion,
@@ -161,13 +165,26 @@ pub(crate) async fn list(
                 recursive: true,
                 include_item_types: vec!["Channel".to_owned()],
                 order: BaseItemOrder::SortName,
-                start_index: query.start_index,
-                limit: query.limit,
+                start_index: u64::try_from(requested_start_index).unwrap_or_default(),
+                // ChannelManager's in-memory GetRange path treats every non-positive
+                // limit as the unbounded remainder, unlike InternalItemsQuery paging.
+                limit: query
+                    .limit
+                    .filter(|limit| *limit > 0)
+                    .map(|limit| u64::try_from(limit).unwrap_or_default()),
                 enable_total_record_count: Some(true),
                 ..BaseItemQuery::default()
             },
         )
         .await?;
+    if requested_start_index < 0
+        || u64::try_from(requested_start_index).unwrap_or_default() > page.total_record_count
+    {
+        // The official ChannelManager pages its in-memory list with List.GetRange,
+        // which rejects negative and past-end indexes. Surface that server-error
+        // behavior explicitly after the policy-aware query rather than panicking.
+        return Err(ApiError::Internal);
+    }
     let items = page
         .items
         .into_iter()
@@ -175,7 +192,7 @@ pub(crate) async fn list(
         .collect::<Vec<_>>();
     Ok(Json(user_library::BaseItemQueryResult {
         total_record_count: usize::try_from(page.total_record_count).unwrap_or(usize::MAX),
-        start_index: i32::try_from(page.start_index).unwrap_or(i32::MAX),
+        start_index: requested_start_index,
         items,
     }))
 }
@@ -222,6 +239,7 @@ pub(crate) async fn channel_items(
 ) -> Result<Json<user_library::BaseItemQueryResult>, ApiError> {
     let authenticated = authentication::authenticated_session(&state, &headers).await?;
     let target_user_id = query.user_id.unwrap_or(authenticated.user.id);
+    let requested_start_index = query.start_index.unwrap_or_default();
     let repository = &state.base_items;
     repository
         .get(channel_id)
@@ -248,16 +266,21 @@ pub(crate) async fn channel_items(
                 parent_id: Some(parent_id),
                 recursive: false,
                 order: items::item_order(&query.sort_by, &query.sort_order),
-                start_index: query.start_index,
-                limit: query.limit,
+                // InternalItemsQuery skips only positive offsets and SQLite treats
+                // a negative LIMIT as unlimited. Keep PostgreSQL inputs nonnegative.
+                start_index: u64::try_from(requested_start_index).unwrap_or_default(),
+                limit: query
+                    .limit
+                    .filter(|limit| *limit >= 0)
+                    .map(|limit| u64::try_from(limit).unwrap_or_default()),
                 enable_total_record_count: Some(true),
                 ..BaseItemQuery::default()
             },
         )
         .await?;
-    Ok(Json(
-        items::page_to_dto(state.as_ref(), page, query.fields, target_user_id).await?,
-    ))
+    let mut result = items::page_to_dto(state.as_ref(), page, query.fields, target_user_id).await?;
+    result.start_index = requested_start_index;
+    Ok(Json(result))
 }
 
 pub(crate) async fn latest_channel_items(
@@ -267,6 +290,7 @@ pub(crate) async fn latest_channel_items(
 ) -> Result<Json<user_library::BaseItemQueryResult>, ApiError> {
     let authenticated = authentication::authenticated_session(&state, &headers).await?;
     let target_user_id = query.user_id.unwrap_or(authenticated.user.id);
+    let requested_start_index = query.start_index.unwrap_or_default();
     let repository = &state.base_items;
     let item_ids = channel_descendant_item_ids(repository, &query.channel_ids).await?;
     let ids = if item_ids.is_empty() {
@@ -286,16 +310,19 @@ pub(crate) async fn latest_channel_items(
                 exclude_item_types: vec!["Folder".to_owned()],
                 is_virtual_item: Some(false),
                 order: BaseItemOrder::DateCreatedDescending,
-                start_index: query.start_index,
-                limit: query.limit,
+                start_index: u64::try_from(requested_start_index).unwrap_or_default(),
+                limit: query
+                    .limit
+                    .filter(|limit| *limit >= 0)
+                    .map(|limit| u64::try_from(limit).unwrap_or_default()),
                 enable_total_record_count: Some(true),
                 ..BaseItemQuery::default()
             },
         )
         .await?;
-    Ok(Json(
-        items::page_to_dto(state.as_ref(), page, query.fields, target_user_id).await?,
-    ))
+    let mut result = items::page_to_dto(state.as_ref(), page, query.fields, target_user_id).await?;
+    result.start_index = requested_start_index;
+    Ok(Json(result))
 }
 
 fn channel_features_dto(channel: base_item::Model) -> ChannelFeaturesDto {
