@@ -959,6 +959,11 @@ async fn report_playback_progress_for_current_session(
 ) -> Result<StatusCode, ApiError> {
     let identity = authorization::require_default(&state, &headers, uri).await?;
     if let AuthenticatedIdentity::Device(session) = identity {
+        ping_transcode_for_playback(
+            &state.transcode_jobs,
+            info.play_session_id.as_deref(),
+            info.is_paused,
+        );
         info.play_method = Some(normalize_play_method(
             &state.transcode_jobs,
             info.play_method,
@@ -986,6 +991,11 @@ async fn report_playback_start_for_current_session(
 ) -> Result<StatusCode, ApiError> {
     let identity = authorization::require_default(&state, &headers, uri).await?;
     if let AuthenticatedIdentity::Device(session) = identity {
+        ping_transcode_for_playback(
+            &state.transcode_jobs,
+            info.play_session_id.as_deref(),
+            info.is_paused,
+        );
         info.play_method = Some(normalize_play_method(
             &state.transcode_jobs,
             info.play_method,
@@ -1002,6 +1012,16 @@ async fn report_playback_start_for_current_session(
         crate::websocket::broadcast_sessions(&state).await;
     }
     Ok(StatusCode::NO_CONTENT)
+}
+
+fn ping_transcode_for_playback(
+    transcode_jobs: &jellyfin_controller::TranscodeJobRegistry,
+    play_session_id: Option<&str>,
+    is_paused: bool,
+) {
+    if let Some(play_session_id) = play_session_id.filter(|value| !value.trim().is_empty()) {
+        transcode_jobs.ping(play_session_id, Some(is_paused));
+    }
 }
 
 fn normalize_play_method(
@@ -1489,7 +1509,7 @@ mod tests {
     use jellyfin_controller::TranscodeJobRegistry;
     use jellyfin_model::PlayMethod;
 
-    use super::normalize_play_method;
+    use super::{normalize_play_method, ping_transcode_for_playback};
 
     #[test]
     fn play_method_requires_a_registered_transcoding_session() {
@@ -1523,5 +1543,19 @@ mod tests {
             normalize_play_method(&jobs, Some(PlayMethod::DirectPlay), None),
             PlayMethod::DirectPlay
         );
+    }
+
+    #[test]
+    fn playback_events_ping_transcode_and_update_pause_state() {
+        let jobs = TranscodeJobRegistry::new();
+        jobs.register_for_session("job-1", "device-1", "play-session-1");
+
+        ping_transcode_for_playback(&jobs, Some("PLAY-SESSION-1"), true);
+
+        assert!(jobs.get("play-session-1").unwrap().is_user_paused);
+
+        ping_transcode_for_playback(&jobs, Some("play-session-1"), false);
+
+        assert!(!jobs.get("play-session-1").unwrap().is_user_paused);
     }
 }

@@ -158,6 +158,7 @@ impl TranscodeQuery {
     pub(crate) fn universal_audio(
         media_source_id: Option<String>,
         device_id: Option<String>,
+        play_session_id: Option<String>,
         user_id: Option<Uuid>,
         audio_codec: Option<String>,
         audio_bitrate: Option<i64>,
@@ -169,6 +170,7 @@ impl TranscodeQuery {
         Self {
             media_source_id,
             device_id,
+            play_session_id,
             user_id,
             audio_codec,
             audio_bitrate,
@@ -194,6 +196,9 @@ impl TranscodeQuery {
         }
         if let Some(value) = self.device_id.as_deref() {
             serializer.append_pair("deviceId", value);
+        }
+        if let Some(value) = self.play_session_id.as_deref() {
+            serializer.append_pair("playSessionId", value);
         }
         if let Some(value) = self.user_id {
             serializer.append_pair("userId", &value.to_string());
@@ -1226,6 +1231,7 @@ mod tests {
         let query = TranscodeQuery::universal_audio(
             Some(source_id_string.clone()),
             Some("android-device".to_owned()),
+            Some("internal-session".to_owned()),
             Some(user_id),
             Some("aac".to_owned()),
             Some(128_000),
@@ -1243,6 +1249,7 @@ mod tests {
             Some(source_id_string.as_str())
         );
         assert_eq!(parsed.device_id.as_deref(), Some("android-device"));
+        assert_eq!(parsed.play_session_id.as_deref(), Some("internal-session"));
         assert_eq!(parsed.user_id, Some(user_id));
         assert_eq!(parsed.audio_codec.as_deref(), Some("aac"));
         assert_eq!(parsed.audio_bitrate, Some(128_000));

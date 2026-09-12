@@ -442,6 +442,11 @@
   audio and video progressive transcodes in the shared job registry with cancellation-safe process
   cleanup so playstate ping/stop and play-method normalization can identify them; remove the job on
   every completion, failure, and client-disconnect path.
+- Keep progressive and HLS stop matching aligned with the official manager: a nonblank
+  `PlaySessionId` matches jobs case-insensitively without requiring the submitted `DeviceId`; only
+  a missing session id falls back to case-insensitive device matching. Removing a job must also
+  prune every empty playback-session reverse-index entry, and progressive `HEAD` must neither
+  spawn `FFmpeg` nor register a job.
 - Keep Video stream authorization aligned with the official default policy: device sessions resolve
   media through their user's library policy, while a valid API key is unrestricted but still must
   resolve an existing supported video item before either static local serving or remote proxying.

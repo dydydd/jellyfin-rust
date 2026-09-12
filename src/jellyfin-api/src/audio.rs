@@ -14,7 +14,8 @@ use tower::ServiceExt;
 use tower_http::services::ServeFile;
 use uuid::Uuid;
 
-use jellyfin_controller::{FfmpegCommand, audio_command};
+use jellyfin_controller::transcode::TranscodeJobHandle;
+use jellyfin_controller::{FfmpegCommand, TranscodeJobRegistry, audio_command};
 use jellyfin_model::{MediaStream, MediaStreamType};
 
 use crate::{ApiError, AppState, authentication};
@@ -29,6 +30,14 @@ pub(crate) struct StreamQuery {
         alias = "mediasourceid"
     )]
     media_source_id: Option<String>,
+    #[serde(
+        rename = "playSessionId",
+        alias = "PlaySessionId",
+        alias = "playsessionid"
+    )]
+    play_session_id: Option<String>,
+    #[serde(rename = "deviceId", alias = "DeviceId", alias = "deviceid")]
+    device_id: Option<String>,
     #[serde(rename = "audioCodec", alias = "AudioCodec", alias = "audiocodec")]
     audio_codec: Option<String>,
     #[serde(
@@ -320,10 +329,12 @@ pub(crate) async fn universal(
         return Err(ApiError::Forbidden);
     }
 
+    let play_session_id = Uuid::new_v4().simple().to_string();
     if universal_uses_hls(&query) {
         let hls_query = crate::hls_segment::TranscodeQuery::universal_audio(
             query.media_source_id.clone(),
             query.device_id.clone(),
+            Some(play_session_id.clone()),
             target_user_id,
             query.audio_codec.clone(),
             query.audio_bitrate.or(query.max_streaming_bitrate),
@@ -370,8 +381,10 @@ pub(crate) async fn universal(
         command,
         &output.to_string_lossy(),
         request.method() == axum::http::Method::HEAD,
+        Arc::clone(&state.transcode_jobs),
+        query.device_id,
+        Some(play_session_id),
     )
-    .await
 }
 
 fn universal_requires_transcode(query: &UniversalQuery) -> bool {
@@ -574,18 +587,23 @@ async fn stream_file(
         command,
         &output.to_string_lossy(),
         request.method() == axum::http::Method::HEAD,
+        Arc::clone(&state.transcode_jobs),
+        query.device_id,
+        query.play_session_id,
     )
-    .await
 }
 
 #[cfg(test)]
 mod tests {
-    use axum::http::Uri;
+    use std::path::PathBuf;
+
+    use axum::{body::to_bytes, http::Uri};
     use axum_extra::extract::Query;
+    use jellyfin_controller::{FfmpegCommand, TranscodeJobRegistry};
 
     use super::{
-        StreamQuery, UniversalQuery, should_redirect_remote_media, supports_direct_play,
-        universal_requires_transcode, universal_uses_hls,
+        StreamQuery, UniversalQuery, serve_transcoded_path, should_redirect_remote_media,
+        supports_direct_play, universal_requires_transcode, universal_uses_hls,
     };
 
     #[test]
@@ -601,7 +619,7 @@ mod tests {
 
     #[test]
     fn audio_stream_binds_android_transcoding_parameters() {
-        let uri: Uri = "/audio/item/stream?static=false&audioCodec=mp3&AudioBitrate=192000&audioSampleRate=44100&maxAudioChannels=2&audioStreamIndex=1&startTimeTicks=10000&CopyTimestamps=true"
+        let uri: Uri = "/audio/item/stream?static=false&audioCodec=mp3&AudioBitrate=192000&audioSampleRate=44100&maxAudioChannels=2&audioStreamIndex=1&startTimeTicks=10000&CopyTimestamps=true&PlaySessionId=play-session&deviceid=device-1"
             .parse()
             .unwrap();
         let query = Query::<StreamQuery>::try_from_uri(&uri).unwrap().0;
@@ -613,6 +631,8 @@ mod tests {
         assert_eq!(query.audio_stream_index, Some(1));
         assert_eq!(query.start_time_ticks, Some(10000));
         assert_eq!(query.copy_timestamps, Some(true));
+        assert_eq!(query.play_session_id.as_deref(), Some("play-session"));
+        assert_eq!(query.device_id.as_deref(), Some("device-1"));
     }
 
     #[test]
@@ -713,6 +733,137 @@ mod tests {
         let query = Query::<StreamQuery>::try_from_uri(&uri).unwrap().0;
         assert_eq!(query.audio_bitrate, Some(192_000));
     }
+
+    #[tokio::test]
+    async fn progressive_transcode_registers_streams_and_cleans_up() {
+        let output = std::env::temp_dir().join(format!(
+            "jellyfin-progressive-{}.mp3",
+            uuid::Uuid::new_v4().simple()
+        ));
+        let command = FfmpegCommand {
+            program: PathBuf::from("sh"),
+            arguments: vec![
+                "-c".to_owned(),
+                "printf progressive > \"$1\"; sleep 0.1".to_owned(),
+                "jellyfin-progressive-test".to_owned(),
+                output.to_string_lossy().into_owned(),
+            ],
+        };
+        let registry = std::sync::Arc::new(TranscodeJobRegistry::new());
+
+        let response = serve_transcoded_path(
+            command,
+            &output.to_string_lossy(),
+            false,
+            std::sync::Arc::clone(&registry),
+            Some("device-1".to_owned()),
+            Some("play-session-1".to_owned()),
+        )
+        .unwrap();
+        let info = registry.get("PLAY-SESSION-1").expect("registered job");
+        assert_eq!(info.device_id.as_deref(), Some("device-1"));
+        assert_eq!(
+            info.path.as_deref(),
+            Some(output.to_string_lossy().as_ref())
+        );
+        assert!(!info.is_hls);
+
+        let body = to_bytes(response.into_body(), 1024).await.unwrap();
+
+        assert_eq!(&body[..], b"progressive");
+        assert!(registry.list().is_empty());
+        assert!(!output.exists());
+    }
+
+    #[tokio::test]
+    async fn dropping_progressive_response_cancels_and_cleans_up() {
+        let output = std::env::temp_dir().join(format!(
+            "jellyfin-progressive-drop-{}.mp3",
+            uuid::Uuid::new_v4().simple()
+        ));
+        tokio::fs::write(&output, b"partial").await.unwrap();
+        let command = FfmpegCommand {
+            program: PathBuf::from("sleep"),
+            arguments: vec!["30".to_owned()],
+        };
+        let registry = std::sync::Arc::new(TranscodeJobRegistry::new());
+        let response = serve_transcoded_path(
+            command,
+            &output.to_string_lossy(),
+            false,
+            std::sync::Arc::clone(&registry),
+            Some("device-1".to_owned()),
+            Some("drop-session".to_owned()),
+        )
+        .unwrap();
+        assert!(registry.get("drop-session").is_some());
+
+        drop(response);
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        assert!(registry.get("drop-session").is_none());
+        assert!(!output.exists());
+    }
+
+    #[tokio::test]
+    async fn stopping_progressive_session_cancels_its_process() {
+        let output = std::env::temp_dir().join(format!(
+            "jellyfin-progressive-stop-{}.mp3",
+            uuid::Uuid::new_v4().simple()
+        ));
+        tokio::fs::write(&output, b"partial").await.unwrap();
+        let command = FfmpegCommand {
+            program: PathBuf::from("sleep"),
+            arguments: vec!["30".to_owned()],
+        };
+        let registry = std::sync::Arc::new(TranscodeJobRegistry::new());
+        let response = serve_transcoded_path(
+            command,
+            &output.to_string_lossy(),
+            false,
+            std::sync::Arc::clone(&registry),
+            Some("device-1".to_owned()),
+            Some("stop-session".to_owned()),
+        )
+        .unwrap();
+
+        let stopped = registry
+            .stop_for_session("unrelated-device", "STOP-SESSION")
+            .await;
+
+        assert_eq!(stopped.len(), 1);
+        assert!(registry.get("stop-session").is_none());
+        drop(response);
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert!(!output.exists());
+    }
+
+    #[tokio::test]
+    async fn progressive_head_does_not_start_or_register_ffmpeg() {
+        let output = std::env::temp_dir().join(format!(
+            "jellyfin-progressive-head-{}.mp3",
+            uuid::Uuid::new_v4().simple()
+        ));
+        let command = FfmpegCommand {
+            program: PathBuf::from("definitely-not-an-ffmpeg-binary"),
+            arguments: Vec::new(),
+        };
+        let registry = std::sync::Arc::new(TranscodeJobRegistry::new());
+
+        let response = serve_transcoded_path(
+            command,
+            &output.to_string_lossy(),
+            true,
+            std::sync::Arc::clone(&registry),
+            Some("device-1".to_owned()),
+            Some("head-session".to_owned()),
+        )
+        .unwrap();
+
+        assert_eq!(to_bytes(response.into_body(), 1).await.unwrap().len(), 0);
+        assert!(registry.list().is_empty());
+        assert!(!output.exists());
+    }
 }
 
 pub(crate) async fn serve_path(
@@ -742,14 +893,17 @@ pub(crate) async fn serve_path(
     Ok(response.map(Body::new))
 }
 
-/// Starts a progressive FFmpeg job and streams the output as it grows.
+/// Starts a progressive `FFmpeg` job and streams the output as it grows.
 ///
-/// Jellyfin's progressive endpoints return the response before FFmpeg has
-/// completed. Android's ExoPlayer relies on that behavior for long files.
-pub(crate) async fn serve_transcoded_path(
+/// Jellyfin's progressive endpoints return the response before `FFmpeg` has
+/// completed. Android's `ExoPlayer` relies on that behavior for long files.
+pub(crate) fn serve_transcoded_path(
     command: FfmpegCommand,
     output_path: &str,
     is_head: bool,
+    transcode_jobs: Arc<TranscodeJobRegistry>,
+    device_id: Option<String>,
+    play_session_id: Option<String>,
 ) -> Result<Response, ApiError> {
     let content_type = jellyfin_model::MimeTypes::get_mime_type(output_path)
         .unwrap_or_else(|_| "application/octet-stream".to_owned());
@@ -765,19 +919,94 @@ pub(crate) async fn serve_transcoded_path(
         .kill_on_drop(true)
         .spawn()
         .map_err(|_| ApiError::Internal)?;
+    let job_id = Uuid::new_v4().simple().to_string();
+    let job = transcode_jobs.register_progressive_with_path(
+        &job_id,
+        device_id.as_deref(),
+        play_session_id.as_deref(),
+        output_path,
+    );
+    job.mark_running();
+    let process_jobs = Arc::clone(&transcode_jobs);
+    let process_job_id = job_id.clone();
+    let program = command.program.display().to_string();
+    let process = tokio::spawn(async move {
+        let result = drive_progressive_ffmpeg(child, &program, &job).await;
+        process_jobs.remove(&process_job_id);
+        result
+    });
     let state = ProgressiveTranscodeState {
-        child,
+        process: Some(process),
         output_path: PathBuf::from(output_path),
         file: None,
+        transcode_jobs,
+        job_id,
     };
     let body = Body::from_stream(stream::unfold(state, next_transcode_chunk));
     response.body(body).map_err(|_| ApiError::Internal)
 }
 
 struct ProgressiveTranscodeState {
-    child: tokio::process::Child,
+    process: Option<tokio::task::JoinHandle<Result<(), String>>>,
     output_path: PathBuf,
     file: Option<tokio::fs::File>,
+    transcode_jobs: Arc<TranscodeJobRegistry>,
+    job_id: String,
+}
+
+impl ProgressiveTranscodeState {
+    async fn remove_output(&mut self) {
+        self.file = None;
+        let _ = tokio::fs::remove_file(&self.output_path).await;
+    }
+}
+
+impl Drop for ProgressiveTranscodeState {
+    fn drop(&mut self) {
+        self.transcode_jobs.remove(&self.job_id);
+        if let Some(process) = self.process.take() {
+            process.abort();
+            let output_path = self.output_path.clone();
+            if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+                runtime.spawn(async move {
+                    let _ = process.await;
+                    if !output_path.as_os_str().is_empty() {
+                        let _ = tokio::fs::remove_file(output_path).await;
+                    }
+                });
+            }
+        }
+    }
+}
+
+struct ProgressiveRunningGuard(TranscodeJobHandle);
+
+impl Drop for ProgressiveRunningGuard {
+    fn drop(&mut self) {
+        self.0.mark_finished();
+    }
+}
+
+async fn drive_progressive_ffmpeg(
+    mut child: tokio::process::Child,
+    program: &str,
+    job: &TranscodeJobHandle,
+) -> Result<(), String> {
+    let _running = ProgressiveRunningGuard(job.clone());
+    let status = loop {
+        if let Some(status) = child.try_wait().map_err(|error| error.to_string())? {
+            break status;
+        }
+        if job.cancellation_requested() {
+            let _ = child.start_kill();
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    };
+    if status.success() || job.cancellation_requested() {
+        Ok(())
+    } else {
+        Err(format!("{program} exited with {status}"))
+    }
 }
 
 async fn next_transcode_chunk(
@@ -788,18 +1017,28 @@ async fn next_transcode_chunk(
             match tokio::fs::File::open(&state.output_path).await {
                 Ok(file) => state.file = Some(file),
                 Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                    if let Some(status) = state.child.try_wait().ok().flatten() {
-                        return Some((
-                            Err(if status.success() {
-                                io::Error::new(
-                                    io::ErrorKind::UnexpectedEof,
-                                    "FFmpeg exited without producing output",
-                                )
-                            } else {
-                                io::Error::other(format!("FFmpeg exited with {status}"))
-                            }),
-                            state,
-                        ));
+                    if state
+                        .process
+                        .as_ref()
+                        .is_some_and(tokio::task::JoinHandle::is_finished)
+                    {
+                        let result = state
+                            .process
+                            .as_mut()
+                            .expect("progressive process task exists")
+                            .await;
+                        state.remove_output().await;
+                        let error = match result {
+                            Ok(Ok(())) => io::Error::new(
+                                io::ErrorKind::UnexpectedEof,
+                                "FFmpeg exited without producing output",
+                            ),
+                            Ok(Err(error)) => io::Error::other(error),
+                            Err(error) => {
+                                io::Error::other(format!("FFmpeg process task failed: {error}"))
+                            }
+                        };
+                        return Some((Err(error), state));
                     }
                     tokio::time::sleep(std::time::Duration::from_millis(25)).await;
                     continue;
@@ -820,23 +1059,35 @@ async fn next_transcode_chunk(
                 buffer.truncate(length);
                 return Some((Ok(Bytes::from(buffer)), state));
             }
-            Ok(_) => match state.child.try_wait() {
-                Ok(Some(status)) if status.success() => {
-                    let _ = tokio::fs::remove_file(&state.output_path).await;
-                    return None;
+            Ok(_) => {
+                if state
+                    .process
+                    .as_ref()
+                    .is_some_and(tokio::task::JoinHandle::is_finished)
+                {
+                    let result = state
+                        .process
+                        .as_mut()
+                        .expect("progressive process task exists")
+                        .await;
+                    state.remove_output().await;
+                    match result {
+                        Ok(Ok(())) => return None,
+                        Ok(Err(error)) => {
+                            return Some((Err(io::Error::other(error)), state));
+                        }
+                        Err(error) => {
+                            return Some((
+                                Err(io::Error::other(format!(
+                                    "FFmpeg process task failed: {error}"
+                                ))),
+                                state,
+                            ));
+                        }
+                    }
                 }
-                Ok(Some(status)) => {
-                    let _ = tokio::fs::remove_file(&state.output_path).await;
-                    return Some((
-                        Err(io::Error::other(format!("FFmpeg exited with {status}"))),
-                        state,
-                    ));
-                }
-                Ok(None) => {
-                    tokio::time::sleep(std::time::Duration::from_millis(25)).await;
-                }
-                Err(error) => return Some((Err(error), state)),
-            },
+                tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+            }
             Err(error) => return Some((Err(error), state)),
         }
     }

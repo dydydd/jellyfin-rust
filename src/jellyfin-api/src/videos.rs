@@ -52,7 +52,7 @@ pub(crate) struct StreamQuery {
         alias = "PlaySessionId",
         alias = "playsessionid"
     )]
-    _play_session_id: Option<String>,
+    play_session_id: Option<String>,
     #[serde(
         rename = "segmentContainer",
         alias = "SegmentContainer",
@@ -74,7 +74,7 @@ pub(crate) struct StreamQuery {
     )]
     media_source_id: Option<String>,
     #[serde(rename = "deviceId", alias = "DeviceId", alias = "deviceid")]
-    _device_id: Option<String>,
+    device_id: Option<String>,
     #[serde(
         rename = "enableAutoStreamCopy",
         alias = "EnableAutoStreamCopy",
@@ -494,8 +494,10 @@ async fn stream_file(
         command,
         &output.to_string_lossy(),
         request.method() == axum::http::Method::HEAD,
+        Arc::clone(&state.transcode_jobs),
+        query.device_id,
+        query.play_session_id,
     )
-    .await
 }
 
 fn apply_cpu_core_limit(command: &mut FfmpegCommand, requested: Option<i32>) {
@@ -1026,12 +1028,12 @@ mod tests {
         assert_eq!(query._params.as_deref(), Some("client=android"));
         assert_eq!(query._tag.as_deref(), Some("etag"));
         assert_eq!(query._device_profile_id.as_deref(), Some("profile"));
-        assert_eq!(query._play_session_id.as_deref(), Some("play-session"));
+        assert_eq!(query.play_session_id.as_deref(), Some("play-session"));
         assert_eq!(query._segment_container.as_deref(), Some("ts"));
         assert_eq!(query._segment_length, Some(6));
         assert_eq!(query._min_segments, Some(2));
         assert_eq!(query.media_source_id.as_deref(), Some("alternate"));
-        assert_eq!(query._device_id.as_deref(), Some("device"));
+        assert_eq!(query.device_id.as_deref(), Some("device"));
         assert_eq!(query.enable_auto_stream_copy, Some(true));
         assert_eq!(query.allow_video_stream_copy, Some(false));
         assert_eq!(query.allow_audio_stream_copy, Some(true));

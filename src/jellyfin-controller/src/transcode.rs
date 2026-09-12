@@ -655,6 +655,22 @@ impl TranscodeJobHandle {
         self.running.load(Ordering::Acquire)
     }
 
+    /// Returns whether the owner of this job has requested cancellation.
+    #[must_use]
+    pub fn cancellation_requested(&self) -> bool {
+        self.cancel.load(Ordering::Acquire)
+    }
+
+    /// Marks the associated process as running.
+    pub fn mark_running(&self) {
+        self.running.store(true, Ordering::Release);
+    }
+
+    /// Marks the associated process as no longer running.
+    pub fn mark_finished(&self) {
+        self.running.store(false, Ordering::Release);
+    }
+
     async fn cancel_and_wait(&self) {
         self.cancel.store(true, Ordering::Release);
         for _ in 0..100 {
@@ -677,24 +693,33 @@ pub async fn run_ffmpeg(command: &FfmpegCommand, job: &TranscodeJobHandle) -> Re
         .kill_on_drop(true)
         .spawn()
         .map_err(|error| format!("failed to start {}: {error}", command.program.display()))?;
-    job.running.store(true, Ordering::Release);
+    job.mark_running();
+    let _running = RunningJobGuard(Arc::clone(&job.running));
     let status = loop {
         if let Some(status) = child.try_wait().map_err(|error| error.to_string())? {
             break status;
         }
-        if job.cancel.load(Ordering::Acquire) {
+        if job.cancellation_requested() {
             let _ = child.start_kill();
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
     };
-    job.running.store(false, Ordering::Release);
-    if status.success() || job.cancel.load(Ordering::Acquire) {
+    if status.success() || job.cancellation_requested() {
         Ok(())
     } else {
         Err(format!(
             "{} exited with {status}",
             command.program.display()
         ))
+    }
+}
+
+/// Clears the running flag even when the task driving FFmpeg is aborted.
+struct RunningJobGuard(Arc<AtomicBool>);
+
+impl Drop for RunningJobGuard {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
     }
 }
 
@@ -806,6 +831,41 @@ impl TranscodeJobRegistry {
             .entry(session_key(device_id, play_session_id))
             .or_default()
             .insert(job_id);
+        handle
+    }
+
+    /// Registers a progressive job with its output path and optional playback metadata.
+    pub fn register_progressive_with_path(
+        &self,
+        job_id: impl Into<String>,
+        device_id: Option<&str>,
+        play_session_id: Option<&str>,
+        path: &str,
+    ) -> TranscodeJobHandle {
+        let job_id = job_id.into();
+        let handle = self.register(&job_id);
+        if let Some(entry) = self
+            .jobs
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get_mut(&job_id)
+        {
+            entry.info.device_id = device_id.and_then(non_empty);
+            entry.info.play_session_id = play_session_id.and_then(non_empty);
+            entry.info.path = non_empty(path);
+            entry.info.is_hls = false;
+        }
+        if let (Some(device_id), Some(play_session_id)) = (device_id, play_session_id)
+            && !device_id.trim().is_empty()
+            && !play_session_id.trim().is_empty()
+        {
+            self.sessions
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .entry(session_key(device_id, play_session_id))
+                .or_default()
+                .insert(job_id);
+        }
         handle
     }
 
@@ -963,14 +1023,27 @@ impl TranscodeJobRegistry {
 
     /// Cancels all jobs belonging to a playback session and returns their ids.
     pub async fn stop_for_session(&self, device_id: &str, play_session_id: &str) -> Vec<String> {
-        let key = session_key(device_id, play_session_id);
         let job_ids = self
-            .sessions
+            .jobs
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .remove(&key)
-            .unwrap_or_default()
-            .into_iter()
+            .values()
+            .filter(|entry| {
+                if play_session_id.trim().is_empty() {
+                    entry
+                        .info
+                        .device_id
+                        .as_deref()
+                        .is_some_and(|candidate| candidate.eq_ignore_ascii_case(device_id))
+                } else {
+                    entry
+                        .info
+                        .play_session_id
+                        .as_deref()
+                        .is_some_and(|candidate| candidate.eq_ignore_ascii_case(play_session_id))
+                }
+            })
+            .map(|entry| entry.info.id.clone())
             .collect::<Vec<_>>();
         for job_id in &job_ids {
             self.stop(job_id).await;
@@ -998,6 +1071,14 @@ impl TranscodeJobRegistry {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .remove(job_id);
+        let mut sessions = self
+            .sessions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        sessions.retain(|_, job_ids| {
+            job_ids.remove(job_id);
+            !job_ids.is_empty()
+        });
     }
 }
 
@@ -2101,6 +2182,60 @@ mod tests {
     }
 
     #[test]
+    fn registry_tracks_progressive_output_and_removes_session_index() {
+        let registry = TranscodeJobRegistry::new();
+        registry.register_progressive_with_path(
+            "progressive-1",
+            Some("device-1"),
+            Some("play-session-1"),
+            "/transcodes/output.mp4",
+        );
+
+        let info = registry.get("PLAY-SESSION-1").expect("job metadata");
+        assert_eq!(info.path.as_deref(), Some("/transcodes/output.mp4"));
+        assert!(!info.is_hls);
+        assert_eq!(registry.sessions.lock().unwrap().len(), 1);
+
+        registry.remove("progressive-1");
+
+        assert!(registry.get("play-session-1").is_none());
+        assert!(registry.sessions.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn stop_for_session_prefers_case_insensitive_play_session_id() {
+        let registry = TranscodeJobRegistry::new();
+        registry.register_for_session_with_path(
+            "job-1",
+            "device-1",
+            "play-session-1",
+            "/media/video.mkv",
+        );
+        registry.register_for_session("job-2", "device-2", "play-session-2");
+
+        let stopped = registry
+            .stop_for_session("unrelated-device", "PLAY-SESSION-1")
+            .await;
+
+        assert_eq!(stopped, vec!["job-1".to_owned()]);
+        assert!(registry.get("play-session-1").is_none());
+        assert!(registry.get("play-session-2").is_some());
+    }
+
+    #[tokio::test]
+    async fn stop_for_session_falls_back_to_case_insensitive_device_id() {
+        let registry = TranscodeJobRegistry::new();
+        registry.register_for_session("job-1", "device-1", "play-session-1");
+        registry.register_for_session("job-2", "device-2", "play-session-2");
+
+        let stopped = registry.stop_for_session("DEVICE-1", "").await;
+
+        assert_eq!(stopped, vec!["job-1".to_owned()]);
+        assert!(registry.get("play-session-1").is_none());
+        assert!(registry.get("play-session-2").is_some());
+    }
+
+    #[test]
     fn registry_reuses_existing_job_handle_and_updates_session() {
         let registry = TranscodeJobRegistry::new();
         let first = registry.register_for_session_with_path(
@@ -2128,6 +2263,14 @@ mod tests {
         assert!(
             registry
                 .reuse("missing-job", "device", "session", "/media/video.mkv")
+                .is_none()
+        );
+
+        registry.remove("job-reuse");
+        assert!(registry.sessions.lock().unwrap().is_empty());
+        assert!(
+            registry
+                .reuse("job-reuse", "device", "session", "/media/video.mkv")
                 .is_none()
         );
     }
