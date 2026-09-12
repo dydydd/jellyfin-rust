@@ -659,7 +659,7 @@ pub(crate) struct LatestItemsQuery {
     )]
     enable_user_data: Option<bool>,
     #[serde(default = "default_latest_limit", alias = "Limit")]
-    limit: u64,
+    limit: i32,
     #[serde(
         default = "default_true",
         rename = "groupItems",
@@ -1373,11 +1373,21 @@ async fn latest_for(
             .map(str::to_owned)
             .collect()
     });
-    let candidate_limit = if query.group_items {
-        query.limit.saturating_mul(2)
-    } else {
-        query.limit
+    // ASP.NET binds this endpoint's limit as a signed Int32. The official
+    // repository leaves a negative SQLite LIMIT unbounded, after which
+    // UserViewManager stops once the first result has been appended.
+    let result_limit = match query.limit {
+        ..=-1 => 1_u64,
+        0 => 0,
+        limit => u64::try_from(limit).unwrap_or_default(),
     };
+    let candidate_limit = (query.limit >= 0).then(|| {
+        if query.group_items {
+            result_limit.saturating_mul(2)
+        } else {
+            result_limit
+        }
+    });
     let database_query = BaseItemQuery {
         parent_id: parent_scope.parent_id,
         parent_ids: parent_scope.parent_ids,
@@ -1391,7 +1401,7 @@ async fn latest_for(
         is_played,
         order: BaseItemOrder::DateCreatedDescending,
         start_index: 0,
-        limit: Some(candidate_limit),
+        limit: candidate_limit,
         enable_total_record_count: Some(false),
         ..BaseItemQuery::default()
     };
@@ -1415,14 +1425,14 @@ async fn latest_for(
             &authenticated.user,
             target_user_id,
             page.items,
-            query.limit,
+            result_limit,
             grouping_query,
         )
         .await?
     } else {
         page.items
             .into_iter()
-            .take(usize::try_from(query.limit).unwrap_or(usize::MAX))
+            .take(usize::try_from(result_limit).unwrap_or(usize::MAX))
             .map(|item| LatestItemSelection {
                 item,
                 child_count: None,
@@ -2006,7 +2016,7 @@ pub(crate) fn parse_image_type_selectors(values: &[String]) -> Vec<i32> {
         .collect()
 }
 
-const fn default_latest_limit() -> u64 {
+const fn default_latest_limit() -> i32 {
     20
 }
 

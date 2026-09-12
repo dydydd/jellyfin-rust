@@ -72,6 +72,7 @@ async fn exercise_latest_routes(database_name: &str) {
 
     assert_auth_and_target_user_rules(&fixture).await;
     assert_latest_defaults_hide_played_and_sort_by_created(&fixture).await;
+    assert_signed_limit_contract(&fixture).await;
     assert_is_played_and_legacy_routes(&fixture).await;
     assert_default_grouping_and_explicit_ungrouping(&fixture).await;
     assert_tv_latest_window_grouping(&fixture).await;
@@ -719,6 +720,55 @@ async fn assert_latest_defaults_hide_played_and_sort_by_created(fixture: &Fixtur
     assert_eq!(latest[1]["Id"], fixture.old_movie_id.simple().to_string());
     assert!(latest_items.iter().all(|item| item["Type"] == "Movie"));
     assert!(latest.get("Items").is_none());
+}
+
+async fn assert_signed_limit_contract(fixture: &Fixture) {
+    let zero = get_json(
+        &fixture.app,
+        &format!(
+            "/Items/Latest?parentId={}&includeItemTypes=Movie&groupItems=false&Limit=0",
+            fixture.parent_id
+        ),
+        &fixture.user_token,
+    )
+    .await;
+    assert_eq!(zero, json!([]));
+
+    let negative = get_json(
+        &fixture.app,
+        &format!(
+            "/Items/Latest?parentId={}&includeItemTypes=Movie&groupItems=false&limit=-1",
+            fixture.parent_id
+        ),
+        &fixture.user_token,
+    )
+    .await;
+    assert_eq!(negative.as_array().unwrap().len(), 1);
+    assert_eq!(negative[0]["Id"], fixture.new_movie_id.simple().to_string());
+
+    let lowercase_legacy = get_json(
+        &fixture.app,
+        &format!(
+            "/users/{}/items/latest?parentid={}&includeitemtypes=movie&groupitems=false&limit=-1",
+            fixture.user_id, fixture.parent_id
+        ),
+        &fixture.user_token,
+    )
+    .await;
+    assert_eq!(lowercase_legacy, negative);
+
+    for route in [
+        "/Items/Latest?Limit=2147483648",
+        "/items/latest?limit=-2147483649",
+    ] {
+        assert_eq!(
+            request(&fixture.app, route, Some(&fixture.user_token))
+                .await
+                .status(),
+            StatusCode::BAD_REQUEST,
+            "{route}"
+        );
+    }
 }
 
 async fn assert_is_played_and_legacy_routes(fixture: &Fixture) {
