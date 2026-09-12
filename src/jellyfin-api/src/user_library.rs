@@ -29,7 +29,9 @@ use jellyfin_model::{
 use jellyfin_providers::external_url::{
     ExternalUrlItem, ExternalUrlItemKind, ExternalUrlProviderRegistry,
 };
-use jellyfin_server_implementations::{DtoImageOptions, MediaStreamSelector};
+use jellyfin_server_implementations::{
+    DtoImageOptions, DtoPrimaryImageMetadata, MediaStreamSelector,
+};
 use md5::{Digest, Md5};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -363,6 +365,8 @@ pub struct BaseItemDto {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub album_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub album_primary_image_tag: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub artists: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub artist_items: Option<Vec<NameIdPair>>,
@@ -430,6 +434,10 @@ pub struct BaseItemDto {
     pub is_hd: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub has_subtitles: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub normalization_gain: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub album_normalization_gain: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub video_type: Option<VideoType>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1174,6 +1182,7 @@ pub(crate) fn item_to_dto(item: base_item::Model, server_id: &str) -> BaseItemDt
             .then(|| metadata_string(item.data.as_ref(), &["Album", "album"]))
             .flatten(),
         album_id: None,
+        album_primary_image_tag: None,
         artists,
         artist_items: has_artists.then(Vec::new),
         album_artist,
@@ -1220,6 +1229,8 @@ pub(crate) fn item_to_dto(item: base_item::Model, server_id: &str) -> BaseItemDt
         height: metadata_i32(item.data.as_ref(), &["Height", "height"]),
         is_hd: None,
         has_subtitles: None,
+        normalization_gain: metadata_normalization_gain(item.data.as_ref()),
+        album_normalization_gain: None,
         video_type,
         video_3d_format,
         iso_type,
@@ -2086,7 +2097,7 @@ pub(crate) fn project_item_dto_with_versioned_sources(
 
 pub(crate) fn attach_dto_image_projection(
     dto: &mut BaseItemDto,
-    projection: jellyfin_server_implementations::DtoImageProjection,
+    mut projection: jellyfin_server_implementations::DtoImageProjection,
 ) {
     dto.image_tags = projection
         .image_tags_present
@@ -2112,6 +2123,16 @@ pub(crate) fn attach_dto_image_projection(
         .parent_backdrop_image_item_id
         .map(|id| id.simple().to_string());
     dto.parent_backdrop_image_tags = projection.parent_backdrop_image_tags;
+    // Album artwork is projected with the audio relation batch rather than as
+    // the current item's image. Preserve its Primary blur hash alongside the
+    // local/inherited image hashes produced by the normal image projector.
+    for (image_type, hashes) in std::mem::take(&mut dto.image_blur_hashes) {
+        projection
+            .image_blur_hashes
+            .entry(image_type)
+            .or_default()
+            .extend(hashes);
+    }
     dto.image_blur_hashes = projection.image_blur_hashes;
 }
 
@@ -2121,6 +2142,8 @@ pub(crate) struct ItemRelationMetadata {
     artist_items: Vec<NameIdPair>,
     album_artist_items: Vec<NameIdPair>,
     album_id: Option<Uuid>,
+    album_primary_image: Option<DtoPrimaryImageMetadata>,
+    album_normalization_gain: Option<f32>,
     people: Vec<BaseItemPerson>,
     tags: Vec<String>,
     studios: Vec<NameIdPair>,
@@ -2138,6 +2161,13 @@ struct MusicRelationMetadata {
     artist_items: HashMap<Uuid, Vec<NameIdPair>>,
     album_artist_items: HashMap<Uuid, Vec<NameIdPair>>,
     album_ids: HashMap<Uuid, Uuid>,
+    albums: HashMap<Uuid, MusicAlbumMetadata>,
+}
+
+#[derive(Debug, Default, Clone)]
+struct MusicAlbumMetadata {
+    primary_image: Option<DtoPrimaryImageMetadata>,
+    normalization_gain: Option<f32>,
 }
 
 pub(crate) async fn load_relation_metadata(
@@ -2204,6 +2234,8 @@ pub(crate) async fn load_relation_metadata(
 
     let mut result = HashMap::with_capacity(items.len());
     for item in items {
+        let album_id = music.album_ids.remove(&item.id);
+        let album = album_id.and_then(|album_id| music.albums.get(&album_id).cloned());
         let metadata = ItemRelationMetadata {
             genres: genres
                 .remove(&item.id)
@@ -2219,7 +2251,9 @@ pub(crate) async fn load_relation_metadata(
                 .album_artist_items
                 .remove(&item.id)
                 .unwrap_or_default(),
-            album_id: music.album_ids.remove(&item.id),
+            album_id,
+            album_primary_image: album.as_ref().and_then(|album| album.primary_image.clone()),
+            album_normalization_gain: album.and_then(|album| album.normalization_gain),
             people: people
                 .remove(&item.id)
                 .unwrap_or_default()
@@ -2306,6 +2340,38 @@ async fn load_music_relation_metadata(
                 .map_err(ApiError::from)
         },
     )?;
+    let album_item_ids = album_ids
+        .values()
+        .copied()
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    let (album_items, mut album_images) = tokio::try_join!(
+        async {
+            state
+                .base_items
+                .get_many(&album_item_ids)
+                .await
+                .map_err(ApiError::from)
+        },
+        async {
+            state
+                .dto_images
+                .primary_image_metadata(&album_item_ids)
+                .await
+                .map_err(|_| ApiError::Internal)
+        },
+    )?;
+    let albums = album_items
+        .into_iter()
+        .map(|album| {
+            let metadata = MusicAlbumMetadata {
+                primary_image: album_images.remove(&album.id),
+                normalization_gain: metadata_normalization_gain(album.data.as_ref()),
+            };
+            (album.id, metadata)
+        })
+        .collect();
     Ok(MusicRelationMetadata {
         artist_items: artist_items
             .into_iter()
@@ -2316,6 +2382,7 @@ async fn load_music_relation_metadata(
             .map(|(item_id, artists)| (item_id, item_value_pairs_to_dto(artists)))
             .collect(),
         album_ids,
+        albums,
     })
 }
 
@@ -2348,6 +2415,16 @@ pub(crate) fn attach_relation_metadata(dto: &mut BaseItemDto, metadata: ItemRela
     if let Some(album_id) = metadata.album_id {
         dto.album_id = Some(album_id.simple().to_string());
     }
+    if let Some(image) = metadata.album_primary_image {
+        dto.album_primary_image_tag = Some(image.tag.clone());
+        if let Some(blur_hash) = image.blur_hash {
+            dto.image_blur_hashes
+                .entry(ImageType::Primary)
+                .or_default()
+                .insert(image.tag, blur_hash);
+        }
+    }
+    dto.album_normalization_gain = metadata.album_normalization_gain;
     if let Some(artists) = dto.artists.as_ref() {
         dto.artist_items = Some(ordered_name_id_pairs(artists, &metadata.artist_items));
     }
@@ -3215,6 +3292,25 @@ fn person_kind_from_name(value: &str) -> PersonKind {
 
 fn metadata_f64(data: Option<&Value>, keys: &[&str]) -> Option<f64> {
     metadata_value(data, keys).and_then(|value| value.as_f64())
+}
+
+fn metadata_normalization_gain(data: Option<&Value>) -> Option<f32> {
+    let lufs = metadata_f64(data, &["LUFS", "Lufs", "lufs"])
+        .map(|value| value as f32)
+        .filter(|value| value.is_finite());
+    if let Some(lufs) = lufs {
+        return Some(-18.0 - lufs);
+    }
+    metadata_f64(
+        data,
+        &[
+            "NormalizationGain",
+            "normalizationGain",
+            "normalization_gain",
+        ],
+    )
+    .map(|value| value as f32)
+    .filter(|value| value.is_finite())
 }
 
 fn metadata_i32(data: Option<&Value>, keys: &[&str]) -> Option<i32> {

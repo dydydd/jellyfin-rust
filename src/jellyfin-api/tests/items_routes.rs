@@ -1378,6 +1378,78 @@ async fn has_subtitles_uses_persisted_subtitle_streams_for_item_and_page_dtos() 
 }
 
 #[tokio::test]
+async fn audio_dtos_batch_project_album_artwork_and_normalization_gains() {
+    let _guard = ITEMS_TEST_LOCK.lock().await;
+    let fixture = Fixture::new().await;
+    let items = BaseItemRepository::new(fixture.database.clone());
+    let root = items.ensure_user_root().await.expect("user root");
+
+    let album = create_item_with_data(
+        &items,
+        "MusicAlbum",
+        &format!("Audio album projection {}", fixture.suffix),
+        root.id,
+        serde_json::json!({
+            "LUFS": -15.5,
+            "NormalizationGain": 99.0
+        }),
+    )
+    .await;
+    let mut audio = NewBaseItem::new(Uuid::new_v4(), "Audio");
+    audio.name = Some(format!("Audio gain projection {}", fixture.suffix));
+    audio.sort_name = audio.name.clone();
+    audio.parent_id = Some(album.id);
+    audio.media_type = Some("Audio".to_owned());
+    audio.data = Some(serde_json::json!({
+        "Album": album.name,
+        "LUFS": -14.0,
+        "NormalizationGain": 88.0
+    }));
+    let audio = items.create(audio).await.expect("audio item");
+    BaseItemImageRepository::new(fixture.database.clone())
+        .replace(
+            album.id,
+            &[NewBaseItemImage {
+                image_type: BaseItemImageType::Primary,
+                image_index: 0,
+                path: format!("/media/album-art-{}.jpg", fixture.suffix),
+                date_modified: Utc::now(),
+                width: Some(600),
+                height: Some(600),
+                blurhash: Some("album-primary-blurhash".to_owned()),
+            }],
+        )
+        .await
+        .expect("album primary image");
+
+    for route in [
+        format!("/Items/{}?UserId={}", audio.id, fixture.user_id),
+        format!("/Items?Ids={}&UserId={}", audio.id, fixture.user_id),
+    ] {
+        let body = body_json(fixture.request(&route, Some(&fixture.user_token)).await).await;
+        let dto = body
+            .get("Items")
+            .and_then(Value::as_array)
+            .and_then(|items| items.first())
+            .unwrap_or(&body);
+        let album_tag = dto["AlbumPrimaryImageTag"]
+            .as_str()
+            .expect("album image tag");
+        assert_eq!(dto["AlbumId"], album.id.simple().to_string(), "{route}");
+        assert_eq!(dto["NormalizationGain"], -4.0, "{route}");
+        assert_eq!(dto["AlbumNormalizationGain"], -2.5, "{route}");
+        assert_eq!(
+            dto["ImageBlurHashes"]["Primary"][album_tag], "album-primary-blurhash",
+            "{route}"
+        );
+    }
+
+    items.delete(audio.id).await.expect("audio cleanup");
+    items.delete(album.id).await.expect("album cleanup");
+    fixture.cleanup().await;
+}
+
+#[tokio::test]
 async fn legacy_item_collection_accepts_empty_trailing_path_segments() {
     let _guard = ITEMS_TEST_LOCK.lock().await;
     let fixture = Fixture::new().await;

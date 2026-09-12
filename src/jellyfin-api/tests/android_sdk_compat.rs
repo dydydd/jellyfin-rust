@@ -21,9 +21,9 @@ use axum::{
 use jellyfin_api::AppState;
 use jellyfin_controller::{MediaStreamService, PersonReconciliationService, UserService};
 use jellyfin_data::{
-    BaseItemRepository, ChapterRepository, DatabaseConfig, DeviceRepository, NewBaseItem,
-    NewChapter, NewDevice, NewPerson, NewPersonCredit, NewTrickplayInfo, PersonRepository,
-    TrickplayInfoRepository,
+    BaseItemImageRepository, BaseItemImageType, BaseItemRepository, ChapterRepository,
+    DatabaseConfig, DeviceRepository, NewBaseItem, NewBaseItemImage, NewChapter, NewDevice,
+    NewPerson, NewPersonCredit, NewTrickplayInfo, PersonRepository, TrickplayInfoRepository,
 };
 use jellyfin_model::{MediaStream, MediaStreamType, UserPolicy};
 use jellyfin_server_implementations::DefaultAuthenticationProvider;
@@ -452,7 +452,12 @@ impl Fixture {
         let episode = items.create(new_episode).await.unwrap();
 
         let artist = create_item(&items, "MusicArtist", Some(music.id), "Test Artist", None).await;
-        let album = create_item(&items, "MusicAlbum", Some(artist.id), "Test Album", None).await;
+        let mut new_album = NewBaseItem::new(Uuid::new_v4(), "MusicAlbum");
+        new_album.parent_id = Some(artist.id);
+        new_album.name = Some("Test Album".to_owned());
+        new_album.is_folder = true;
+        new_album.data = Some(json!({"NormalizationGain": -2.5}));
+        let album = items.create(new_album).await.unwrap();
         let mut new_audio = NewBaseItem::new(Uuid::new_v4(), "Audio");
         new_audio.parent_id = Some(album.id);
         new_audio.name = Some("Test Song".to_owned());
@@ -463,9 +468,25 @@ impl Fixture {
             "Album": "Test Album",
             "Artists": ["Test Artist"],
             "AlbumArtist": "Test Artist",
-            "IndexNumber": 1
+            "IndexNumber": 1,
+            "LUFS": -14.0
         }));
         let audio = items.create(new_audio).await.unwrap();
+        BaseItemImageRepository::new(database.clone())
+            .replace(
+                album.id,
+                &[NewBaseItemImage {
+                    image_type: BaseItemImageType::Primary,
+                    image_index: 0,
+                    path: format!("{}/album.jpg", storage_root.display()),
+                    date_modified: chrono::Utc::now(),
+                    width: Some(600),
+                    height: Some(600),
+                    blurhash: Some("album-primary-blurhash".to_owned()),
+                }],
+            )
+            .await
+            .unwrap();
 
         std::fs::create_dir_all(storage_root).ok();
         std::fs::write(
