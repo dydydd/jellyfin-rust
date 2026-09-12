@@ -385,6 +385,10 @@
 - Bind virtual-folder creation `Paths` with the official comma-delimited collection model binder:
   split a single comma-delimited value, but preserve every repeated query key emitted by the Kotlin
   SDK as one path. Never deserialize a collection-valued `paths` query into a scalar.
+- Keep the complete LibraryStructure surface and `/Library/Refresh` reachable through fully
+  lowercase aliases with the same first-time-setup-or-elevated and elevated policies. Bind virtual
+  folder/media-path query names and top-level JSON DTO properties in PascalCase, camelCase, and
+  representative lowercase forms while preserving the canonical handlers and methods.
 - Resolve direct Genre and MusicGenre detail names through their official deterministic item-by-name
   path and UTF-16LE identifier, creating the persisted entity idempotently. Hyphenated slug names
   only search persisted entities in `&`, `/`, then `?` substitution order; a miss returns an empty

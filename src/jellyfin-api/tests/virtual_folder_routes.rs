@@ -64,6 +64,272 @@ async fn create_virtual_folder_binds_kotlin_sdk_repeated_paths() {
     fixture.cleanup().await;
 }
 
+#[tokio::test]
+async fn library_structure_lowercase_routes_and_binding_match_canonical() {
+    let fixture = Fixture::new().await;
+    fixture.complete_startup().await;
+
+    for (method, canonical, lowercase) in [
+        (
+            Method::GET,
+            "/Library/VirtualFolders",
+            "/library/virtualfolders",
+        ),
+        (
+            Method::POST,
+            "/Library/VirtualFolders",
+            "/library/virtualfolders",
+        ),
+        (
+            Method::DELETE,
+            "/Library/VirtualFolders",
+            "/library/virtualfolders",
+        ),
+        (
+            Method::POST,
+            "/Library/VirtualFolders/Name",
+            "/library/virtualfolders/name",
+        ),
+        (
+            Method::POST,
+            "/Library/VirtualFolders/Paths",
+            "/library/virtualfolders/paths",
+        ),
+        (
+            Method::DELETE,
+            "/Library/VirtualFolders/Paths",
+            "/library/virtualfolders/paths",
+        ),
+        (
+            Method::POST,
+            "/Library/VirtualFolders/Paths/Update",
+            "/library/virtualfolders/paths/update",
+        ),
+        (
+            Method::POST,
+            "/Library/VirtualFolders/LibraryOptions",
+            "/library/virtualfolders/libraryoptions",
+        ),
+    ] {
+        for route in [canonical, lowercase] {
+            assert_eq!(
+                fixture
+                    .send(method.clone(), route, None, None)
+                    .await
+                    .status(),
+                StatusCode::UNAUTHORIZED,
+                "anonymous {method} {route}"
+            );
+            assert_eq!(
+                fixture
+                    .send(method.clone(), route, Some(&fixture.user_token), None)
+                    .await
+                    .status(),
+                StatusCode::FORBIDDEN,
+                "ordinary user {method} {route}"
+            );
+        }
+    }
+
+    exercise_library_structure_lifecycle(&fixture, false).await;
+    exercise_library_structure_lifecycle(&fixture, true).await;
+    fixture.cleanup().await;
+}
+
+async fn exercise_library_structure_lifecycle(fixture: &Fixture, lowercase: bool) {
+    let root = if lowercase {
+        "/library/virtualfolders"
+    } else {
+        "/Library/VirtualFolders"
+    };
+    let name = format!(
+        "{} lifecycle {}",
+        if lowercase { "lowercase" } else { "canonical" },
+        fixture.suffix
+    );
+    let create_uri = if lowercase {
+        format!(
+            "{root}?Name={}&collectiontype=movies&refreshlibrary=false",
+            encoded(&name)
+        )
+    } else {
+        format!(
+            "{root}?name={}&collectionType=movies&refreshLibrary=false",
+            encoded(&name)
+        )
+    };
+    let create_body = if lowercase {
+        json!({ "libraryoptions": { "Enabled": false } })
+    } else {
+        json!({ "LibraryOptions": { "Enabled": false } })
+    };
+    assert_eq!(
+        fixture
+            .send(
+                Method::POST,
+                &create_uri,
+                Some(&fixture.admin_token),
+                Some(create_body),
+            )
+            .await
+            .status(),
+        StatusCode::NO_CONTENT
+    );
+
+    let list = body_json(
+        fixture
+            .send(Method::GET, root, Some(&fixture.admin_token), None)
+            .await,
+    )
+    .await;
+    let created = folder(&list, &name);
+    assert_eq!(created["CollectionType"], "movies");
+    assert_eq!(created["LibraryOptions"]["Enabled"], false);
+    let id = created["ItemId"].as_str().expect("library item id");
+
+    let options_route = format!(
+        "{root}/{}",
+        if lowercase {
+            "libraryoptions"
+        } else {
+            "LibraryOptions"
+        }
+    );
+    let options_body = if lowercase {
+        json!({ "id": id, "libraryoptions": { "Enabled": true, "PathInfos": [] } })
+    } else {
+        json!({ "Id": id, "LibraryOptions": { "Enabled": true, "PathInfos": [] } })
+    };
+    assert_eq!(
+        fixture
+            .send(
+                Method::POST,
+                &options_route,
+                Some(&fixture.admin_token),
+                Some(options_body),
+            )
+            .await
+            .status(),
+        StatusCode::NO_CONTENT
+    );
+
+    let paths_route = format!("{root}/{}", if lowercase { "paths" } else { "Paths" });
+    let add_uri = format!(
+        "{paths_route}?{}=false",
+        if lowercase {
+            "refreshlibrary"
+        } else {
+            "refreshLibrary"
+        }
+    );
+    let add_body = if lowercase {
+        json!({ "name": name, "pathinfo": { "path": fixture.media_path } })
+    } else {
+        json!({ "Name": name, "PathInfo": { "Path": fixture.media_path } })
+    };
+    assert_eq!(
+        fixture
+            .send(
+                Method::POST,
+                &add_uri,
+                Some(&fixture.admin_token),
+                Some(add_body),
+            )
+            .await
+            .status(),
+        StatusCode::NO_CONTENT
+    );
+
+    let update_route = format!(
+        "{paths_route}/{}",
+        if lowercase { "update" } else { "Update" }
+    );
+    let update_body = if lowercase {
+        json!({ "name": name, "pathInfo": { "path": fixture.media_path } })
+    } else {
+        json!({ "Name": name, "PathInfo": { "Path": fixture.media_path } })
+    };
+    assert_eq!(
+        fixture
+            .send(
+                Method::POST,
+                &update_route,
+                Some(&fixture.admin_token),
+                Some(update_body),
+            )
+            .await
+            .status(),
+        StatusCode::NO_CONTENT
+    );
+
+    let remove_path_uri = if lowercase {
+        format!(
+            "{paths_route}?Name={}&Path={}&refreshlibrary=false",
+            encoded(&name),
+            encoded(&fixture.media_path)
+        )
+    } else {
+        format!(
+            "{paths_route}?name={}&path={}&refreshLibrary=false",
+            encoded(&name),
+            encoded(&fixture.media_path)
+        )
+    };
+    assert_eq!(
+        fixture
+            .send(
+                Method::DELETE,
+                &remove_path_uri,
+                Some(&fixture.admin_token),
+                None,
+            )
+            .await
+            .status(),
+        StatusCode::NO_CONTENT
+    );
+
+    let renamed = format!("renamed {name}");
+    let name_route = format!("{root}/{}", if lowercase { "name" } else { "Name" });
+    let rename_uri = if lowercase {
+        format!(
+            "{name_route}?Name={}&newname={}&refreshlibrary=false",
+            encoded(&name),
+            encoded(&renamed)
+        )
+    } else {
+        format!(
+            "{name_route}?name={}&newName={}&refreshLibrary=false",
+            encoded(&name),
+            encoded(&renamed)
+        )
+    };
+    assert_eq!(
+        fixture
+            .send(Method::POST, &rename_uri, Some(&fixture.admin_token), None,)
+            .await
+            .status(),
+        StatusCode::NO_CONTENT
+    );
+
+    let delete_uri = if lowercase {
+        format!("{root}?Name={}&refreshlibrary=false", encoded(&renamed))
+    } else {
+        format!("{root}?name={}&refreshLibrary=false", encoded(&renamed))
+    };
+    assert_eq!(
+        fixture
+            .send(
+                Method::DELETE,
+                &delete_uri,
+                Some(&fixture.admin_token),
+                None,
+            )
+            .await
+            .status(),
+        StatusCode::NO_CONTENT
+    );
+}
+
 async fn assert_library_access(fixture: &Fixture) {
     assert_eq!(
         fixture
@@ -490,6 +756,10 @@ fn folder(list: &Value, name: &str) -> Value {
         .find(|folder| folder["Name"] == name)
         .unwrap()
         .clone()
+}
+
+async fn body_json(response: axum::response::Response) -> Value {
+    serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap()
 }
 
 struct Fixture {

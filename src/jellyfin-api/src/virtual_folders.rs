@@ -16,6 +16,7 @@ use crate::{ApiError, AppState, authorization};
 
 #[derive(Debug, Default, Deserialize)]
 pub(crate) struct CreateQuery {
+    #[serde(default, alias = "Name")]
     name: Option<String>,
     #[serde(
         rename = "collectionType",
@@ -29,59 +30,96 @@ pub(crate) struct CreateQuery {
         deserialize_with = "crate::query::comma::deserialize_model_binder"
     )]
     paths: Vec<String>,
-    #[serde(default, rename = "refreshLibrary", alias = "RefreshLibrary")]
+    #[serde(
+        default,
+        rename = "refreshLibrary",
+        alias = "RefreshLibrary",
+        alias = "refreshlibrary"
+    )]
     refresh_library: bool,
 }
 
 #[derive(Debug, Default, Deserialize)]
-#[serde(default, rename_all = "PascalCase")]
+#[serde(default)]
 pub(crate) struct AddVirtualFolderDto {
+    #[serde(
+        rename = "LibraryOptions",
+        alias = "libraryOptions",
+        alias = "libraryoptions"
+    )]
     library_options: Option<Value>,
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "PascalCase")]
 pub(crate) struct UpdateLibraryOptionsDto {
+    #[serde(rename = "Id", alias = "id")]
     id: Uuid,
+    #[serde(
+        rename = "LibraryOptions",
+        alias = "libraryOptions",
+        alias = "libraryoptions"
+    )]
     library_options: Option<Value>,
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "PascalCase")]
 pub(crate) struct MediaPathDto {
+    #[serde(rename = "Name", alias = "name")]
     name: String,
+    #[serde(rename = "Path", alias = "path")]
     path: Option<String>,
+    #[serde(rename = "PathInfo", alias = "pathInfo", alias = "pathinfo")]
     path_info: Option<Value>,
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "PascalCase")]
 pub(crate) struct UpdateMediaPathDto {
+    #[serde(rename = "Name", alias = "name")]
     name: String,
+    #[serde(rename = "PathInfo", alias = "pathInfo", alias = "pathinfo")]
     path_info: Value,
 }
 
 #[derive(Debug, Default, Deserialize)]
 pub(crate) struct RenameQuery {
+    #[serde(default, alias = "Name")]
     name: Option<String>,
-    #[serde(rename = "newName", alias = "NewName")]
+    #[serde(rename = "newName", alias = "NewName", alias = "newname")]
     new_name: Option<String>,
-    #[serde(default, rename = "refreshLibrary", alias = "RefreshLibrary")]
+    #[serde(
+        default,
+        rename = "refreshLibrary",
+        alias = "RefreshLibrary",
+        alias = "refreshlibrary"
+    )]
     refresh_library: bool,
 }
 
 #[derive(Debug, Default, Deserialize)]
 pub(crate) struct DeleteQuery {
+    #[serde(default, alias = "Name")]
     name: Option<String>,
-    #[serde(default, rename = "refreshLibrary", alias = "RefreshLibrary")]
+    #[serde(
+        default,
+        rename = "refreshLibrary",
+        alias = "RefreshLibrary",
+        alias = "refreshlibrary"
+    )]
     refresh_library: bool,
 }
 
 #[derive(Debug, Default, Deserialize)]
 pub(crate) struct RemovePathQuery {
+    #[serde(default, alias = "Name")]
     name: Option<String>,
+    #[serde(default, alias = "Path")]
     path: Option<String>,
-    #[serde(default, rename = "refreshLibrary", alias = "RefreshLibrary")]
+    #[serde(
+        default,
+        rename = "refreshLibrary",
+        alias = "RefreshLibrary",
+        alias = "refreshlibrary"
+    )]
     refresh_library: bool,
 }
 

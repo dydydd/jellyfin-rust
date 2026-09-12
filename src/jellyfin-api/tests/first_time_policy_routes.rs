@@ -33,6 +33,7 @@ async fn assert_incomplete_setup_access(fixture: &Fixture) {
         "/Startup/User",
         "/Startup/FirstUser",
         "/Library/VirtualFolders",
+        "/library/virtualfolders",
     ] {
         assert_eq!(
             fixture
@@ -84,7 +85,11 @@ async fn create_anonymous_real_directory_library(fixture: &Fixture) {
 }
 
 async fn assert_completed_setup_access(fixture: &Fixture) {
-    for uri in ["/Startup/Configuration", "/Library/VirtualFolders"] {
+    for uri in [
+        "/Startup/Configuration",
+        "/Library/VirtualFolders",
+        "/library/virtualfolders",
+    ] {
         assert_eq!(
             fixture
                 .send(Method::GET, uri, Credential::None, None)

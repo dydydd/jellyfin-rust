@@ -125,33 +125,37 @@ async fn exercise_library_maintenance_routes(database_name: &str) {
         "http://127.0.0.1:8096".to_owned(),
     ));
 
-    assert_eq!(
-        request(&app, "/Library/Refresh", None, None).await.status(),
-        StatusCode::UNAUTHORIZED
-    );
-    assert_eq!(
-        request(&app, "/Library/Refresh", Some(&user_token), None)
+    for route in ["/Library/Refresh", "/library/refresh"] {
+        assert_eq!(
+            request(&app, route, None, None).await.status(),
+            StatusCode::UNAUTHORIZED,
+            "anonymous {route}"
+        );
+        assert_eq!(
+            request(&app, route, Some(&user_token), None).await.status(),
+            StatusCode::FORBIDDEN,
+            "ordinary user {route}"
+        );
+        assert_eq!(
+            request(&app, route, Some(&admin_token), None)
+                .await
+                .status(),
+            StatusCode::NO_CONTENT,
+            "administrator {route}"
+        );
+        assert_eq!(
+            request(
+                &app,
+                &format!("{route}?api_key={api_key_token}"),
+                None,
+                None
+            )
             .await
             .status(),
-        StatusCode::FORBIDDEN
-    );
-    assert_eq!(
-        request(&app, "/Library/Refresh", Some(&admin_token), None)
-            .await
-            .status(),
-        StatusCode::NO_CONTENT
-    );
-    assert_eq!(
-        request(
-            &app,
-            &format!("/Library/Refresh?api_key={api_key_token}"),
-            None,
-            None
-        )
-        .await
-        .status(),
-        StatusCode::NO_CONTENT
-    );
+            StatusCode::NO_CONTENT,
+            "API key {route}"
+        );
+    }
 
     for route in [
         "/Library/Series/Added?tvdbId=121361",

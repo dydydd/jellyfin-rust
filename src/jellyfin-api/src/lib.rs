@@ -1374,6 +1374,28 @@ fn base_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
             "/Library/VirtualFolders/LibraryOptions",
             post(virtual_folders::update_options),
         )
+        .route(
+            "/library/virtualfolders",
+            get(virtual_folders::list)
+                .post(virtual_folders::create)
+                .delete(virtual_folders::delete),
+        )
+        .route(
+            "/library/virtualfolders/name",
+            post(virtual_folders::rename),
+        )
+        .route(
+            "/library/virtualfolders/paths",
+            post(virtual_folders::add_path).delete(virtual_folders::remove_path),
+        )
+        .route(
+            "/library/virtualfolders/paths/update",
+            post(virtual_folders::update_path),
+        )
+        .route(
+            "/library/virtualfolders/libraryoptions",
+            post(virtual_folders::update_options),
+        )
         .nest_service(
             "/web",
             ServeDir::new(&state.web_directory).fallback(ServeFile::new(&index_path)),
@@ -2119,6 +2141,7 @@ fn library_controller_routes() -> Router<Arc<AppState>> {
         .route("/Items/{item_id}/Collections", get(library::collections))
         .route("/items/{item_id}/collections", get(library::collections))
         .route("/Library/Refresh", post(library::refresh))
+        .route("/library/refresh", post(library::refresh))
         .route("/Library/PhysicalPaths", get(library::physical_paths))
         .route("/Library/MediaFolders", get(library::media_folders))
         .route("/library/mediafolders", get(library::media_folders))
