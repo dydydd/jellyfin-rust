@@ -626,6 +626,8 @@ async fn subtitle_response(
         &requested_format,
         query.add_vtt_time_map,
         start_position_ticks,
+        query.end_position_ticks,
+        query.copy_timestamps,
     )?;
     let mime_type = MimeTypes::get_mime_type(&format!("file.{requested_format}"))
         .map_err(|_| ApiError::Internal)?;
@@ -643,19 +645,35 @@ fn subtitle_payload(
     requested_format: &str,
     add_vtt_time_map: bool,
     start_position_ticks: i64,
+    end_position_ticks: Option<i64>,
+    copy_timestamps: bool,
 ) -> Result<Vec<u8>, ApiError> {
-    if source_format.eq_ignore_ascii_case(requested_format) {
-        if requested_format.eq_ignore_ascii_case("vtt") && add_vtt_time_map {
-            let text = String::from_utf8_lossy(bytes);
-            return Ok(add_vtt_timestamp_map(&text, start_position_ticks).into_bytes());
-        }
-        return Ok(bytes.to_vec());
+    let end_position_ticks = end_position_ticks.unwrap_or_default();
+    // Official SubtitleEncoder returns the readable stream before parsing or
+    // FilterEvents when the requested and source formats are equal. Therefore
+    // even a requested time window leaves same-format subtitle bytes intact.
+    let equivalent_format = source_format.eq_ignore_ascii_case(requested_format)
+        || (source_format.eq_ignore_ascii_case("ssa")
+            && requested_format.eq_ignore_ascii_case("ass"));
+    let mut payload = if equivalent_format {
+        bytes.to_vec()
+    } else {
+        jellyfin_media_encoding::subtitles::convert_subtitles(
+            bytes,
+            source_format,
+            requested_format,
+            start_position_ticks,
+            end_position_ticks,
+            copy_timestamps,
+        )
+        .map_err(|_| ApiError::InvalidRequest)?
+    };
+
+    if requested_format.eq_ignore_ascii_case("vtt") && add_vtt_time_map {
+        payload = add_vtt_timestamp_map(&String::from_utf8_lossy(&payload), start_position_ticks)
+            .into_bytes();
     }
-    if source_format.eq_ignore_ascii_case("srt") && requested_format.eq_ignore_ascii_case("vtt") {
-        let text = String::from_utf8_lossy(bytes);
-        return Ok(srt_to_vtt(&text, add_vtt_time_map, start_position_ticks).into_bytes());
-    }
-    Err(ApiError::InvalidRequest)
+    Ok(payload)
 }
 
 #[allow(clippy::cast_precision_loss)]
@@ -693,28 +711,6 @@ fn subtitle_playlist(
 fn format_hls_seconds(value: f64) -> String {
     let text = format!("{value:.7}");
     text.trim_end_matches('0').trim_end_matches('.').to_owned()
-}
-
-fn srt_to_vtt(text: &str, add_vtt_time_map: bool, start_position_ticks: i64) -> String {
-    let mut output = "WEBVTT\n".to_owned();
-    if add_vtt_time_map {
-        output.push_str(&vtt_timestamp_map(start_position_ticks));
-        output.push('\n');
-    }
-    output.push('\n');
-    for line in text.lines() {
-        let trimmed = line.trim();
-        if trimmed.chars().all(|character| character.is_ascii_digit()) {
-            continue;
-        }
-        if trimmed.contains("-->") {
-            output.push_str(&trimmed.replace(',', "."));
-        } else {
-            output.push_str(line);
-        }
-        output.push('\n');
-    }
-    output
 }
 
 fn add_vtt_timestamp_map(text: &str, start_position_ticks: i64) -> String {
@@ -776,4 +772,54 @@ fn uploaded_subtitle_path(
         .join("subtitles")
         .join(item_id.simple().to_string())
         .join(format!("{index}.{language}.{format}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::subtitle_payload;
+
+    const SRT_WINDOW_FIXTURE: &[u8] = b"1\n00:00:01,000 --> 00:00:02,000\nbefore\n\n\
+2\n00:00:04,000 --> 00:00:06,000\ninside\n\n\
+3\n00:00:09,000 --> 00:00:10,000\nafter\n\n";
+    #[test]
+    fn same_format_window_preserves_original_stream_like_official_encoder() {
+        let payload = subtitle_payload(
+            SRT_WINDOW_FIXTURE,
+            "srt",
+            "srt",
+            false,
+            30_000_000,
+            Some(80_000_000),
+            false,
+        )
+        .expect("same-format SRT stream");
+        assert_eq!(payload, SRT_WINDOW_FIXTURE);
+    }
+
+    #[test]
+    fn ssa_to_ass_preserves_original_stream_and_styles() {
+        let styled = b"[Script Info]\nTitle: styled\n[V4 Styles]\n";
+        let payload = subtitle_payload(styled, "ssa", "ass", false, 10_000_000, None, false)
+            .expect("equivalent SSA to ASS stream");
+        assert_eq!(payload, styled);
+    }
+
+    #[test]
+    fn hls_srt_to_vtt_window_keeps_only_the_segment_cues() {
+        let payload = subtitle_payload(
+            SRT_WINDOW_FIXTURE,
+            "srt",
+            "vtt",
+            true,
+            30_000_000,
+            Some(80_000_000),
+            true,
+        )
+        .expect("HLS VTT segment conversion");
+        let text = String::from_utf8(payload).expect("UTF-8 VTT");
+
+        assert!(text.contains("00:00:04.000 --> 00:00:06.000\ninside"));
+        assert!(!text.contains("before"));
+        assert!(!text.contains("after"));
+    }
 }

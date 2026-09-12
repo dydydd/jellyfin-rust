@@ -516,7 +516,7 @@ async fn exercise_upload_subtitle_route(database_name: &str) {
         assert_eq!(
             body_bytes(converted).await,
             Bytes::from_static(
-                b"WEBVTT\nX-TIMESTAMP-MAP=MPEGTS:90000,LOCAL:00:00:00.000\n\n00:00:01.000 --> 00:00:02.000\nHello from upload\n"
+                b"WEBVTT\nX-TIMESTAMP-MAP=MPEGTS:90000,LOCAL:00:00:00.000\n\n00:00:00.000 --> 00:00:01.000\nHello from upload\n\n"
             ),
             "{query}"
         );
@@ -536,7 +536,50 @@ async fn exercise_upload_subtitle_route(database_name: &str) {
     assert_eq!(
         body_bytes(converted_from_ticks_route).await,
         Bytes::from_static(
-            b"WEBVTT\nX-TIMESTAMP-MAP=MPEGTS:90000,LOCAL:00:00:00.000\n\n00:00:01.000 --> 00:00:02.000\nHello from upload\n"
+            b"WEBVTT\nX-TIMESTAMP-MAP=MPEGTS:90000,LOCAL:00:00:00.000\n\n00:00:00.000 --> 00:00:01.000\nHello from upload\n\n"
+        )
+    );
+
+    tokio::fs::write(
+        path,
+        b"1\n00:00:01,000 --> 00:00:02,000\nbefore\n\n\
+2\n00:00:04,000 --> 00:00:06,000\ninside\n\n\
+3\n00:00:09,000 --> 00:00:10,000\nafter\n\n",
+    )
+    .await
+    .expect("replace subtitle with time-window fixture");
+    let copied_window = fixture
+        .send(
+            Method::GET,
+            &format!(
+                "{}?startPositionTicks=30000000&endPositionTicks=80000000&copyTimestamps=true",
+                Fixture::stream_route(fixture.item_id, 4, "vtt")
+            ),
+            None,
+        )
+        .await;
+    assert_eq!(copied_window.status(), StatusCode::OK);
+    assert_eq!(
+        body_bytes(copied_window).await,
+        Bytes::from_static(b"WEBVTT\n\n00:00:04.000 --> 00:00:06.000\ninside\n\n")
+    );
+    let rebased_window = fixture
+        .send(
+            Method::GET,
+            &format!(
+                "{}?StartPositionTicks=30000000&EndPositionTicks=80000000&CopyTimestamps=false",
+                Fixture::stream_route(fixture.item_id, 4, "srt")
+            ),
+            None,
+        )
+        .await;
+    assert_eq!(rebased_window.status(), StatusCode::OK);
+    assert_eq!(
+        body_bytes(rebased_window).await,
+        Bytes::from_static(
+            b"1\n00:00:01,000 --> 00:00:02,000\nbefore\n\n\
+2\n00:00:04,000 --> 00:00:06,000\ninside\n\n\
+3\n00:00:09,000 --> 00:00:10,000\nafter\n\n"
         )
     );
 
