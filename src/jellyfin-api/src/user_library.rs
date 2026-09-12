@@ -237,13 +237,6 @@ impl BaseItemDtoFields {
 
     #[cfg(test)]
     #[must_use]
-    pub(crate) const fn without_trickplay(mut self) -> Self {
-        self.trickplay = false;
-        self
-    }
-
-    #[cfg(test)]
-    #[must_use]
     pub(crate) const fn without_chapters(mut self) -> Self {
         self.chapters = false;
         self
