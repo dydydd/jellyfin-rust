@@ -343,7 +343,7 @@ fn route_policy(method: &Method, path: &str) -> RoutePolicy {
         | ["system", "configuration", _] => RoutePolicy::Default,
         ["Users", "New"] | ["users", "new"] => RoutePolicy::Elevated,
         ["Users", _, "Policy"] | ["users", _, "policy"] => RoutePolicy::Elevated,
-        ["Users", "Me"] => RoutePolicy::Default,
+        ["Users", "Me"] | ["users", "me"] => RoutePolicy::Default,
         ["Users" | "users", _] if method == Method::DELETE => RoutePolicy::Elevated,
         ["User", _] if method == Method::DELETE => RoutePolicy::Elevated,
         ["Users" | "users", _] if method == Method::GET => RoutePolicy::IgnoreParentalControl,
@@ -536,6 +536,10 @@ mod tests {
         assert_eq!(route_policy(&Method::GET, "/Items"), RoutePolicy::Default);
         assert_eq!(
             route_policy(&Method::GET, "/Users/Me"),
+            RoutePolicy::Default
+        );
+        assert_eq!(
+            route_policy(&Method::GET, "/users/me"),
             RoutePolicy::Default
         );
         assert_eq!(
