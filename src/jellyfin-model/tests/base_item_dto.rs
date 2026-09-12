@@ -13,6 +13,7 @@ fn base_item_dto_uses_official_wire_contract() {
         server_id: Some("server-1".to_owned()),
         id,
         item_type: BaseItemKind::Movie,
+        is_hd: Some(true),
         is_folder: Some(false),
         media_type: MediaType::Video,
         genres: Some(vec!["Action".to_owned()]),
@@ -44,6 +45,8 @@ fn base_item_dto_uses_official_wire_contract() {
     assert_eq!(value["Type"], "Movie");
     assert!(value.get("item_type").is_none());
     assert_eq!(value["MediaType"], "Video");
+    assert_eq!(value["IsHD"], true);
+    assert!(value.get("IsHd").is_none());
     assert_eq!(value["IsFolder"], false);
     assert_eq!(value["Genres"], json!(["Action"]));
     assert_eq!(value["People"][0]["Id"], id.simple().to_string());

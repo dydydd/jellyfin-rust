@@ -66,6 +66,7 @@ pub(crate) struct BaseItemDtoFields {
     settings: bool,
     external_urls: bool,
     remote_trailers: bool,
+    is_hd: bool,
 }
 
 impl BaseItemDtoFields {
@@ -87,6 +88,7 @@ impl BaseItemDtoFields {
             settings: true,
             external_urls: true,
             remote_trailers: true,
+            is_hd: true,
         }
     }
 
@@ -108,6 +110,7 @@ impl BaseItemDtoFields {
             settings: false,
             external_urls: false,
             remote_trailers: false,
+            is_hd: false,
         }
     }
 
@@ -145,6 +148,8 @@ impl BaseItemDtoFields {
                 result.external_urls = true;
             } else if field.eq_ignore_ascii_case("RemoteTrailers") || field.trim() == "35" {
                 result.remote_trailers = true;
+            } else if field.eq_ignore_ascii_case("IsHD") || field.trim() == "47" {
+                result.is_hd = true;
             }
         }
         result
@@ -233,6 +238,11 @@ impl BaseItemDtoFields {
     #[must_use]
     pub(crate) const fn wants_remote_trailers(self) -> bool {
         self.remote_trailers
+    }
+
+    #[must_use]
+    pub(crate) const fn wants_is_hd(self) -> bool {
+        self.is_hd
     }
 
     #[cfg(test)]
@@ -416,6 +426,8 @@ pub struct BaseItemDto {
     pub width: Option<i32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub height: Option<i32>,
+    #[serde(rename = "IsHD", skip_serializing_if = "Option::is_none")]
+    pub is_hd: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub has_subtitles: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1206,6 +1218,7 @@ pub(crate) fn item_to_dto(item: base_item::Model, server_id: &str) -> BaseItemDt
         end_date: metadata_api_datetime(item.data.as_ref(), &["EndDate", "end_date"]),
         width: metadata_i32(item.data.as_ref(), &["Width", "width"]),
         height: metadata_i32(item.data.as_ref(), &["Height", "height"]),
+        is_hd: None,
         has_subtitles: None,
         video_type,
         video_3d_format,
@@ -1267,6 +1280,13 @@ pub(crate) fn item_to_dto_with_fields(
     dto.chapters = fields.wants_chapters().then(Vec::new);
     dto.external_urls = fields.wants_external_urls().then(Vec::new);
     dto.remote_trailers = remote_trailers;
+    // `BaseItem.IsHD` is derived from the persisted item height. For legacy
+    // compatibility the official projector writes the property only when it
+    // is requested and true; its wire name retains the uppercase acronym.
+    dto.is_hd = fields
+        .wants_is_hd()
+        .then_some(dto.height.is_some_and(|height| height >= 720))
+        .filter(|is_hd| *is_hd);
     if let Some(settings) = settings {
         dto.locked_fields = Some(settings.locked_fields);
         dto.is_locked = Some(settings.is_locked);
@@ -3908,6 +3928,7 @@ mod tests {
         assert_eq!(dto.preferred_metadata_country_code.as_deref(), Some("JP"));
         assert_eq!(dto.width, Some(1920));
         assert_eq!(dto.height, Some(1080));
+        assert_eq!(dto.is_hd, Some(true));
         assert_eq!(dto.media_type.as_deref(), Some("Video"));
         assert_eq!(dto.extra_type.as_deref(), Some("BehindTheScenes"));
         assert_eq!(dto.air_days, ["Monday", "Friday"]);
@@ -3953,6 +3974,23 @@ mod tests {
             ])
         );
         assert_eq!(json["EndDate"], "2020-01-02T00:00:00.000Z");
+        assert_eq!(json["IsHD"], true);
+        assert!(json.get("IsHd").is_none());
+
+        let without_is_hd = item_to_dto_with_fields(
+            item.clone(),
+            "server",
+            BaseItemDtoFields::from_names(&["Height".to_owned()]),
+        );
+        assert_eq!(without_is_hd.is_hd, None);
+        for field in ["IsHD", "ishd", "47"] {
+            let selected = item_to_dto_with_fields(
+                item.clone(),
+                "server",
+                BaseItemDtoFields::from_names(&[field.to_owned()]),
+            );
+            assert_eq!(selected.is_hd, Some(true), "{field}");
+        }
 
         let mut empty_item = item.clone();
         empty_item.data = None;

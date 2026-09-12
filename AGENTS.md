@@ -278,6 +278,10 @@
   hierarchy lookup. Preserve the official single-item Playlist owner/administrator override and
   the BoxSet collection-management authorization, while keeping batched Playlist DTOs on the normal
   intrinsic-plus-policy wrapper.
+- Project `IsHD` only when `ItemFields.IsHD` is requested (including default all-fields item
+  details), and only emit it when the persisted item height is at least 720, matching the official
+  legacy compatibility behavior. Preserve the uppercase acronym in the wire key, accept the field
+  name case-insensitively and its defined integer value `47`, and never serialize it as `IsHd`.
 
 ## Compatibility expectations
 

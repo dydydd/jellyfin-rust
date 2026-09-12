@@ -183,7 +183,7 @@ pub struct BaseItemDto {
     pub remote_trailers: Option<Vec<crate::MediaUrl>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub provider_ids: Option<HashMap<String, String>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "IsHD", skip_serializing_if = "Option::is_none")]
     pub is_hd: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub is_folder: Option<bool>,
