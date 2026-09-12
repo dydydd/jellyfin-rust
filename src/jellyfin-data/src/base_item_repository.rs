@@ -2222,7 +2222,7 @@ impl BaseItemRepository {
                 .column(user_data::Column::ItemId)
                 .from((Alias::new("jellyfin"), user_data::Entity))
                 .and_where(user_data::Column::UserId.eq(user_id))
-                .and_where(user_data::Column::Likes.eq(is_liked))
+                .and_where(user_data::Column::Likes.eq(true))
                 .to_owned();
             select = if is_liked {
                 select.filter(base_item::Column::Id.in_subquery(liked_items))
