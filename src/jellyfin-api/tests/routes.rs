@@ -358,6 +358,37 @@ async fn activity_log_routes_match_the_official_controller_contract() {
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(body_json(response).await["Items"][0]["Id"], oldest.id);
 
+    for (route, query) in [
+        (
+            "/System/ActivityLog/Entries",
+            format!(
+                "name={marker}&limit=2&SortBy=Username&SortBy=DateCreated\
+                 &SortOrder=Ascending&SortOrder=Descending"
+            ),
+        ),
+        (
+            "/system/activitylog/entries",
+            format!("name={marker}&limit=2&sortby=6&sortby=5&sortorder=0&sortorder=1"),
+        ),
+    ] {
+        let response = app
+            .clone()
+            .oneshot(authenticated_request(
+                "GET",
+                &format!("{route}?{}", query.replace(' ', "")),
+                &administrator_session.access_token,
+                Body::empty(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK, "{route}");
+        let page = body_json(response).await;
+        assert_eq!(page["TotalRecordCount"], 3, "{route}");
+        assert_eq!(page["Items"].as_array().unwrap().len(), 2, "{route}");
+        assert_eq!(page["Items"][0]["Id"], newest.id, "{route}");
+        assert_eq!(page["Items"][1]["Id"], oldest.id, "{route}");
+    }
+
     let response = app
         .clone()
         .oneshot(authenticated_request(

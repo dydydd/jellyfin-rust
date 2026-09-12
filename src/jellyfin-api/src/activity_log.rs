@@ -2,9 +2,10 @@ use std::sync::Arc;
 
 use axum::{
     Json,
-    extract::{OriginalUri, Query, State, rejection::QueryRejection},
+    extract::{OriginalUri, State},
     http::HeaderMap,
 };
+use axum_extra::extract::{Query, QueryRejection};
 use jellyfin_data::{
     ActivityLogQuery, ActivityLogSortBy, SortDirection,
     entities::activity_log::{self, LogSeverity},
@@ -42,10 +43,20 @@ pub(crate) struct ActivityLogParameters {
     username: Option<String>,
     #[serde(alias = "Severity")]
     severity: Option<String>,
-    #[serde(alias = "SortBy", alias = "sortby")]
-    sort_by: Option<String>,
-    #[serde(alias = "SortOrder", alias = "sortorder")]
-    sort_order: Option<String>,
+    #[serde(
+        default,
+        alias = "SortBy",
+        alias = "sortby",
+        deserialize_with = "crate::query::comma::deserialize"
+    )]
+    sort_by: Vec<String>,
+    #[serde(
+        default,
+        alias = "SortOrder",
+        alias = "sortorder",
+        deserialize_with = "crate::query::comma::deserialize"
+    )]
+    sort_order: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -97,8 +108,8 @@ pub(crate) async fn entries(
 
 impl ActivityLogParameters {
     fn try_into_query(self) -> Result<ActivityLogQuery, ApiError> {
-        let sort_by = parse_csv(self.sort_by.as_deref(), parse_sort_by)?;
-        let sort_order = parse_csv(self.sort_order.as_deref(), parse_sort_direction)?;
+        let sort_by = parse_collection(&self.sort_by, parse_sort_by)?;
+        let sort_order = parse_collection(&self.sort_order, parse_sort_direction)?;
         let severity = self
             .severity
             .as_deref()
@@ -167,20 +178,14 @@ impl From<activity_log::Model> for ActivityLogEntry {
     }
 }
 
-fn parse_csv<T>(
-    value: Option<&str>,
+fn parse_collection<T>(
+    values: &[String],
     parse: impl Fn(&str) -> Option<T>,
 ) -> Result<Vec<T>, ApiError> {
-    value.filter(|value| !value.is_empty()).map_or_else(
-        || Ok(Vec::new()),
-        |value| {
-            value
-                .split(',')
-                .map(str::trim)
-                .map(|value| parse(value).ok_or(ApiError::InvalidRequest))
-                .collect()
-        },
-    )
+    values
+        .iter()
+        .map(|value| parse(value).ok_or(ApiError::InvalidRequest))
+        .collect()
 }
 
 fn parse_sort_by(value: &str) -> Option<ActivityLogSortBy> {
