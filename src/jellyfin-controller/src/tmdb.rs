@@ -118,11 +118,6 @@ impl TmdbClient {
         Self::with_base_url_and_locale(api_key, TMDB_API_BASE_URL.to_owned(), language, country)
     }
 
-    #[must_use]
-    pub(crate) fn language(&self) -> &str {
-        &self.language
-    }
-
     fn with_base_url_and_locale(
         api_key: impl Into<String>,
         base_url: impl Into<String>,
@@ -2164,6 +2159,7 @@ fn upsert_i32(data: &mut serde_json::Map<String, Value>, key: &str, value: Optio
 pub(crate) fn images_to_remote_images(
     images: TmdbImages,
     include_all_languages: bool,
+    preferred_language: Option<&str>,
 ) -> Vec<RemoteImageInfo> {
     let mut result = Vec::new();
     append_images(&mut result, images.posters, ImageType::Primary, "w342");
@@ -2174,12 +2170,19 @@ pub(crate) fn images_to_remote_images(
     // advertises Primary, so returning Profile here would make a
     // `type=Primary` remote-image query silently discard every portrait.
     append_images(&mut result, images.profiles, ImageType::Primary, "w185");
-    if !include_all_languages {
+    if !include_all_languages
+        && let Some(preferred_language) =
+            preferred_language.filter(|value| !value.trim().is_empty())
+    {
+        // ProviderManager.GetImages keeps the requested language, English,
+        // and language-neutral artwork. Do not hard-code English here: doing
+        // so hides the configured-language posters the client asked to see.
         result.retain(|image| {
-            image
-                .language
-                .as_deref()
-                .is_none_or(|language| language.is_empty() || language.eq_ignore_ascii_case("en"))
+            image.language.as_deref().is_none_or(|language| {
+                language.trim().is_empty()
+                    || language.eq_ignore_ascii_case(preferred_language)
+                    || language.eq_ignore_ascii_case("en")
+            })
         });
     }
     result
@@ -3542,16 +3545,47 @@ mod tests {
             }],
         };
 
-        let all = images_to_remote_images(images.clone(), true);
+        let all = images_to_remote_images(images.clone(), true, Some("en"));
         assert_eq!(all.len(), 3);
         assert_eq!(all[0].image_type, ImageType::Primary);
         assert_eq!(all[1].image_type, ImageType::Backdrop);
         assert_eq!(all[2].image_type, ImageType::Primary);
 
-        let english_only = images_to_remote_images(images, false);
+        let english_only = images_to_remote_images(images, false, Some("en"));
         assert_eq!(english_only.len(), 2);
         assert_eq!(english_only[0].image_type, ImageType::Primary);
         assert_eq!(english_only[1].image_type, ImageType::Primary);
+    }
+
+    #[test]
+    fn remote_images_keep_the_configured_language_english_and_language_neutral() {
+        let images = TmdbImages {
+            posters: [Some("zh"), Some("en"), None, Some("de")]
+                .into_iter()
+                .enumerate()
+                .map(|(index, language)| TmdbImage {
+                    file_path: Some(format!("/poster-{index}.jpg")),
+                    iso_639_1: language.map(str::to_owned),
+                    ..TmdbImage::default()
+                })
+                .collect(),
+            ..TmdbImages::default()
+        };
+
+        let filtered = images_to_remote_images(images.clone(), false, Some("zh"));
+        assert_eq!(
+            filtered
+                .iter()
+                .map(|image| image.language.as_deref())
+                .collect::<Vec<_>>(),
+            [Some("zh"), Some("en"), None]
+        );
+
+        assert_eq!(
+            images_to_remote_images(images.clone(), false, None).len(),
+            4
+        );
+        assert_eq!(images_to_remote_images(images, true, Some("zh")).len(), 4);
     }
 
     #[test]

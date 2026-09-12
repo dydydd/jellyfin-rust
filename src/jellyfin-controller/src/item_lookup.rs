@@ -251,12 +251,13 @@ impl ItemLookupService {
             "Person" => client.person_images(tmdb_id).await?,
             _ => return Ok(empty_remote_images()),
         };
-        let mut images = images_to_remote_images(images, include_all_languages);
+        let mut images =
+            images_to_remote_images(images, include_all_languages, Some(metadata_language));
         if let Some(image_type) = image_type {
             images.retain(|image| image.image_type == image_type);
         }
         let total_record_count = i32::try_from(images.len()).unwrap_or(i32::MAX);
-        let image_language = client.language().split('-').next();
+        let image_language = (!metadata_language.trim().is_empty()).then_some(metadata_language);
         let mut images = order_by_language_descending(images, image_language);
         if start_index > 0 {
             images = images.into_iter().skip(start_index).collect();
