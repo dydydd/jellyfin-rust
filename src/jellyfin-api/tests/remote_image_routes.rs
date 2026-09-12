@@ -5,11 +5,14 @@ use axum::{
 use jellyfin_api::AppState;
 use jellyfin_controller::UserService;
 use jellyfin_data::{
-    BaseItemRepository, DatabaseConfig, DeviceRepository, NewBaseItem, NewDevice,
+    BaseItemImageRepository, BaseItemRepository, DatabaseConfig, DeviceRepository, NewBaseItem,
+    NewDevice,
     entities::{base_item, user},
 };
 use sea_orm::{ColumnTrait, ConnectionTrait, DatabaseConnection, EntityTrait, QueryFilter};
 use serde_json::{Value, json};
+use std::path::PathBuf;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tower::ServiceExt;
 use uuid::Uuid;
 
@@ -169,19 +172,40 @@ async fn exercise_remote_image_routes(database_name: &str) {
         .await;
     assert_eq!(missing_download.status(), StatusCode::NOT_FOUND);
 
-    let admin_download = fixture.post(&download_route, &fixture.admin_token).await;
-    assert_eq!(admin_download.status(), StatusCode::NOT_FOUND);
-
-    let lowercase_download = fixture
+    let image_bytes = b"remote image route bytes";
+    let (image_url, upstream) = image_server(image_bytes).await;
+    let encoded_url = image_url.replace(':', "%3A").replace('/', "%2F");
+    let admin_download = fixture
         .post(
             &format!(
-                "/items/{}/remoteimages/download?type=0&imageurl=https%3A%2F%2Fexample.invalid%2Fposter.jpg",
+                "/Items/{}/RemoteImages/Download?type=Primary&imageUrl={encoded_url}",
                 fixture.item_id
             ),
             &fixture.admin_token,
         )
         .await;
-    assert_eq!(lowercase_download.status(), StatusCode::NOT_FOUND);
+    assert_eq!(admin_download.status(), StatusCode::NO_CONTENT);
+    upstream.await.expect("image upstream task");
+    let stored = BaseItemImageRepository::new(fixture.database.clone())
+        .primary(fixture.item_id)
+        .await
+        .expect("primary image lookup")
+        .expect("downloaded primary image");
+    assert_eq!(tokio::fs::read(stored.path).await.unwrap(), image_bytes);
+
+    let (image_url, upstream) = image_server(image_bytes).await;
+    let encoded_url = image_url.replace(':', "%3A").replace('/', "%2F");
+    let lowercase_download = fixture
+        .post(
+            &format!(
+                "/items/{}/remoteimages/download?type=0&imageurl={encoded_url}",
+                fixture.item_id
+            ),
+            &fixture.admin_token,
+        )
+        .await;
+    assert_eq!(lowercase_download.status(), StatusCode::NO_CONTENT);
+    upstream.await.expect("lowercase image upstream task");
 
     let invalid_download_type = fixture
         .post(
@@ -205,6 +229,7 @@ struct Fixture {
     user_id: Uuid,
     user_token: String,
     item_id: Uuid,
+    storage_root: PathBuf,
 }
 
 impl Fixture {
@@ -263,11 +288,22 @@ impl Fixture {
             .await
             .expect("movie item creation");
 
-        let app = jellyfin_api::router(AppState::new(
-            database.clone(),
-            "Remote Image Test Server".to_owned(),
-            "http://127.0.0.1:8096".to_owned(),
-        ));
+        let storage_root = std::env::temp_dir().join(format!("remote-image-routes-{suffix}"));
+        let program_data = storage_root.join("programdata");
+        let app = jellyfin_api::router(
+            AppState::new(
+                database.clone(),
+                "Remote Image Test Server".to_owned(),
+                "http://127.0.0.1:8096".to_owned(),
+            )
+            .with_storage_paths(
+                &program_data,
+                storage_root.join("web"),
+                storage_root.join("cache/images"),
+                storage_root.join("cache"),
+                program_data.join("metadata"),
+            ),
+        );
 
         Self {
             database,
@@ -277,6 +313,7 @@ impl Fixture {
             user_id: user.id,
             user_token,
             item_id: item.id,
+            storage_root,
         }
     }
 
@@ -332,7 +369,37 @@ impl Fixture {
             .await
             .expect("user cleanup");
         self.database.close().await.unwrap();
+        if tokio::fs::try_exists(&self.storage_root)
+            .await
+            .unwrap_or(false)
+        {
+            tokio::fs::remove_dir_all(&self.storage_root)
+                .await
+                .expect("remote image storage cleanup");
+        }
     }
+}
+
+async fn image_server(bytes: &'static [u8]) -> (String, tokio::task::JoinHandle<()>) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("image upstream bind");
+    let address = listener.local_addr().expect("image upstream address");
+    let task = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.expect("image upstream accept");
+        let mut request = [0_u8; 1024];
+        let _ = stream.read(&mut request).await.expect("image request read");
+        let headers = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: image/jpeg\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            bytes.len()
+        );
+        stream
+            .write_all(headers.as_bytes())
+            .await
+            .expect("image response headers");
+        stream.write_all(bytes).await.expect("image response body");
+    });
+    (format!("http://{address}/poster.jpg"), task)
 }
 
 async fn body_json(response: axum::response::Response) -> Value {

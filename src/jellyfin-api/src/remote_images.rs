@@ -143,9 +143,6 @@ pub(crate) async fn download(
     let image_url = query.image_url.ok_or(ApiError::NotFound)?;
     ensure_item_exists(&state, item_id).await?;
 
-    if state.tmdb_api_key.read().await.is_empty() {
-        return Err(BaseItemError::NotFound.into());
-    }
     state
         .item_images
         .download_remote_image(item_id, image_type, &image_url)
