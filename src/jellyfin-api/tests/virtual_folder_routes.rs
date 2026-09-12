@@ -26,6 +26,44 @@ async fn library_structure_controller_contract_and_success_paths() {
     fixture.cleanup().await;
 }
 
+#[tokio::test]
+async fn create_virtual_folder_binds_kotlin_sdk_repeated_paths() {
+    let fixture = Fixture::new().await;
+    fixture.complete_startup().await;
+    let name = format!("Repeated paths {}", fixture.suffix);
+    // UrlBuilder emits one query key per Collection element. The official
+    // CommaDelimitedCollectionModelBinder preserves both repeated values.
+    let uri = format!(
+        "/Library/VirtualFolders?name={}&collectionType=movies&paths={}&paths={}",
+        encoded(&name),
+        encoded(&fixture.media_path),
+        encoded(&fixture.stale_path),
+    );
+    let response = fixture
+        .send(
+            Method::POST,
+            &uri,
+            Some(&fixture.admin_token),
+            Some(json!({ "LibraryOptions": {} })),
+        )
+        .await;
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+
+    let list = fixture.get_list().await;
+    let locations = list
+        .as_array()
+        .expect("virtual folder array")
+        .iter()
+        .find(|folder| folder["Name"] == name)
+        .and_then(|folder| folder["Locations"].as_array())
+        .expect("created virtual folder locations");
+    assert_eq!(locations.len(), 2);
+    assert!(locations.iter().any(|path| path == &fixture.media_path));
+    assert!(locations.iter().any(|path| path == &fixture.stale_path));
+
+    fixture.cleanup().await;
+}
+
 async fn assert_library_access(fixture: &Fixture) {
     assert_eq!(
         fixture

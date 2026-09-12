@@ -364,6 +364,9 @@
   segment, including compound segments such as `ActiveEncodings`.
 - Follow the official `JsonDefaults` value semantics. Where it permits them, accept numeric strings and case-insensitive or integer enum representations, and mirror the full official parameter set when implementing a legacy endpoint.
 - Bind the eight official virtual-folder `CollectionTypeOptions` values case-insensitively and persist/project their canonical lowercase wire names. Keep `mixed` valid for virtual-folder management but omit it from `BaseItemDto.CollectionType`, and tolerate legacy mixed-case persisted view metadata.
+- Bind virtual-folder creation `Paths` with the official comma-delimited collection model binder:
+  split a single comma-delimited value, but preserve every repeated query key emitted by the Kotlin
+  SDK as one path. Never deserialize a collection-valued `paths` query into a scalar.
 - Resolve direct Genre and MusicGenre detail names through their official deterministic item-by-name
   path and UTF-16LE identifier, creating the persisted entity idempotently. Hyphenated slug names
   only search persisted entities in `&`, `/`, then `?` substitution order; a miss returns an empty

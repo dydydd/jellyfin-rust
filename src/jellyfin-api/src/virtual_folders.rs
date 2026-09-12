@@ -2,10 +2,11 @@ use std::sync::Arc;
 
 use axum::{
     Json,
-    extract::{OriginalUri, Query, State, rejection::JsonRejection},
+    extract::{OriginalUri, State, rejection::JsonRejection},
     http::HeaderMap,
     response::{IntoResponse, Response},
 };
+use axum_extra::extract::Query;
 use jellyfin_controller::VirtualFolder;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -22,7 +23,12 @@ pub(crate) struct CreateQuery {
         alias = "collectiontype"
     )]
     collection_type: Option<String>,
-    paths: Option<String>,
+    #[serde(
+        default,
+        alias = "Paths",
+        deserialize_with = "crate::query::comma::deserialize_model_binder"
+    )]
+    paths: Vec<String>,
     #[serde(default, rename = "refreshLibrary", alias = "RefreshLibrary")]
     refresh_library: bool,
 }
@@ -124,10 +130,6 @@ pub(crate) async fn create(
     let options = body
         .and_then(|body| body.library_options)
         .unwrap_or_else(|| json!({ "Enabled": true, "PathInfos": [] }));
-    let paths = query
-        .paths
-        .map(|paths| paths.split(',').map(str::to_owned).collect::<Vec<String>>())
-        .unwrap_or_default();
     let refresh_after_create = query.refresh_library;
     state
         .virtual_folders
@@ -135,7 +137,7 @@ pub(crate) async fn create(
             &name,
             query.collection_type,
             options,
-            paths,
+            query.paths,
             query.refresh_library,
         )
         .await?;
