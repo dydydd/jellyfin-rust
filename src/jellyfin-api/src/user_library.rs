@@ -17,14 +17,14 @@ use jellyfin_controller::{
     library::{get_common_media_source_prefix, get_media_source_name},
 };
 use jellyfin_data::{
-    BaseItemPage, ChapterRecord, ItemValueCounts,
+    BaseItemDtoRelatedCounts, BaseItemPage, ChapterRecord, ItemValueCounts,
     entities::{base_item, item_value, user_data},
 };
 use jellyfin_model::{
-    ChapterInfo, ExternalUrl, ImageType, IsoType, MediaAttachment, MediaProtocol, MediaSourceInfo,
-    MediaSourceType, MediaStream, MediaStreamType, MediaUrl, MetadataField, NameIdPair, PersonKind,
-    PlayAccess, SubtitlePlaybackMode, TransportStreamTimestamp, UserConfiguration, UserItemDataDto,
-    UserPolicy, Video3DFormat, VideoType,
+    ChapterInfo, ExternalUrl, ImageType, IsoType, LocationType, MediaAttachment, MediaProtocol,
+    MediaSourceInfo, MediaSourceType, MediaStream, MediaStreamType, MediaUrl, MetadataField,
+    NameIdPair, PersonKind, PlayAccess, SubtitlePlaybackMode, TransportStreamTimestamp,
+    UserConfiguration, UserItemDataDto, UserPolicy, Video3DFormat, VideoType,
 };
 use jellyfin_providers::external_url::{
     ExternalUrlItem, ExternalUrlItemKind, ExternalUrlProviderRegistry,
@@ -70,6 +70,11 @@ pub(crate) struct BaseItemDtoFields {
     remote_trailers: bool,
     is_hd: bool,
     cumulative_run_time_ticks: bool,
+    date_last_media_added: bool,
+    series_studio: bool,
+    enable_media_source_display: bool,
+    local_trailer_count: bool,
+    special_feature_count: bool,
 }
 
 impl BaseItemDtoFields {
@@ -93,6 +98,11 @@ impl BaseItemDtoFields {
             remote_trailers: true,
             is_hd: true,
             cumulative_run_time_ticks: true,
+            date_last_media_added: true,
+            series_studio: true,
+            enable_media_source_display: true,
+            local_trailer_count: true,
+            special_feature_count: true,
         }
     }
 
@@ -116,6 +126,11 @@ impl BaseItemDtoFields {
             remote_trailers: false,
             is_hd: false,
             cumulative_run_time_ticks: false,
+            date_last_media_added: false,
+            series_studio: false,
+            enable_media_source_display: false,
+            local_trailer_count: false,
+            special_feature_count: false,
         }
     }
 
@@ -157,6 +172,17 @@ impl BaseItemDtoFields {
                 result.is_hd = true;
             } else if field.eq_ignore_ascii_case("CumulativeRunTimeTicks") || field.trim() == "7" {
                 result.cumulative_run_time_ticks = true;
+            } else if field.eq_ignore_ascii_case("DateLastMediaAdded") || field.trim() == "10" {
+                result.date_last_media_added = true;
+            } else if field.eq_ignore_ascii_case("SeriesStudio") || field.trim() == "29" {
+                result.series_studio = true;
+            } else if field.eq_ignore_ascii_case("EnableMediaSourceDisplay") || field.trim() == "42"
+            {
+                result.enable_media_source_display = true;
+            } else if field.eq_ignore_ascii_case("LocalTrailerCount") || field.trim() == "46" {
+                result.local_trailer_count = true;
+            } else if field.eq_ignore_ascii_case("SpecialFeatureCount") || field.trim() == "48" {
+                result.special_feature_count = true;
             }
         }
         result
@@ -257,6 +283,31 @@ impl BaseItemDtoFields {
         self.cumulative_run_time_ticks
     }
 
+    #[must_use]
+    pub(crate) const fn wants_date_last_media_added(self) -> bool {
+        self.date_last_media_added
+    }
+
+    #[must_use]
+    pub(crate) const fn wants_series_studio(self) -> bool {
+        self.series_studio
+    }
+
+    #[must_use]
+    pub(crate) const fn wants_enable_media_source_display(self) -> bool {
+        self.enable_media_source_display
+    }
+
+    #[must_use]
+    pub(crate) const fn wants_local_trailer_count(self) -> bool {
+        self.local_trailer_count
+    }
+
+    #[must_use]
+    pub(crate) const fn wants_special_feature_count(self) -> bool {
+        self.special_feature_count
+    }
+
     #[cfg(test)]
     #[must_use]
     pub(crate) const fn without_chapters(mut self) -> Self {
@@ -293,11 +344,15 @@ pub struct BaseItemDto {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub date_created: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub date_last_media_added: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub sort_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub forced_sort_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub enable_media_source_display: Option<bool>,
     #[serde(skip)]
     pub(crate) media_source_path: Option<String>,
     #[serde(skip)]
@@ -325,6 +380,10 @@ pub struct BaseItemDto {
     pub is_folder: bool,
     pub is_virtual_item: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub is_place_holder: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub location_type: Option<LocationType>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub parent_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub child_count: Option<u64>,
@@ -349,6 +408,12 @@ pub struct BaseItemDto {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub trailer_count: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub local_trailer_count: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub special_feature_count: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub part_count: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub display_preferences_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub index_number: Option<i32>,
@@ -370,6 +435,8 @@ pub struct BaseItemDto {
     pub series_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub series_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub series_studio: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub season_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -541,6 +608,7 @@ pub struct BaseItemQueryResult {
 pub(crate) struct EpisodeHierarchyNames {
     series_name: Option<String>,
     season_name: Option<String>,
+    series_studio: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1144,6 +1212,18 @@ pub(crate) fn item_to_dto(item: base_item::Model, server_id: &str) -> BaseItemDt
     let air_time = is_item_type(&item.item_type, "Series")
         .then(|| metadata_string(item.data.as_ref(), &["AirTime", "airTime", "air_time"]))
         .flatten();
+    let location_type = item_location_type(&item);
+    let is_place_holder = (is_video_item_type(&item.item_type)
+        && metadata_bool(
+            item.data.as_ref(),
+            &[
+                "IsPlaceHolder",
+                "isPlaceHolder",
+                "isplaceholder",
+                "is_place_holder",
+            ],
+        ) == Some(true))
+    .then_some(true);
     BaseItemDto {
         name: item.name,
         server_id: server_id.to_owned(),
@@ -1155,9 +1235,11 @@ pub(crate) fn item_to_dto(item: base_item::Model, server_id: &str) -> BaseItemDt
         can_download: None,
         play_access: None,
         date_created: Some(item.date_created.to_rfc3339()),
+        date_last_media_added: None,
         sort_name: item.sort_name,
         forced_sort_name: None,
         path: item.path,
+        enable_media_source_display: None,
         media_source_path,
         media_source_bitrate,
         media_source_container,
@@ -1183,6 +1265,8 @@ pub(crate) fn item_to_dto(item: base_item::Model, server_id: &str) -> BaseItemDt
         display_order,
         is_folder: item.is_folder,
         is_virtual_item: item.is_virtual_item,
+        is_place_holder,
+        location_type,
         parent_id: item.parent_id.map(|id| id.simple().to_string()),
         child_count: None,
         recursive_item_count: None,
@@ -1195,6 +1279,9 @@ pub(crate) fn item_to_dto(item: base_item::Model, server_id: &str) -> BaseItemDt
         series_count: None,
         song_count: None,
         trailer_count: None,
+        local_trailer_count: None,
+        special_feature_count: None,
+        part_count: None,
         display_preferences_id: None,
         index_number: item.index_number,
         parent_index_number: item.parent_index_number,
@@ -1206,6 +1293,7 @@ pub(crate) fn item_to_dto(item: base_item::Model, server_id: &str) -> BaseItemDt
         presentation_unique_key: item.presentation_unique_key,
         series_id: item.series_id.map(|id| id.simple().to_string()),
         series_name: metadata_string(item.data.as_ref(), &["SeriesName", "series_name"]),
+        series_studio: None,
         season_id: item.season_id.map(|id| id.simple().to_string()),
         season_name: metadata_string(item.data.as_ref(), &["SeasonName", "season_name"]),
         album: has_album
@@ -1319,6 +1407,24 @@ pub(crate) fn item_to_dto_with_fields(
     let cumulative_run_time_ticks = (fields.wants_cumulative_run_time_ticks() && item.is_folder)
         .then_some(item.runtime_ticks)
         .flatten();
+    let date_last_media_added = (fields.wants_date_last_media_added() && item.is_folder)
+        .then(|| {
+            metadata_api_datetime(
+                item.data.as_ref(),
+                &[
+                    "DateLastMediaAdded",
+                    "dateLastMediaAdded",
+                    "date_last_media_added",
+                ],
+            )
+        })
+        .flatten();
+    // Ordinary library items always return true. Channel sources delegate to
+    // ChannelManager in the official server; Rust has no equivalent provider
+    // capability state, so do not fabricate that channel-specific value.
+    let enable_media_source_display = (fields.wants_enable_media_source_display()
+        && !item_source_is_channel(item.data.as_ref()))
+    .then_some(true);
     let mut dto = item_to_dto(item, server_id);
     dto.can_delete = can_delete;
     dto.can_download = can_download;
@@ -1326,6 +1432,8 @@ pub(crate) fn item_to_dto_with_fields(
     dto.external_urls = fields.wants_external_urls().then(Vec::new);
     dto.remote_trailers = remote_trailers;
     dto.cumulative_run_time_ticks = cumulative_run_time_ticks;
+    dto.date_last_media_added = date_last_media_added;
+    dto.enable_media_source_display = enable_media_source_display;
     // `BaseItem.IsHD` is derived from the persisted item height. For legacy
     // compatibility the official projector writes the property only when it
     // is requested and true; its wire name retains the uppercase acronym.
@@ -1341,6 +1449,42 @@ pub(crate) fn item_to_dto_with_fields(
         dto.preferred_metadata_country_code = settings.preferred_metadata_country_code;
     }
     dto
+}
+
+pub(crate) async fn related_item_counts_for_items(
+    state: &AppState,
+    items: &[base_item::Model],
+    fields: BaseItemDtoFields,
+) -> Result<HashMap<Uuid, BaseItemDtoRelatedCounts>, ApiError> {
+    let include_extra_counts =
+        fields.wants_local_trailer_count() || fields.wants_special_feature_count();
+    let item_ids = items
+        .iter()
+        .filter(|item| {
+            include_extra_counts
+                || (is_video_item_type(&item.item_type)
+                    && metadata_value(item.data.as_ref(), &["AdditionalParts", "additional_parts"])
+                        .is_some_and(|value| {
+                            value.as_array().is_some_and(|parts| !parts.is_empty())
+                        }))
+        })
+        .map(|item| item.id)
+        .collect::<Vec<_>>();
+    Ok(state.base_items.dto_related_item_counts(&item_ids).await?)
+}
+
+pub(crate) fn attach_related_item_counts(
+    dto: &mut BaseItemDto,
+    fields: BaseItemDtoFields,
+    counts: BaseItemDtoRelatedCounts,
+) {
+    dto.local_trailer_count = fields
+        .wants_local_trailer_count()
+        .then_some(counts.local_trailer_count);
+    dto.special_feature_count = fields
+        .wants_special_feature_count()
+        .then_some(counts.special_feature_count);
+    dto.part_count = counts.part_count;
 }
 
 pub(crate) struct ItemAccessPolicy {
@@ -1512,7 +1656,8 @@ pub(crate) async fn project_item_to_dto(
     remembered_user_data: Option<&user_data::Model>,
 ) -> Result<BaseItemDto, ApiError> {
     let item_id = item.id;
-    let mut hierarchy_names = episode_hierarchy_names(state, std::slice::from_ref(&item)).await?;
+    let mut hierarchy_names =
+        episode_hierarchy_names(state, std::slice::from_ref(&item), fields).await?;
     let hierarchy_names = hierarchy_names.remove(&item_id);
     project_item_to_dto_with_context(
         state,
@@ -1549,6 +1694,8 @@ pub(crate) async fn project_item_to_dto_with_context(
 ) -> Result<BaseItemDto, ApiError> {
     let item_id = item.id;
     let is_playlist = is_item_type(&item.item_type, "Playlist");
+    let mut related_item_counts =
+        related_item_counts_for_items(state, std::slice::from_ref(&item), fields).await?;
     let mut external_urls =
         external_urls_for_items(state, std::slice::from_ref(&item), fields).await?;
     let mut chapters = chapters_for_items(state, std::slice::from_ref(&item), fields).await?;
@@ -1603,6 +1750,11 @@ pub(crate) async fn project_item_to_dto_with_context(
         None
     };
     let mut dto = item_to_dto_with_fields(item, state.server_id(), fields);
+    attach_related_item_counts(
+        &mut dto,
+        fields,
+        related_item_counts.remove(&item_id).unwrap_or_default(),
+    );
     attach_external_urls(
         &mut dto,
         fields,
@@ -1906,46 +2058,71 @@ pub(crate) fn attach_external_urls(
 pub(crate) async fn episode_hierarchy_names(
     state: &AppState,
     items: &[base_item::Model],
+    fields: BaseItemDtoFields,
 ) -> Result<HashMap<Uuid, EpisodeHierarchyNames>, ApiError> {
-    let episodes = items
+    let hierarchy_items = items
         .iter()
-        .filter(|item| is_item_type(&item.item_type, "Episode"))
+        .filter(|item| {
+            is_item_type(&item.item_type, "Episode") || is_item_type(&item.item_type, "Season")
+        })
         .collect::<Vec<_>>();
-    if episodes.is_empty() {
+    if hierarchy_items.is_empty() {
         return Ok(HashMap::new());
     }
 
     let mut parent_ids = HashSet::new();
-    for item in &episodes {
-        if metadata_string(item.data.as_ref(), &["SeriesName", "series_name"])
-            .as_deref()
-            .is_none_or(str::is_empty)
-        {
+    for item in &hierarchy_items {
+        if is_item_type(&item.item_type, "Episode") {
+            if metadata_string(item.data.as_ref(), &["SeriesName", "series_name"])
+                .as_deref()
+                .is_none_or(str::is_empty)
+            {
+                parent_ids.extend(item.series_id);
+            }
+            if metadata_string(item.data.as_ref(), &["SeasonName", "season_name"])
+                .as_deref()
+                .is_none_or(str::is_empty)
+            {
+                parent_ids.extend(item.season_id);
+            }
+        }
+        if fields.wants_series_studio() {
             parent_ids.extend(item.series_id);
         }
-        if metadata_string(item.data.as_ref(), &["SeasonName", "season_name"])
-            .as_deref()
-            .is_none_or(str::is_empty)
-        {
-            parent_ids.extend(item.season_id);
-        }
     }
-    let parent_names = state
+    let parent_items = state
         .base_items
         .get_many(&parent_ids.into_iter().collect::<Vec<_>>())
         .await?
         .into_iter()
-        .filter_map(|item| item.name.map(|name| (item.id, name)))
+        .map(|item| (item.id, item))
         .collect::<HashMap<_, _>>();
 
-    Ok(episodes
+    Ok(hierarchy_items
         .into_iter()
         .map(|item| {
+            let series = item.series_id.and_then(|id| parent_items.get(&id));
             (
                 item.id,
                 EpisodeHierarchyNames {
-                    series_name: item.series_id.and_then(|id| parent_names.get(&id).cloned()),
-                    season_name: item.season_id.and_then(|id| parent_names.get(&id).cloned()),
+                    series_name: series.and_then(|series| series.name.clone()),
+                    season_name: item
+                        .season_id
+                        .and_then(|id| parent_items.get(&id))
+                        .and_then(|season| season.name.clone()),
+                    series_studio: fields
+                        .wants_series_studio()
+                        .then(|| {
+                            series
+                                .filter(|series| is_item_type(&series.item_type, "Series"))
+                                .and_then(|series| {
+                                    metadata_first_string(
+                                        series.data.as_ref(),
+                                        &["Studios", "studios"],
+                                    )
+                                })
+                        })
+                        .flatten(),
                 },
             )
         })
@@ -1965,6 +2142,7 @@ pub(crate) fn attach_episode_hierarchy_names(
     if dto.season_name.as_deref().is_none_or(str::is_empty) {
         dto.season_name.clone_from(&hierarchy_names.season_name);
     }
+    dto.series_studio.clone_from(&hierarchy_names.series_studio);
 }
 
 pub(crate) async fn media_source_policy_for_user(
@@ -2505,6 +2683,46 @@ fn is_item_type(item_type: &str, expected: &str) -> bool {
             .rsplit('.')
             .next()
             .is_some_and(|name| name.eq_ignore_ascii_case(expected))
+}
+
+fn item_location_type(item: &base_item::Model) -> Option<LocationType> {
+    // The official projector deliberately omits this for LiveTvProgram even
+    // though BaseItem otherwise exposes LocationType unconditionally.
+    if is_item_type(&item.item_type, "LiveTvProgram") {
+        return None;
+    }
+    match item.path.as_deref() {
+        None | Some("") => Some(if item_source_is_channel(item.data.as_ref()) {
+            LocationType::Remote
+        } else {
+            LocationType::Virtual
+        }),
+        Some(path)
+            if path.contains("://")
+                && !path
+                    .get(.."file://".len())
+                    .is_some_and(|prefix| prefix.eq_ignore_ascii_case("file://")) =>
+        {
+            Some(LocationType::Remote)
+        }
+        Some(_) => Some(LocationType::FileSystem),
+    }
+}
+
+fn item_source_is_channel(data: Option<&Value>) -> bool {
+    if metadata_string(data, &["ChannelId", "channelId", "channelid", "channel_id"])
+        .is_some_and(|channel_id| !channel_id.is_empty())
+    {
+        return true;
+    }
+    match metadata_value(
+        data,
+        &["SourceType", "sourceType", "sourcetype", "source_type"],
+    ) {
+        Some(Value::String(source_type)) => source_type.eq_ignore_ascii_case("Channel"),
+        Some(Value::Number(source_type)) => source_type.as_i64() == Some(1),
+        _ => false,
+    }
 }
 
 pub(crate) fn attach_user_data_dto(dto: &mut BaseItemDto, user_data: UserItemDataDto) {
@@ -3389,6 +3607,13 @@ fn metadata_strings(data: Option<&Value>, keys: &[&str]) -> Vec<String> {
                 .collect()
         })
         .unwrap_or_default()
+}
+
+fn metadata_first_string(data: Option<&Value>, keys: &[&str]) -> Option<String> {
+    metadata_value(data, keys)
+        .and_then(|value| value.as_array().cloned())
+        .and_then(|values| values.into_iter().next())
+        .and_then(|value| value.as_str().map(str::to_owned))
 }
 
 const MEDIA_TYPES: &[&str] = &["Unknown", "Video", "Audio", "Photo", "Book"];

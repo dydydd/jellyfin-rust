@@ -2105,6 +2105,8 @@ async fn page_to_dto_with_fields_and_options(
     dto_options: &PageDtoOptions,
 ) -> Result<user_library::BaseItemQueryResult, ApiError> {
     let item_ids = page.items.iter().map(|item| item.id).collect::<Vec<_>>();
+    let mut related_item_counts =
+        user_library::related_item_counts_for_items(state, &page.items, requested_fields).await?;
     let mut chapters =
         user_library::chapters_for_items(state, &page.items, requested_fields).await?;
     let mut external_urls =
@@ -2279,7 +2281,7 @@ async fn page_to_dto_with_fields_and_options(
     }
     let mut relations = user_library::load_relation_metadata(state, &page.items).await?;
     let mut episode_hierarchy_names =
-        user_library::episode_hierarchy_names(state, &page.items).await?;
+        user_library::episode_hierarchy_names(state, &page.items, requested_fields).await?;
     let series_image_item_ids = page
         .items
         .iter()
@@ -2353,6 +2355,11 @@ async fn page_to_dto_with_fields_and_options(
         let media_source_group_id = item.primary_version_id.unwrap_or(item_id);
         let mut dto =
             user_library::item_to_dto_with_fields(item, state.server_id(), requested_fields);
+        user_library::attach_related_item_counts(
+            &mut dto,
+            requested_fields,
+            related_item_counts.remove(&item_id).unwrap_or_default(),
+        );
         user_library::attach_external_urls(
             &mut dto,
             requested_fields,

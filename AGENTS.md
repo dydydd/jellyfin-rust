@@ -633,6 +633,21 @@
 - Project count-only `MediaSourceCount` for item pages with one batched, target-user-policy-aware
   alternate-version query. Always count the displayed item, preserve the official nullable-single-
   source behavior, and include episode groups without loading every `MediaSource`.
+- Project requested `LocalTrailerCount` and `SpecialFeatureCount` from relational extra children in
+  bounded page batches, returning real zeroes when requested. Share video-version extras and merged
+  Series extras like official owner resolution, count the complete official display-extra set, and
+  keep both fields omitted when not requested. Project `PartCount` without an `ItemFields` gate only
+  for Video items whose persisted `AdditionalParts` relationship is nonempty, using length plus one;
+  never emit a placeholder one or leak it from similarly shaped metadata on non-Video items.
+- Project `LocationType` for every non-Live-TV item from its persisted source and path: pathless
+  Channel items and non-file URIs are Remote, pathless library items are Virtual, and ordinary paths
+  plus file URIs are FileSystem. Project requested `EnableMediaSourceDisplay` as true for ordinary
+  non-Channel items, but do not invent the ChannelManager-dependent value for Channel items.
+- Project `IsPlaceHolder` only when a Video item's persisted metadata explicitly contains true; do
+  not substitute `IsVirtualItem` or emit false. Project requested `DateLastMediaAdded` only for
+  folders and only from persisted metadata. Resolve requested `SeriesStudio` for Episodes and
+  Seasons with one batched parent-Series load, taking the first Studio from the parent's persisted
+  JSON order rather than a normalized relation's sort order.
 - Filter alternate `MediaSources` and their full-source `MediaSourceCount` by the target user's
   standalone item visibility before loading streams or attachments. Always retain the explicitly
   displayed source, while user-less global projections retain every source.

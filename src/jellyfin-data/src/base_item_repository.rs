@@ -23,12 +23,14 @@ use crate::{
 };
 
 const HIERARCHY_ADVISORY_LOCK_KEY: i64 = 0x4241_5345_4954_454d;
+const DTO_RELATED_ITEM_COUNT_BATCH_SIZE: usize = 512;
 const VIDEO_ITEM_TYPES_SQL: &str = "('Video', 'Movie', 'Episode', 'MusicVideo', 'Trailer', \
     'MediaBrowser.Controller.Entities.Video', \
     'MediaBrowser.Controller.Entities.Movies.Movie', \
     'MediaBrowser.Controller.Entities.TV.Episode', \
     'MediaBrowser.Controller.Entities.MusicVideo', \
     'MediaBrowser.Controller.Entities.Trailer')";
+const SERIES_ITEM_TYPES_SQL: &str = "('Series', 'MediaBrowser.Controller.Entities.TV.Series')";
 const VERSIONED_MEDIA_ITEM_TYPES_SQL: &str = "('Audio', 'Video', 'Movie', 'Episode', 'MusicVideo', 'Trailer', \
     'MediaBrowser.Controller.Entities.Audio', \
     'MediaBrowser.Controller.Entities.Video', \
@@ -434,6 +436,14 @@ pub struct BaseItemCounts {
     pub item_count: i64,
 }
 
+/// Counts projected from persisted extra-owner and additional-part relationships.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct BaseItemDtoRelatedCounts {
+    pub local_trailer_count: i32,
+    pub special_feature_count: i32,
+    pub part_count: Option<i32>,
+}
+
 #[derive(Debug, Clone, Copy, FromQueryResult)]
 struct ParentChildCount {
     parent_id: Uuid,
@@ -444,6 +454,14 @@ struct ParentChildCount {
 struct MediaSourceCount {
     item_id: Uuid,
     source_count: i64,
+}
+
+#[derive(Debug, Clone, Copy, FromQueryResult)]
+struct DtoRelatedCountRow {
+    item_id: Uuid,
+    local_trailer_count: i32,
+    special_feature_count: i32,
+    part_count: Option<i32>,
 }
 
 #[derive(Debug, Clone, Copy, FromQueryResult)]
@@ -2454,6 +2472,109 @@ impl BaseItemRepository {
                 )
             })
             .collect())
+    }
+
+    /// Counts DTO extras and stacked-video parts for several displayed items.
+    ///
+    /// Extra ownership follows the relational child hierarchy used by the Rust scanner. Video
+    /// versions share their extras, while automatically merged Series rows share extras through
+    /// their presentation key, matching the official `GetExtraOwnerIds` overrides. Stacked-video
+    /// parts remain the persisted `AdditionalParts` relationship on the displayed video itself.
+    /// Requests are split into bounded batches, and each batch is aggregated in one PostgreSQL
+    /// statement rather than loading complete child or part rows.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error when an aggregate query fails.
+    pub async fn dto_related_item_counts(
+        &self,
+        item_ids: &[Uuid],
+    ) -> Result<HashMap<Uuid, BaseItemDtoRelatedCounts>, BaseItemError> {
+        let mut counts = HashMap::with_capacity(item_ids.len());
+        for item_ids in item_ids.chunks(DTO_RELATED_ITEM_COUNT_BATCH_SIZE) {
+            let values = item_ids
+                .iter()
+                .copied()
+                .map(SeaValue::from)
+                .collect::<Vec<_>>();
+            let requested_values = (1..=item_ids.len())
+                .map(|index| format!("(${index}::uuid)"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let sql = format!(
+                "WITH requested(item_id) AS (VALUES {requested_values}), \
+                 displayed AS (\
+                     SELECT requested.item_id, item.item_type, item.primary_version_id, \
+                            item.presentation_unique_key, \
+                            COALESCE(\
+                                item.data -> 'AdditionalParts', \
+                                item.data -> 'additional_parts'\
+                            ) AS additional_parts \
+                     FROM requested \
+                     INNER JOIN jellyfin.base_items AS item ON item.id = requested.item_id\
+                 ), owners AS (\
+                     SELECT DISTINCT displayed.item_id, owner.id AS owner_id \
+                     FROM displayed \
+                     INNER JOIN jellyfin.base_items AS owner ON owner.id = displayed.item_id \
+                        OR (displayed.item_type IN {VIDEO_ITEM_TYPES_SQL} \
+                            AND owner.item_type IN {VIDEO_ITEM_TYPES_SQL} \
+                            AND COALESCE(owner.primary_version_id, owner.id) = \
+                                COALESCE(displayed.primary_version_id, displayed.item_id)) \
+                        OR (displayed.item_type IN {SERIES_ITEM_TYPES_SQL} \
+                            AND owner.item_type IN {SERIES_ITEM_TYPES_SQL} \
+                            AND displayed.presentation_unique_key IS NOT NULL \
+                            AND owner.presentation_unique_key = displayed.presentation_unique_key)\
+                 ), extra_counts AS (\
+                     SELECT owners.item_id, \
+                            (COUNT(extra.id) FILTER (WHERE LOWER(COALESCE(\
+                                extra.data ->> 'ExtraType', \
+                                extra.data ->> 'extra_type'\
+                            )) = 'trailer'))::integer AS local_trailer_count, \
+                            (COUNT(extra.id) FILTER (WHERE LOWER(COALESCE(\
+                                extra.data ->> 'ExtraType', \
+                                extra.data ->> 'extra_type'\
+                            )) IN (\
+                                'unknown', 'behindthescenes', 'clip', 'deletedscene', \
+                                'interview', 'sample', 'scene', 'featurette', 'short'\
+                            )))::integer AS special_feature_count \
+                     FROM owners \
+                     LEFT JOIN jellyfin.base_items AS extra ON extra.parent_id = owners.owner_id \
+                     GROUP BY owners.item_id\
+                 ) \
+                 SELECT displayed.item_id, \
+                        COALESCE(extra_counts.local_trailer_count, 0)::integer \
+                            AS local_trailer_count, \
+                        COALESCE(extra_counts.special_feature_count, 0)::integer \
+                            AS special_feature_count, \
+                        CASE \
+                            WHEN displayed.item_type IN {VIDEO_ITEM_TYPES_SQL} \
+                             AND JSONB_TYPEOF(displayed.additional_parts) = 'array' \
+                             AND JSONB_ARRAY_LENGTH(displayed.additional_parts) > 0 \
+                            THEN JSONB_ARRAY_LENGTH(displayed.additional_parts) + 1 \
+                            ELSE NULL \
+                        END AS part_count \
+                 FROM displayed \
+                 LEFT JOIN extra_counts USING (item_id)"
+            );
+            let rows = DtoRelatedCountRow::find_by_statement(Statement::from_sql_and_values(
+                DbBackend::Postgres,
+                sql,
+                values,
+            ))
+            .all(self.database.as_ref())
+            .await?;
+            counts.extend(rows.into_iter().map(|row| {
+                (
+                    row.item_id,
+                    BaseItemDtoRelatedCounts {
+                        local_trailer_count: row.local_trailer_count,
+                        special_feature_count: row.special_feature_count,
+                        part_count: row.part_count,
+                    },
+                )
+            }));
+        }
+        Ok(counts)
     }
 
     /// Counts visible, real leaf descendants for multiple folders in one query.

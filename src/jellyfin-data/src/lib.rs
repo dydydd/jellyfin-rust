@@ -40,8 +40,8 @@ pub use base_item_image_repository::{
     BaseItemImageType, InvalidBaseItemImageType, NewBaseItemImage, StoredImageMutation,
 };
 pub use base_item_repository::{
-    BaseItemCounts, BaseItemError, BaseItemHierarchyEntry, BaseItemOrder, BaseItemPage,
-    BaseItemQuery, BaseItemRepository, DescendantScanCandidate, LatestTvGroup,
+    BaseItemCounts, BaseItemDtoRelatedCounts, BaseItemError, BaseItemHierarchyEntry, BaseItemOrder,
+    BaseItemPage, BaseItemQuery, BaseItemRepository, DescendantScanCandidate, LatestTvGroup,
     MediaStreamLanguageLists, MetadataRefreshCandidate, MovieSimilarityScore, NewBaseItem,
     NewItemByNameEntity, PersonMovieRecommendationCandidate, PersonMovieRecommendationRequest,
     ProductionYearOrder, ProductionYearPage, ScoredBaseItem, ScoredBaseItemPage,

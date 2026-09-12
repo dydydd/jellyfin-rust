@@ -338,6 +338,459 @@ async fn series_display_and_folder_cumulative_runtime_match_official_projection(
 }
 
 #[tokio::test]
+async fn date_last_media_added_and_series_studio_follow_official_field_projection() {
+    let _guard = ITEMS_TEST_LOCK.lock().await;
+    let fixture = Fixture::new().await;
+    let items = BaseItemRepository::new(fixture.database.clone());
+    let root = items.ensure_user_root().await.expect("user root");
+
+    let mut series = NewBaseItem::new(Uuid::new_v4(), "Series");
+    series.name = Some(format!("SD Studio series {}", fixture.suffix));
+    series.sort_name = series.name.clone();
+    series.parent_id = Some(root.id);
+    series.is_folder = true;
+    series.data = Some(serde_json::json!({
+        "DateLastMediaAdded": "2026-02-03T04:05:06+08:00",
+        "Studios": ["Zulu Original", "Alpha Second"]
+    }));
+    let series = items.create(series).await.expect("series item");
+    ItemValueRepository::new(fixture.database.clone())
+        .link_many(
+            series.id,
+            item_value::ItemValueType::Studios,
+            &["Alpha Second".to_owned(), "Zulu Original".to_owned()],
+        )
+        .await
+        .expect("series studio relations");
+
+    let mut season = NewBaseItem::new(Uuid::new_v4(), "Season");
+    season.name = Some(format!("SD Studio season {}", fixture.suffix));
+    season.sort_name = season.name.clone();
+    season.parent_id = Some(series.id);
+    season.series_id = Some(series.id);
+    season.is_folder = true;
+    season.data = Some(serde_json::json!({
+        "DateLastMediaAdded": "2026-02-04"
+    }));
+    let season = items.create(season).await.expect("season item");
+
+    let mut episode = NewBaseItem::new(Uuid::new_v4(), "Episode");
+    episode.name = Some(format!("SD Studio episode {}", fixture.suffix));
+    episode.sort_name = episode.name.clone();
+    episode.parent_id = Some(season.id);
+    episode.series_id = Some(series.id);
+    episode.season_id = Some(season.id);
+    episode.data = Some(serde_json::json!({
+        "DateLastMediaAdded": "2026-02-05T00:00:00Z"
+    }));
+    let episode = items.create(episode).await.expect("episode item");
+
+    for fields in ["DateLastMediaAdded,SeriesStudio", "10,29"] {
+        let route = format!(
+            "/Items?Ids={},{},{}&Fields={fields}",
+            series.id, season.id, episode.id
+        );
+        let response = fixture.request(&route, Some(&fixture.user_token)).await;
+        assert_eq!(response.status(), StatusCode::OK, "{route}");
+        let body = body_json(response).await;
+        let page = body["Items"].as_array().expect("projected item page");
+        let find = |id: Uuid| {
+            page.iter()
+                .find(|dto| dto["Id"] == id.simple().to_string())
+                .expect("requested dto")
+        };
+        assert_eq!(
+            find(series.id)["DateLastMediaAdded"],
+            "2026-02-02T20:05:06.000Z",
+            "{route}"
+        );
+        assert_eq!(
+            find(season.id)["DateLastMediaAdded"],
+            "2026-02-04T00:00:00.000Z",
+            "{route}"
+        );
+        assert!(
+            find(episode.id).get("DateLastMediaAdded").is_none(),
+            "non-folder date leaked: {route}"
+        );
+        assert!(find(series.id).get("SeriesStudio").is_none(), "{route}");
+        assert_eq!(find(season.id)["SeriesStudio"], "Zulu Original", "{route}");
+        assert_eq!(find(episode.id)["SeriesStudio"], "Zulu Original", "{route}");
+    }
+
+    let route = format!(
+        "/Items?Ids={},{},{}&Fields=CanDelete",
+        series.id, season.id, episode.id
+    );
+    let page = body_json(fixture.request(&route, Some(&fixture.user_token)).await).await;
+    for dto in page["Items"].as_array().expect("unrelated field page") {
+        assert!(dto.get("DateLastMediaAdded").is_none(), "{route}: {dto}");
+        assert!(dto.get("SeriesStudio").is_none(), "{route}: {dto}");
+    }
+
+    for (item_id, expected_date, expected_studio) in [
+        (series.id, Some("2026-02-02T20:05:06.000Z"), None),
+        (
+            season.id,
+            Some("2026-02-04T00:00:00.000Z"),
+            Some("Zulu Original"),
+        ),
+        (episode.id, None, Some("Zulu Original")),
+    ] {
+        let route = format!("/Items/{item_id}?UserId={}", fixture.user_id);
+        let dto = body_json(fixture.request(&route, Some(&fixture.user_token)).await).await;
+        assert_eq!(
+            dto.get("DateLastMediaAdded").and_then(Value::as_str),
+            expected_date,
+            "{route}"
+        );
+        assert_eq!(
+            dto.get("SeriesStudio").and_then(Value::as_str),
+            expected_studio,
+            "{route}"
+        );
+    }
+
+    for item_id in [episode.id, season.id, series.id] {
+        items
+            .delete(item_id)
+            .await
+            .expect("projection item cleanup");
+    }
+    fixture.cleanup().await;
+}
+
+#[tokio::test]
+async fn item_location_placeholder_and_media_source_display_match_official_dto_rules() {
+    let _guard = ITEMS_TEST_LOCK.lock().await;
+    let fixture = Fixture::new().await;
+    let items = BaseItemRepository::new(fixture.database.clone());
+    let root = items.ensure_user_root().await.expect("user root");
+
+    let mut stub = NewBaseItem::new(Uuid::new_v4(), "Movie");
+    stub.name = Some(format!("DTO stub movie {}", fixture.suffix));
+    stub.sort_name = stub.name.clone();
+    stub.parent_id = Some(root.id);
+    stub.path = Some(format!("/media/{}/stub.bluray.disc", fixture.suffix));
+    stub.media_type = Some("Video".to_owned());
+    stub.data = Some(serde_json::json!({ "isplaceholder": true }));
+    let stub = items.create(stub).await.expect("stub movie");
+
+    let mut regular = NewBaseItem::new(Uuid::new_v4(), "Movie");
+    regular.name = Some(format!("DTO regular movie {}", fixture.suffix));
+    regular.sort_name = regular.name.clone();
+    regular.parent_id = Some(root.id);
+    regular.path = Some(format!("FILE:///media/{}/regular.mkv", fixture.suffix));
+    regular.media_type = Some("Video".to_owned());
+    regular.data = Some(serde_json::json!({ "IsPlaceHolder": false }));
+    let regular = items.create(regular).await.expect("regular movie");
+
+    let mut remote = NewBaseItem::new(Uuid::new_v4(), "Audio");
+    remote.name = Some(format!("DTO remote audio {}", fixture.suffix));
+    remote.sort_name = remote.name.clone();
+    remote.parent_id = Some(root.id);
+    remote.path = Some(format!(
+        "HTTPS://media.example/{}/song.flac",
+        fixture.suffix
+    ));
+    remote.media_type = Some("Audio".to_owned());
+    remote.data = Some(serde_json::json!({ "IsPlaceHolder": true }));
+    let remote = items.create(remote).await.expect("remote audio");
+
+    let mut virtual_folder = NewBaseItem::new(Uuid::new_v4(), "Folder");
+    virtual_folder.name = Some(format!("DTO virtual folder {}", fixture.suffix));
+    virtual_folder.sort_name = virtual_folder.name.clone();
+    virtual_folder.parent_id = Some(root.id);
+    virtual_folder.is_folder = true;
+    let virtual_folder = items.create(virtual_folder).await.expect("virtual folder");
+
+    let mut channel_item = NewBaseItem::new(Uuid::new_v4(), "Video");
+    channel_item.name = Some(format!("DTO channel item {}", fixture.suffix));
+    channel_item.sort_name = channel_item.name.clone();
+    channel_item.parent_id = Some(root.id);
+    channel_item.media_type = Some("Video".to_owned());
+    channel_item.data = Some(serde_json::json!({ "ChannelId": Uuid::new_v4() }));
+    let channel_item = items.create(channel_item).await.expect("channel item");
+
+    let route = format!(
+        "/Items?Ids={},{},{},{},{}",
+        stub.id, regular.id, remote.id, virtual_folder.id, channel_item.id
+    );
+    let page = body_json(fixture.request(&route, Some(&fixture.user_token)).await).await;
+    let page = page["Items"].as_array().expect("DTO compatibility page");
+    let find = |id: Uuid| {
+        page.iter()
+            .find(|dto| dto["Id"] == id.simple().to_string())
+            .expect("requested DTO")
+    };
+    assert_eq!(find(stub.id)["LocationType"], "FileSystem");
+    assert_eq!(find(stub.id)["IsPlaceHolder"], true);
+    assert_eq!(find(regular.id)["LocationType"], "FileSystem");
+    assert!(find(regular.id).get("IsPlaceHolder").is_none());
+    assert_eq!(find(remote.id)["LocationType"], "Remote");
+    assert!(
+        find(remote.id).get("IsPlaceHolder").is_none(),
+        "non-Video items never implement the official placeholder interface"
+    );
+    assert_eq!(find(virtual_folder.id)["LocationType"], "Virtual");
+    assert_eq!(find(channel_item.id)["LocationType"], "Remote");
+    for dto in page {
+        assert!(dto.get("EnableMediaSourceDisplay").is_none());
+    }
+
+    for (query_name, field) in [
+        ("Fields", "EnableMediaSourceDisplay"),
+        ("fields", "enablemediasourcedisplay"),
+        ("Fields", "42"),
+    ] {
+        let route = format!(
+            "/Items?Ids={},{}&{query_name}={field}",
+            stub.id, channel_item.id
+        );
+        let page = body_json(fixture.request(&route, Some(&fixture.user_token)).await).await;
+        let page = page["Items"].as_array().expect("field-gated DTO page");
+        let local = page
+            .iter()
+            .find(|dto| dto["Id"] == stub.id.simple().to_string())
+            .expect("local field-gated DTO");
+        let channel = page
+            .iter()
+            .find(|dto| dto["Id"] == channel_item.id.simple().to_string())
+            .expect("channel field-gated DTO");
+        assert_eq!(local["EnableMediaSourceDisplay"], true, "{route}");
+        assert!(
+            channel.get("EnableMediaSourceDisplay").is_none(),
+            "channel provider capability is not persisted: {route}"
+        );
+    }
+
+    for route in [
+        format!("/Items/{}?UserId={}", stub.id, fixture.user_id),
+        format!("/items/{}?userid={}", stub.id, fixture.user_id),
+    ] {
+        let dto = body_json(fixture.request(&route, Some(&fixture.user_token)).await).await;
+        assert_eq!(dto["LocationType"], "FileSystem", "{route}");
+        assert_eq!(dto["IsPlaceHolder"], true, "{route}");
+        assert_eq!(dto["EnableMediaSourceDisplay"], true, "{route}");
+    }
+
+    for item_id in [
+        channel_item.id,
+        virtual_folder.id,
+        remote.id,
+        regular.id,
+        stub.id,
+    ] {
+        items.delete(item_id).await.expect("DTO item cleanup");
+    }
+    fixture.cleanup().await;
+}
+
+#[tokio::test]
+async fn related_item_counts_use_batched_persisted_relationships() {
+    let _guard = ITEMS_TEST_LOCK.lock().await;
+    let fixture = Fixture::new().await;
+    let items = BaseItemRepository::new(fixture.database.clone());
+    let root = items.ensure_user_root().await.expect("user root");
+
+    let part_a_path = format!("/media/{}/part-a.mkv", fixture.suffix);
+    let part_b_path = format!("/media/{}/part-b.mkv", fixture.suffix);
+    let mut movie = NewBaseItem::new(Uuid::new_v4(), "Movie");
+    movie.name = Some(format!("SD Related count movie {}", fixture.suffix));
+    movie.sort_name = movie.name.clone();
+    movie.parent_id = Some(root.id);
+    movie.data = Some(serde_json::json!({
+        "AdditionalParts": [part_a_path, part_b_path]
+    }));
+    let movie = items.create(movie).await.expect("related count movie");
+
+    let mut alternate = NewBaseItem::new(Uuid::new_v4(), "Movie");
+    alternate.name = Some(format!("SD Related count alternate {}", fixture.suffix));
+    alternate.sort_name = alternate.name.clone();
+    alternate.parent_id = Some(root.id);
+    alternate.primary_version_id = Some(movie.id);
+    let alternate = items
+        .create(alternate)
+        .await
+        .expect("related count alternate");
+
+    let trailer = create_item_with_data(
+        &items,
+        "Trailer",
+        &format!("SD Related count trailer {}", fixture.suffix),
+        alternate.id,
+        serde_json::json!({ "ExtraType": "tRaIlEr" }),
+    )
+    .await;
+    let featurette = create_item_with_data(
+        &items,
+        "Video",
+        &format!("SD Related count featurette {}", fixture.suffix),
+        movie.id,
+        serde_json::json!({ "ExtraType": "Featurette" }),
+    )
+    .await;
+    let unknown = create_item_with_data(
+        &items,
+        "Video",
+        &format!("SD Related count unknown {}", fixture.suffix),
+        movie.id,
+        serde_json::json!({ "extra_type": "Unknown" }),
+    )
+    .await;
+    let theme = create_item_with_data(
+        &items,
+        "Video",
+        &format!("SD Related count theme {}", fixture.suffix),
+        movie.id,
+        serde_json::json!({ "ExtraType": "ThemeVideo" }),
+    )
+    .await;
+
+    let mut part_a = NewBaseItem::new(Uuid::new_v4(), "Video");
+    part_a.name = Some(format!("SD Related count part A {}", fixture.suffix));
+    part_a.sort_name = part_a.name.clone();
+    part_a.path = Some(part_a_path);
+    let part_a = items.create(part_a).await.expect("first additional part");
+    let mut part_b = NewBaseItem::new(Uuid::new_v4(), "Movie");
+    part_b.name = Some(format!("SD Related count part B {}", fixture.suffix));
+    part_b.sort_name = part_b.name.clone();
+    part_b.path = Some(part_b_path);
+    let part_b = items.create(part_b).await.expect("second additional part");
+
+    let series_key = format!("related-count-series-{}", fixture.suffix);
+    let mut series = NewBaseItem::new(Uuid::new_v4(), "Series");
+    series.name = Some(format!("SD Related count series {}", fixture.suffix));
+    series.sort_name = series.name.clone();
+    series.parent_id = Some(root.id);
+    series.is_folder = true;
+    series.presentation_unique_key = Some(series_key.clone());
+    let series = items.create(series).await.expect("related count series");
+    let mut merged_series = NewBaseItem::new(Uuid::new_v4(), "Series");
+    merged_series.name = Some(format!("SD Related count merged series {}", fixture.suffix));
+    merged_series.sort_name = merged_series.name.clone();
+    merged_series.parent_id = Some(root.id);
+    merged_series.is_folder = true;
+    merged_series.presentation_unique_key = Some(series_key);
+    let merged_series = items
+        .create(merged_series)
+        .await
+        .expect("merged related count series");
+    let series_trailer = create_item_with_data(
+        &items,
+        "Trailer",
+        &format!("SD Related count series trailer {}", fixture.suffix),
+        merged_series.id,
+        serde_json::json!({ "ExtraType": "Trailer" }),
+    )
+    .await;
+
+    let mut folder = NewBaseItem::new(Uuid::new_v4(), "Folder");
+    folder.name = Some(format!("SD Related count folder {}", fixture.suffix));
+    folder.sort_name = folder.name.clone();
+    folder.parent_id = Some(root.id);
+    folder.is_folder = true;
+    folder.data = Some(serde_json::json!({
+        "AdditionalParts": ["must-not-project-for-a-folder.mkv"]
+    }));
+    let folder = items.create(folder).await.expect("related count folder");
+
+    for (query_name, fields) in [
+        ("Fields", "LocalTrailerCount,SpecialFeatureCount"),
+        ("fields", "localtrailercount,specialfeaturecount"),
+        ("Fields", "46,48"),
+    ] {
+        let route = format!(
+            "/Items?ids={},{},{}&{query_name}={fields}",
+            movie.id, folder.id, series.id
+        );
+        let response = fixture.request(&route, Some(&fixture.user_token)).await;
+        assert_eq!(response.status(), StatusCode::OK, "{route}");
+        let page = body_json(response).await;
+        let page = page["Items"].as_array().expect("related count item page");
+        let find = |id: Uuid| {
+            page.iter()
+                .find(|dto| dto["Id"] == id.simple().to_string())
+                .expect("requested related count dto")
+        };
+        assert_eq!(find(movie.id)["LocalTrailerCount"], 1, "{route}");
+        assert_eq!(find(movie.id)["SpecialFeatureCount"], 2, "{route}");
+        assert_eq!(find(movie.id)["PartCount"], 3, "{route}");
+        assert_eq!(find(folder.id)["LocalTrailerCount"], 0, "{route}");
+        assert_eq!(find(folder.id)["SpecialFeatureCount"], 0, "{route}");
+        assert!(find(folder.id).get("PartCount").is_none(), "{route}");
+        assert_eq!(find(series.id)["LocalTrailerCount"], 1, "{route}");
+        assert_eq!(find(series.id)["SpecialFeatureCount"], 0, "{route}");
+    }
+
+    let no_count_fields_route = format!("/Items?ids={},{}&Fields=CanDelete", movie.id, folder.id);
+    let page = body_json(
+        fixture
+            .request(&no_count_fields_route, Some(&fixture.user_token))
+            .await,
+    )
+    .await;
+    let page = page["Items"].as_array().expect("unrequested count page");
+    let movie_dto = page
+        .iter()
+        .find(|dto| dto["Id"] == movie.id.simple().to_string())
+        .expect("stacked movie dto");
+    let folder_dto = page
+        .iter()
+        .find(|dto| dto["Id"] == folder.id.simple().to_string())
+        .expect("folder dto");
+    assert!(movie_dto.get("LocalTrailerCount").is_none());
+    assert!(movie_dto.get("SpecialFeatureCount").is_none());
+    assert_eq!(movie_dto["PartCount"], 3);
+    assert!(folder_dto.get("LocalTrailerCount").is_none());
+    assert!(folder_dto.get("SpecialFeatureCount").is_none());
+    assert!(folder_dto.get("PartCount").is_none());
+
+    for route in [
+        format!("/Items/{}?UserId={}", movie.id, fixture.user_id),
+        format!("/items/{}?userid={}", movie.id, fixture.user_id),
+    ] {
+        let response = fixture.request(&route, Some(&fixture.user_token)).await;
+        assert_eq!(response.status(), StatusCode::OK, "{route}");
+        let dto = body_json(response).await;
+        assert_eq!(dto["LocalTrailerCount"], 1, "{route}");
+        assert_eq!(dto["SpecialFeatureCount"], 2, "{route}");
+        assert_eq!(dto["PartCount"], 3, "{route}");
+    }
+    let empty_detail_route = format!("/Items/{}?UserId={}", folder.id, fixture.user_id);
+    let empty_detail = body_json(
+        fixture
+            .request(&empty_detail_route, Some(&fixture.user_token))
+            .await,
+    )
+    .await;
+    assert_eq!(empty_detail["LocalTrailerCount"], 0);
+    assert_eq!(empty_detail["SpecialFeatureCount"], 0);
+    assert!(empty_detail.get("PartCount").is_none());
+
+    for item_id in [
+        series_trailer.id,
+        folder.id,
+        merged_series.id,
+        series.id,
+        part_b.id,
+        part_a.id,
+        theme.id,
+        unknown.id,
+        featurette.id,
+        trailer.id,
+        alternate.id,
+        movie.id,
+    ] {
+        items
+            .delete(item_id)
+            .await
+            .expect("related count item cleanup");
+    }
+    fixture.cleanup().await;
+}
+
+#[tokio::test]
 async fn external_urls_follow_official_field_and_tv_hierarchy_contract() {
     let _guard = ITEMS_TEST_LOCK.lock().await;
     let fixture = Fixture::new().await;
