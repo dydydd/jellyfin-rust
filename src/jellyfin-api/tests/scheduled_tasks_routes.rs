@@ -53,6 +53,20 @@ async fn scheduled_tasks_routes_match_official_elevated_contract() {
             .status(),
         StatusCode::BAD_REQUEST
     );
+    for uri in [
+        "/ScheduledTasks?IsEnabled=not-bool",
+        "/scheduledtasks?ishidden=not-bool",
+        "/scheduledtasks?isenabled=not-bool",
+    ] {
+        assert_eq!(
+            fixture
+                .request(Method::GET, uri, Some(&fixture.admin_token), None)
+                .await
+                .status(),
+            StatusCode::BAD_REQUEST,
+            "{uri}"
+        );
+    }
 
     let tasks = body_json(
         fixture
@@ -78,6 +92,18 @@ async fn scheduled_tasks_routes_match_official_elevated_contract() {
     )
     .await;
     assert_eq!(lowercase_tasks, Value::Array(tasks.clone()));
+    let pascal_case_tasks = body_json(
+        fixture
+            .request(
+                Method::GET,
+                "/ScheduledTasks?IsHidden=false&IsEnabled=true",
+                Some(&fixture.admin_token),
+                None,
+            )
+            .await,
+    )
+    .await;
+    assert_eq!(pascal_case_tasks, Value::Array(tasks.clone()));
     assert!(tasks.len() >= 4);
     let names = tasks
         .iter()
@@ -136,6 +162,30 @@ async fn scheduled_tasks_routes_match_official_elevated_contract() {
     )
     .await;
     assert_eq!(enabled.as_array().unwrap().len(), tasks.len());
+    let lowercase_hidden = body_json(
+        fixture
+            .request(
+                Method::GET,
+                "/scheduledtasks?ishidden=true",
+                Some(&fixture.admin_token),
+                None,
+            )
+            .await,
+    )
+    .await;
+    assert!(lowercase_hidden.as_array().unwrap().is_empty());
+    let lowercase_disabled = body_json(
+        fixture
+            .request(
+                Method::GET,
+                "/scheduledtasks?isenabled=false",
+                Some(&fixture.admin_token),
+                None,
+            )
+            .await,
+    )
+    .await;
+    assert!(lowercase_disabled.as_array().unwrap().is_empty());
 
     let task = body_json(
         fixture

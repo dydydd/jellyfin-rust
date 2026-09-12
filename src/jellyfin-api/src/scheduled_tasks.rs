@@ -15,9 +15,14 @@ use crate::{ApiError, AppState, authentication};
 
 #[derive(Debug, Default, Deserialize)]
 pub(crate) struct ScheduledTasksQuery {
-    #[serde(default, rename = "isHidden", alias = "IsHidden")]
+    #[serde(default, rename = "isHidden", alias = "IsHidden", alias = "ishidden")]
     is_hidden: Option<bool>,
-    #[serde(default, rename = "isEnabled", alias = "IsEnabled")]
+    #[serde(
+        default,
+        rename = "isEnabled",
+        alias = "IsEnabled",
+        alias = "isenabled"
+    )]
     is_enabled: Option<bool>,
 }
 

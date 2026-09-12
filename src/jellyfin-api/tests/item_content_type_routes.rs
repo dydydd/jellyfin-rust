@@ -155,7 +155,20 @@ async fn assert_case_insensitive_replacement_and_removal(
     assert_eq!(
         post_raw(
             route_app,
-            &format!("/Items/{movies_case_variant}/ContentType?contentType=%20%20"),
+            &format!("/items/{movies_case_variant}/contenttype?contenttype=books"),
+            Some(administrator_token),
+        )
+        .await,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        persisted_content_types(database).await,
+        BTreeMap::from([("/media/movies".to_owned(), "books".to_owned())])
+    );
+    assert_eq!(
+        post_raw(
+            route_app,
+            &format!("/items/{movies_case_variant}/contenttype?contenttype=%20%20"),
             Some(administrator_token),
         )
         .await,

@@ -31,9 +31,9 @@ use crate::{
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 pub struct ListUsersQuery {
-    #[serde(rename = "isHidden", alias = "IsHidden")]
+    #[serde(rename = "isHidden", alias = "IsHidden", alias = "ishidden")]
     pub is_hidden: Option<bool>,
-    #[serde(rename = "isDisabled", alias = "IsDisabled")]
+    #[serde(rename = "isDisabled", alias = "IsDisabled", alias = "isdisabled")]
     pub is_disabled: Option<bool>,
 }
 

@@ -121,7 +121,7 @@ impl<'de> Deserialize<'de> for StudioUpdateRequest {
 
 #[derive(Debug, Default, Deserialize)]
 pub(crate) struct UpdateItemContentTypeQuery {
-    #[serde(rename = "contentType", alias = "ContentType")]
+    #[serde(rename = "contentType", alias = "ContentType", alias = "contenttype")]
     content_type: Option<String>,
 }
 

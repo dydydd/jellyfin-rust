@@ -125,6 +125,18 @@ async fn exercise_user_list_filter_routes(database_name: &str) {
             .status(),
         StatusCode::BAD_REQUEST
     );
+    assert_eq!(
+        get(&app, "/users?ishidden=not-a-bool", Some(&admin_token))
+            .await
+            .status(),
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        get(&app, "/users?isdisabled=not-a-bool", Some(&admin_token))
+            .await
+            .status(),
+        StatusCode::BAD_REQUEST
+    );
 
     let all = user_names(&get_json(&app, "/Users", &admin_token).await);
     assert_eq!(
@@ -147,7 +159,11 @@ async fn exercise_user_list_filter_routes(database_name: &str) {
         ]
     );
     assert_eq!(
-        user_names(&get_json(&app, "/Users?IsHidden=true", &admin_token).await),
+        user_names(&get_json(&app, "/Users?IsHidden=true&IsDisabled=false", &admin_token,).await,),
+        vec![format!("user-list-hidden-enabled-{suffix}")]
+    );
+    assert_eq!(
+        user_names(&get_json(&app, "/users?ishidden=true", &admin_token).await),
         vec![
             format!("user-list-hidden-disabled-{suffix}"),
             format!("user-list-hidden-enabled-{suffix}"),
@@ -163,6 +179,10 @@ async fn exercise_user_list_filter_routes(database_name: &str) {
     );
     assert_eq!(
         user_names(&get_json(&app, "/Users?isHidden=false&isDisabled=true", &admin_token,).await,),
+        vec![format!("user-list-visible-disabled-{suffix}")]
+    );
+    assert_eq!(
+        user_names(&get_json(&app, "/users?ishidden=false&isdisabled=true", &admin_token,).await,),
         vec![format!("user-list-visible-disabled-{suffix}")]
     );
     assert_eq!(
