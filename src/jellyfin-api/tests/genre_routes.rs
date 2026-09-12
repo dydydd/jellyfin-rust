@@ -952,6 +952,78 @@ async fn genre_image_routes_resolve_public_ordinals() {
     fixture.cleanup().await;
 }
 
+#[tokio::test]
+async fn genres_list_honors_official_image_options_without_user_data() {
+    let fixture = Fixture::new().await;
+    BaseItemImageRepository::new(fixture.database.clone())
+        .replace(
+            fixture.drama_persisted_genre_id,
+            &[
+                NewBaseItemImage {
+                    image_type: BaseItemImageType::Primary,
+                    image_index: 0,
+                    path: "/metadata/Genre/primary.jpg".to_owned(),
+                    date_modified: Utc::now(),
+                    width: Some(400),
+                    height: Some(600),
+                    blurhash: None,
+                },
+                NewBaseItemImage {
+                    image_type: BaseItemImageType::Backdrop,
+                    image_index: 0,
+                    path: "/metadata/Genre/backdrop.jpg".to_owned(),
+                    date_modified: Utc::now(),
+                    width: Some(1280),
+                    height: Some(720),
+                    blurhash: None,
+                },
+            ],
+        )
+        .await
+        .expect("genre images");
+    let search = encoded(&fixture.drama_genre);
+
+    for query in [
+        "fields=Overview&imageTypeLimit=1&enableImageTypes=Primary&enableImages=true",
+        "Fields=Overview&ImageTypeLimit=1&EnableImageTypes=Primary&EnableImages=true",
+        "fields=Overview&imagetypelimit=1&enableimagetypes=Primary&enableimages=true",
+    ] {
+        let page = body_json(
+            fixture
+                .request(
+                    Method::GET,
+                    &format!("/Genres?searchTerm={search}&{query}"),
+                    Credential::Device(&fixture.user_token),
+                )
+                .await,
+        )
+        .await;
+        let genre = &page["Items"][0];
+        assert_eq!(genre["Overview"], "Persisted Genre overview", "{query}");
+        assert!(genre["ImageTags"]["Primary"].is_string(), "{query}");
+        assert!(genre.get("BackdropImageTags").is_none(), "{query}");
+        assert!(genre.get("UserData").is_none(), "{query}");
+    }
+
+    for enable_images in ["enableImages", "EnableImages", "enableimages"] {
+        let page = body_json(
+            fixture
+                .request(
+                    Method::GET,
+                    &format!("/Genres?searchTerm={search}&{enable_images}=false"),
+                    Credential::Device(&fixture.user_token),
+                )
+                .await,
+        )
+        .await;
+        assert!(page["Items"][0].get("ImageTags").is_none());
+        assert!(page["Items"][0].get("BackdropImageTags").is_none());
+        assert!(page["Items"][0].get("UserData").is_none());
+    }
+
+    fixture.cleanup().await;
+}
+
 fn assert_genres(
     body: &Value,
     expected_names: &[&str],
@@ -1342,6 +1414,10 @@ async fn create_item_by_name(
         canonical_by_name_type(item_type)
     ));
     item.is_folder = true;
+    item.overview = Some(format!(
+        "Persisted {} overview",
+        canonical_by_name_type(item_type)
+    ));
     item.presentation_unique_key = Some(presentation_unique_key.to_owned());
     repository
         .create(item)

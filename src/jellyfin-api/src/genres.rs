@@ -7,7 +7,7 @@ use axum::{
     response::Response,
 };
 use jellyfin_controller::UserError;
-use jellyfin_data::ItemValueQuery;
+use jellyfin_data::{BaseItemPage, ItemValueQuery};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -41,6 +41,26 @@ pub(crate) struct GenresQuery {
         deserialize_with = "crate::query::comma::deserialize"
     )]
     fields: Vec<String>,
+    #[serde(
+        rename = "imageTypeLimit",
+        alias = "ImageTypeLimit",
+        alias = "imagetypelimit"
+    )]
+    image_type_limit: Option<i32>,
+    #[serde(
+        default,
+        rename = "enableImageTypes",
+        alias = "EnableImageTypes",
+        alias = "enableimagetypes",
+        deserialize_with = "crate::query::comma::deserialize"
+    )]
+    enable_image_types: Vec<String>,
+    #[serde(
+        rename = "enableImages",
+        alias = "EnableImages",
+        alias = "enableimages"
+    )]
+    enable_images: Option<bool>,
     #[serde(
         default,
         rename = "includeItemTypes",
@@ -168,18 +188,53 @@ pub(crate) async fn list(
         .apply_item_value_policy(&authenticated.user, target_user_id, &mut item_query)
         .await?;
     let page = state.genres.list_authorized(item_query).await?;
-    let items = page
-        .genres
+    let genre_ids = page.genres.iter().map(|genre| genre.id).collect::<Vec<_>>();
+    let mut persisted_by_id = state
+        .base_items
+        .get_many(&genre_ids)
+        .await?
         .into_iter()
-        .map(|genre| user_library::genre_to_dto(genre, state.server_id(), include_item_counts))
-        .collect::<Vec<_>>();
+        .map(|item| (item.id, item))
+        .collect::<std::collections::HashMap<_, _>>();
+    let persisted_genres = page
+        .genres
+        .iter()
+        .map(|genre| persisted_by_id.remove(&genre.id).ok_or(ApiError::Internal))
+        .collect::<Result<Vec<_>, _>>()?;
+    let dto_options = crate::items::PageDtoOptions {
+        enable_images: query.enable_images.unwrap_or(true),
+        image_type_limit: query
+            .image_type_limit
+            .map_or(usize::MAX, |limit| usize::try_from(limit).unwrap_or(0)),
+        enable_image_types: crate::items::parse_image_type_selectors(&query.enable_image_types),
+        // `GenresController` deliberately passes false to
+        // `AddAdditionalDtoOptions` for user-data projection.
+        enable_user_data: false,
+    };
+    let mut projected = crate::items::page_to_dto_with_options(
+        state.as_ref(),
+        BaseItemPage {
+            items: persisted_genres,
+            total_record_count: page.total_record_count,
+            start_index: page.start_index,
+        },
+        query.fields,
+        target_user_id,
+        &dto_options,
+    )
+    .await?;
+    if include_item_counts {
+        for (dto, genre) in projected.items.iter_mut().zip(page.genres) {
+            apply_genre_counts(dto, genre.item_count, genre.counts);
+        }
+    }
     let total_record_count = if enable_total_record_count {
         usize::try_from(page.total_record_count).unwrap_or(usize::MAX)
     } else {
         0
     };
     Ok(Json(GenresResult {
-        items,
+        items: projected.items,
         total_record_count,
         start_index: requested_start_index,
     }))
