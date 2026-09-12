@@ -164,7 +164,7 @@ async fn exercise_user_image_routes(database_name: &str) {
 
     let response = post_image(
         &app,
-        "/UserImage",
+        &format!("/userimage?userid={}", Uuid::nil()),
         Some(&user_token),
         "image/png; charset=utf-8",
         &encoded_png,
@@ -451,8 +451,8 @@ async fn exercise_user_image_routes(database_name: &str) {
 
     let response = delete(
         &app,
-        &format!("/UserImage?userId={}", user.id),
-        Some(&admin_token),
+        &format!("/UserImage?UserId={}", Uuid::nil()),
+        Some(&user_token),
     )
     .await;
     assert_eq!(response.status(), StatusCode::NO_CONTENT);

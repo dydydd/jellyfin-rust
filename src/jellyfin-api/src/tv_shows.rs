@@ -276,7 +276,10 @@ pub(crate) async fn upcoming(
     let requested_start_index = query.start_index;
     let start_index = u64::try_from(requested_start_index).unwrap_or_default();
     let limit = query.limit.and_then(|limit| u64::try_from(limit).ok());
-    let target_user_id = query.user_id.unwrap_or(authenticated.user.id);
+    let target_user_id = query
+        .user_id
+        .filter(|user_id| !user_id.is_nil())
+        .unwrap_or(authenticated.user.id);
     let fields = std::mem::take(&mut query.fields);
     let dto_options = crate::items::PageDtoOptions {
         enable_images: query.enable_images.unwrap_or(true),
@@ -421,7 +424,10 @@ pub(crate) async fn episodes(
     Query(mut query): Query<EpisodesQuery>,
 ) -> Result<Json<EpisodesResult>, ApiError> {
     let authenticated = authentication::authenticated_session(&state, &headers).await?;
-    let target_user_id = query.user_id.unwrap_or(authenticated.user.id);
+    let target_user_id = query
+        .user_id
+        .filter(|user_id| !user_id.is_nil())
+        .unwrap_or(authenticated.user.id);
     let fields = std::mem::take(&mut query.fields);
     let dto_options = crate::items::PageDtoOptions {
         enable_images: query.enable_images.unwrap_or(true),
@@ -716,7 +722,10 @@ pub(crate) async fn seasons(
     Query(mut query): Query<SeasonsQuery>,
 ) -> Result<Json<user_library::BaseItemQueryResult>, ApiError> {
     let authenticated = authentication::authenticated_session(&state, &headers).await?;
-    let target_user_id = query.user_id.unwrap_or(authenticated.user.id);
+    let target_user_id = query
+        .user_id
+        .filter(|user_id| !user_id.is_nil())
+        .unwrap_or(authenticated.user.id);
     let series = state
         .user_library
         .item(&authenticated.user, target_user_id, series_id)

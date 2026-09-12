@@ -239,6 +239,36 @@ async fn item_detail_routes_bind_user_id_casing_and_nil_like_official() {
         assert_eq!(body["Id"], fixture.item_id.simple().to_string(), "{route}");
     }
 
+    // RequestHelpers.GetUserId treats Guid.Empty exactly like an omitted query/path id.
+    let root = get_json(
+        &fixture.app,
+        &format!("/items/root?userid={nil}"),
+        &fixture.user_token,
+    )
+    .await;
+    assert_base_item(&root, fixture.root_id, "UserRootFolder", "Root");
+    let intros = get_json(
+        &fixture.app,
+        &format!("/Items/{}/Intros?UserId={nil}", fixture.item_id),
+        &fixture.user_token,
+    )
+    .await;
+    assert_eq!(intros["TotalRecordCount"], 1);
+    let legacy_intros = get_json(
+        &fixture.app,
+        &format!("/users/{nil}/items/{}/intros", fixture.item_id),
+        &fixture.user_token,
+    )
+    .await;
+    assert_eq!(legacy_intros, intros);
+    let features = get_json(
+        &fixture.app,
+        &format!("/items/{}/specialfeatures?userid={nil}", fixture.item_id),
+        &fixture.user_token,
+    )
+    .await;
+    assert_eq!(features.as_array().map(Vec::len), Some(1));
+
     let missing_user_id = Uuid::new_v4();
     for route in [
         format!("/Items/{}?UserId={missing_user_id}", fixture.item_id),

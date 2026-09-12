@@ -980,7 +980,10 @@ pub(crate) async fn additional_parts(
     Query(query): Query<user_library::UserIdQuery>,
 ) -> Result<Json<user_library::BaseItemQueryResult>, ApiError> {
     let authenticated = authentication::authenticated_session(&state, &headers).await?;
-    let target_user_id = query.user_id.unwrap_or(authenticated.user.id);
+    let target_user_id = query
+        .user_id
+        .filter(|user_id| !user_id.is_nil())
+        .unwrap_or(authenticated.user.id);
     let items = state
         .user_library
         .additional_parts(&authenticated.user, target_user_id, item_id)

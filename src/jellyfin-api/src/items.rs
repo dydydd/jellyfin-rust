@@ -1400,7 +1400,9 @@ async fn resume_for(
     query: ItemsQuery,
 ) -> Result<Json<user_library::BaseItemQueryResult>, ApiError> {
     let authenticated = authentication::authenticated_session(&state, &headers).await?;
-    let target_user_id = requested_user_id.unwrap_or(authenticated.user.id);
+    let target_user_id = requested_user_id
+        .filter(|user_id| !user_id.is_nil())
+        .unwrap_or(authenticated.user.id);
     let mut query = query;
     let requested_start_index = query.start_index;
     let fields = std::mem::take(&mut query.fields);
@@ -1471,7 +1473,9 @@ async fn latest_for(
     query: LatestItemsQuery,
 ) -> Result<Json<Vec<user_library::BaseItemDto>>, ApiError> {
     let authenticated = authentication::authenticated_session(&state, &headers).await?;
-    let target_user_id = requested_user_id.unwrap_or(authenticated.user.id);
+    let target_user_id = requested_user_id
+        .filter(|user_id| !user_id.is_nil())
+        .unwrap_or(authenticated.user.id);
     let target = state.users.get(target_user_id).await?;
     let configuration: UserConfiguration =
         serde_json::from_value(target.preferences).unwrap_or_default();

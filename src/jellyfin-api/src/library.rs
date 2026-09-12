@@ -321,7 +321,10 @@ pub(crate) async fn ancestors(
     Query(query): Query<LibraryQuery>,
 ) -> Result<Json<Vec<user_library::BaseItemDto>>, ApiError> {
     let authenticated = authentication::authenticated_session(&state, &headers).await?;
-    let target_user_id = query.user_id.unwrap_or(authenticated.user.id);
+    let target_user_id = query
+        .user_id
+        .filter(|user_id| !user_id.is_nil())
+        .unwrap_or(authenticated.user.id);
     let items = state
         .library_controller
         .ancestors(&authenticated.user, target_user_id, item_id)
@@ -354,7 +357,10 @@ pub(crate) async fn collections(
     let limit = query
         .limit
         .map(|limit| u64::try_from(limit.max(0)).unwrap_or_default());
-    let target_user_id = query.user_id.unwrap_or(authenticated.user.id);
+    let target_user_id = query
+        .user_id
+        .filter(|user_id| !user_id.is_nil())
+        .unwrap_or(authenticated.user.id);
     let page = state
         .library_controller
         .collections_containing_item(
@@ -863,7 +869,10 @@ async fn theme_result(
     kind: RelatedItemKind,
 ) -> Result<ThemeMediaResult, ApiError> {
     let authenticated = authentication::authenticated_session(state, headers).await?;
-    let target_user_id = query.user_id.unwrap_or(authenticated.user.id);
+    let target_user_id = query
+        .user_id
+        .filter(|user_id| !user_id.is_nil())
+        .unwrap_or(authenticated.user.id);
     let owner = state
         .user_library
         .item(&authenticated.user, target_user_id, item_id)

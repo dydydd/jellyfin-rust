@@ -105,6 +105,29 @@ async fn item_collections_match_signed_pagination_contract() {
 }
 
 #[tokio::test]
+async fn library_relationship_routes_treat_empty_user_id_as_current_user() {
+    let _guard = LIBRARY_TEST_LOCK.lock().await;
+    let fixture = Fixture::new().await;
+    let nil = Uuid::nil();
+    for route in [
+        format!("/items/{}/ancestors?userid={nil}", fixture.grandchild_id),
+        format!("/Items/{}/Collections?UserId={nil}", fixture.grandchild_id),
+        format!("/items/{}/themesongs?userid={nil}", fixture.grandchild_id),
+        format!("/Items/{}/ThemeMedia?userId={nil}", fixture.grandchild_id),
+    ] {
+        assert_eq!(
+            fixture
+                .request("GET", &route, Some(&fixture.user_token))
+                .await
+                .status(),
+            StatusCode::OK,
+            "{route}"
+        );
+    }
+    fixture.cleanup().await;
+}
+
+#[tokio::test]
 async fn ancestors_download_similar_and_empty_relationships_have_real_success_semantics() {
     let _guard = LIBRARY_TEST_LOCK.lock().await;
     let fixture = Fixture::new().await;

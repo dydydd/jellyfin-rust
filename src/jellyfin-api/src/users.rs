@@ -312,7 +312,10 @@ pub(crate) async fn post_user_image(
     request: Request<axum::body::Body>,
 ) -> Result<StatusCode, ApiError> {
     let authenticated = authentication::authenticated_session(&state, &headers).await?;
-    let target_id = query.user_id.unwrap_or(authenticated.user.id);
+    let target_id = query
+        .user_id
+        .filter(|user_id| !user_id.is_nil())
+        .unwrap_or(authenticated.user.id);
     post_user_image_for(&state, &headers, authenticated.user, target_id, request).await
 }
 
@@ -404,7 +407,10 @@ pub(crate) async fn delete_user_image(
     Query(query): Query<UpdateUserQuery>,
 ) -> Result<StatusCode, ApiError> {
     let authenticated = authentication::authenticated_session(&state, &headers).await?;
-    let target_id = query.user_id.unwrap_or(authenticated.user.id);
+    let target_id = query
+        .user_id
+        .filter(|user_id| !user_id.is_nil())
+        .unwrap_or(authenticated.user.id);
     delete_user_image_for(&state, authenticated.user, target_id).await
 }
 

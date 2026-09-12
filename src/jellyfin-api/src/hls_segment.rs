@@ -987,7 +987,10 @@ async fn serve_authenticated_hls1_segment(
     let identity = authorization::require_default(state, &headers, uri).await?;
     match identity {
         crate::authentication::AuthenticatedIdentity::Device(session) => {
-            let target_user_id = query.user_id.unwrap_or(session.user.id);
+            let target_user_id = query
+                .user_id
+                .filter(|user_id| !user_id.is_nil())
+                .unwrap_or(session.user.id);
             if target_user_id != session.user.id && !session.user.is_administrator {
                 return Err(ApiError::Forbidden);
             }

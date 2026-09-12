@@ -308,6 +308,20 @@ async fn exercise_seasons_route(database_name: &str) {
             .await,
     )
     .await;
+    let nil_user_seasons = body_json(
+        fixture
+            .get(
+                &format!(
+                    "/shows/{}/seasons?userid={}",
+                    fixture.series_id,
+                    Uuid::nil()
+                ),
+                Some(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert_eq!(item_ids(&nil_user_seasons), item_ids(&seasons));
     assert_eq!(seasons["StartIndex"], 0);
     assert_eq!(seasons["TotalRecordCount"], 4);
     let items = seasons["Items"].as_array().expect("season items");
@@ -502,6 +516,20 @@ async fn assert_episodes_route(fixture: &Fixture) {
             .await,
     )
     .await;
+    let nil_user_episodes = body_json(
+        fixture
+            .get(
+                &format!(
+                    "/shows/{}/episodes?userid={}",
+                    fixture.series_id,
+                    Uuid::nil()
+                ),
+                Some(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert_eq!(item_ids(&nil_user_episodes), item_ids(&episodes));
     assert_eq!(episodes["StartIndex"], 0);
     assert_eq!(episodes["TotalRecordCount"], 5);
     let items = episodes["Items"].as_array().expect("episode items");
@@ -1781,6 +1809,16 @@ async fn assert_upcoming_route(fixture: &Fixture) {
             .await,
     )
     .await;
+    let nil_user_upcoming = body_json(
+        fixture
+            .get(
+                &format!("/shows/upcoming?userid={}", Uuid::nil()),
+                Some(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert_eq!(item_ids(&nil_user_upcoming), item_ids(&upcoming));
     assert_eq!(upcoming["StartIndex"], 0);
     assert_eq!(upcoming["TotalRecordCount"], 3);
     assert_eq!(

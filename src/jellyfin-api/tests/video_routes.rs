@@ -568,6 +568,21 @@ async fn additional_parts_route_reads_official_path_metadata() {
             .await,
     )
     .await;
+    let nil_user_body = body_json(
+        fixture
+            .send(
+                Method::GET,
+                &format!(
+                    "/videos/{}/additionalparts?userid={}",
+                    fixture.additional_main_id,
+                    Uuid::nil()
+                ),
+                Some(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert_eq!(nil_user_body, body);
     assert_eq!(body["TotalRecordCount"], 2);
     assert_eq!(body["StartIndex"], 0);
     assert_eq!(body["Items"].as_array().unwrap().len(), 2);

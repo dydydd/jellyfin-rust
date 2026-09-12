@@ -936,7 +936,9 @@ async fn get_root_for(
     requested_fields: BaseItemDtoFields,
 ) -> Result<Json<BaseItemDto>, ApiError> {
     let authenticated = authentication::authenticated_session(&state, &headers).await?;
-    let target_user_id = requested_user_id.unwrap_or(authenticated.user.id);
+    let target_user_id = requested_user_id
+        .filter(|user_id| !user_id.is_nil())
+        .unwrap_or(authenticated.user.id);
     let item = state
         .user_library
         .root(&authenticated.user, target_user_id)
@@ -1088,7 +1090,9 @@ async fn related_items(
     kind: RelatedItemKind,
 ) -> Result<(Vec<base_item::Model>, Uuid), ApiError> {
     let authenticated = authentication::authenticated_session(&state, &headers).await?;
-    let target_user_id = requested_user_id.unwrap_or(authenticated.user.id);
+    let target_user_id = requested_user_id
+        .filter(|user_id| !user_id.is_nil())
+        .unwrap_or(authenticated.user.id);
     let items = state
         .user_library
         .related_items(&authenticated.user, target_user_id, item_id, kind)
@@ -1121,7 +1125,9 @@ async fn get_lyrics_for(
     item_id: Uuid,
 ) -> Result<Json<Value>, ApiError> {
     let authenticated = authentication::authenticated_session(&state, &headers).await?;
-    let target_user_id = requested_user_id.unwrap_or(authenticated.user.id);
+    let target_user_id = requested_user_id
+        .filter(|user_id| !user_id.is_nil())
+        .unwrap_or(authenticated.user.id);
     let lyrics = state
         .user_library
         .lyrics(&authenticated.user, target_user_id, item_id)
