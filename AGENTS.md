@@ -53,6 +53,12 @@
   preference. Merge section defaults without overriding explicitly supplied case-insensitive query
   keys, then delegate to the shared authorized user-items path so policy filtering, signed
   pagination, and batched DTO projection remain consistent. Keep this route confined to `/emby`.
+- Keep Emby's `HideFromResume` state in the internal PostgreSQL `user_data.is_hidden_from_resume`
+  flag without exposing it through Jellyfin's `UserItemDataDto`. Toggle only that flag atomically,
+  preserve playback position and all ordinary user data, and exclude hidden rows from Resume and
+  NextUp candidates while leaving played, favorite, rating, and recent activity semantics intact.
+  Keep the route protocol-local, bind the required `Hide` query case-insensitively, and preserve
+  ordinary self-only target authorization with administrator and API-key overrides.
 
 ## Working practices
 

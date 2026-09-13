@@ -60,6 +60,7 @@ mod m20260906_000057_optimize_chapter_queries;
 mod m20260906_000058_repair_alternate_relationship_order;
 mod m20260913_000059_add_metadata_options_configuration;
 mod m20260913_000060_bound_device_option_ids;
+mod m20260913_000061_add_hidden_from_resume;
 pub mod startup_routines;
 
 #[doc(hidden)]
@@ -167,6 +168,7 @@ pub use m20260906_000057_optimize_chapter_queries::Migration as OptimizeChapterQ
 pub use m20260906_000058_repair_alternate_relationship_order::Migration as RepairAlternateRelationshipOrderMigration;
 pub use m20260913_000059_add_metadata_options_configuration::Migration as AddMetadataOptionsConfigurationMigration;
 pub use m20260913_000060_bound_device_option_ids::Migration as BoundDeviceOptionIdsMigration;
+pub use m20260913_000061_add_hidden_from_resume::Migration as AddHiddenFromResumeMigration;
 
 pub use startup_routines::{
     ALL_STARTUP_ROUTINES, MigrationStage, StartupMigrationRoutine, StartupMigrationRunner,
@@ -238,6 +240,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20260906_000058_repair_alternate_relationship_order::Migration),
             Box::new(m20260913_000059_add_metadata_options_configuration::Migration),
             Box::new(m20260913_000060_bound_device_option_ids::Migration),
+            Box::new(m20260913_000061_add_hidden_from_resume::Migration),
         ]
     }
 }

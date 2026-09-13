@@ -21,6 +21,9 @@ pub struct Model {
     pub subtitle_stream_index: Option<i32>,
     pub likes: Option<bool>,
     pub retention_date: Option<DateTime<Utc>>,
+    /// Emby-only state used to suppress an item from continue-watching lists
+    /// without destroying its persisted playback position.
+    pub is_hidden_from_resume: bool,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

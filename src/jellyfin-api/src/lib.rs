@@ -44,7 +44,7 @@ use jellyfin_live_tv::{
 use jellyfin_media_encoding::encoder::EncoderCapabilities;
 use jellyfin_model::{
     DisplayPreferencesDto, FileSystemEntryInfo, PublicSystemInfo, SystemInfo, TranscodeReason,
-    UserConfiguration, UserDto, UserPolicy,
+    UserConfiguration, UserDto, UserItemDataDto, UserPolicy,
 };
 use jellyfin_networking::{NetworkConfiguration, NetworkManager};
 use jellyfin_server_implementations::{
@@ -1039,6 +1039,42 @@ impl AppState {
             .require_administrator()
             .map_err(ApiError::from)
             .map_err(IntoResponse::into_response)
+    }
+
+    /// Applies Emby's reversible continue-watching suppression flag while
+    /// retaining the shared authentication, target-user, visibility, and
+    /// user-data projection behavior.
+    #[allow(clippy::result_large_err)]
+    pub async fn set_emby_hidden_from_resume_for_request(
+        &self,
+        headers: &HeaderMap,
+        uri: &Uri,
+        requested_user_id: &str,
+        item_id: &str,
+        is_hidden: Option<bool>,
+    ) -> Result<UserItemDataDto, Response> {
+        let identity = authorization::require_default(self, headers, uri)
+            .await
+            .map_err(IntoResponse::into_response)?;
+        let requested_user_id = Uuid::parse_str(requested_user_id)
+            .map_err(|_| ApiError::InvalidRequest.into_response())?;
+        // Resolve the target before surfacing malformed item/query values so
+        // an ordinary user cannot probe another user's request validation.
+        let target_user_id = identity
+            .target_user_id(Some(requested_user_id))
+            .map_err(IntoResponse::into_response)?;
+        let item_id =
+            Uuid::parse_str(item_id).map_err(|_| ApiError::InvalidRequest.into_response())?;
+        let is_hidden = is_hidden.ok_or_else(|| ApiError::InvalidRequest.into_response())?;
+        let update = self
+            .user_data
+            .set_hidden_from_resume_for_authorized_user(target_user_id, item_id, is_hidden)
+            .await
+            .map_err(ApiError::from)
+            .map_err(IntoResponse::into_response)?;
+        let dto: UserItemDataDto = update.into();
+        websocket::broadcast_user_data_changed(self, target_user_id, &dto).await;
+        Ok(dto)
     }
 
     /// Snapshot plugin/package data for the Emby protocol adapter.

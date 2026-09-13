@@ -101,5 +101,4 @@ POST /Videos/{Id}/AlternateSources/Delete
 GET /GameGenres/{Name}/Images/{Type}/{Index}
 HEAD /GameGenres/{Name}/Images/{Type}/{Index}
 POST /Users/{Id}/TrackSelections/{TrackType}/Delete
-POST /Users/{UserId}/Items/{Id}/HideFromResume
 POST /Users/{Id}/Connect/Link/Delete

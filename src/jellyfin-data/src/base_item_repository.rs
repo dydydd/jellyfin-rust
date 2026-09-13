@@ -3101,7 +3101,12 @@ impl BaseItemRepository {
             "), episode_user_state AS MATERIALIZED (\
                  SELECT episode.id AS episode_id, \
                         COALESCE(BOOL_OR(data.played), false) AS is_watched, \
-                        COALESCE(BOOL_OR(data.playback_position_ticks > 0), false) AS is_resumable, \
+                        COALESCE(BOOL_OR(\
+                            data.playback_position_ticks > 0 \
+                            AND NOT data.is_hidden_from_resume\
+                        ), false) AS is_resumable, \
+                        COALESCE(BOOL_OR(data.is_hidden_from_resume), false) \
+                            AS is_hidden_from_resume, \
                         MAX(data.last_played_date) AS last_played_date \
                  FROM scoped_episodes AS episode \
                  INNER JOIN jellyfin.base_items AS version \
@@ -3112,6 +3117,7 @@ impl BaseItemRepository {
                  GROUP BY episode.id\
              ), episode_state AS MATERIALIZED (\
                  SELECT episode.*, state.is_watched, state.is_resumable, \
+                        state.is_hidden_from_resume, \
                         state.last_played_date \
                  FROM scoped_episodes AS episode \
                  INNER JOIN episode_user_state AS state ON state.episode_id = episode.id\
@@ -3194,6 +3200,7 @@ impl BaseItemRepository {
                  LEFT JOIN regular_state AS watched \
                    ON watched.id = last_watched.episode_id \
                  WHERE NOT episode.is_watched \
+                   AND NOT episode.is_hidden_from_resume \
                    AND (last_watched.series_key IS NULL \
                         OR (episode.aired_season, episode.aired_after_season, \
                             episode.aired_episode, episode.aired_item_kind, \
@@ -3212,6 +3219,7 @@ impl BaseItemRepository {
                    AND (special.data ->> 'AirsBeforeSeasonNumber' IS NOT NULL \
                         OR special.data ->> 'AirsAfterSeasonNumber' IS NOT NULL) \
                    AND NOT special.is_watched \
+                   AND NOT special.is_hidden_from_resume \
                  UNION ALL \
                  SELECT episode.*, false AS is_marker \
                  FROM ranked_candidates AS candidate \
@@ -3276,6 +3284,7 @@ impl BaseItemRepository {
                      INNER JOIN series_activity AS activity \
                        ON activity.series_key = episode.series_presentation_unique_key \
                      WHERE episode.is_watched \
+                       AND NOT episode.is_hidden_from_resume \
                      ORDER BY episode.series_presentation_unique_key, \
                               episode.last_played_date DESC NULLS LAST, \
                               episode.aired_season DESC, \
@@ -3317,6 +3326,7 @@ impl BaseItemRepository {
                      WHERE COALESCE(special.parent_index_number, -1) = 0 \
                        AND (special.data ->> 'AirsBeforeSeasonNumber' IS NOT NULL \
                             OR special.data ->> 'AirsAfterSeasonNumber' IS NOT NULL) \
+                       AND NOT special.is_hidden_from_resume \
                      UNION ALL \
                      SELECT episode.*, false AS is_marker \
                      FROM ranked_rewatch_candidates AS candidate \
@@ -5227,6 +5237,7 @@ fn resumable_filtered_cte(user_id: Uuid, query: &BaseItemQuery) -> (String, Vec<
              SELECT item_id, MAX(last_played_date) AS resume_last_played_date \
              FROM jellyfin.user_data \
              WHERE user_id = $1 AND playback_position_ticks > 0 \
+               AND is_hidden_from_resume = false \
              GROUP BY item_id\
          ), progress_leaf_items AS MATERIALIZED (\
              SELECT item.id, item.primary_version_id, item.is_virtual_item, \
@@ -5333,6 +5344,7 @@ fn not_resumable_filtered_cte(user_id: Uuid, query: &BaseItemQuery) -> (String, 
              SELECT item_id, MAX(last_played_date) AS resume_last_played_date \
              FROM jellyfin.user_data \
              WHERE user_id = $1 AND playback_position_ticks > 0 \
+               AND is_hidden_from_resume = false \
              GROUP BY item_id\
          ), resumable_groups AS (\
              SELECT DISTINCT COALESCE(item.primary_version_id, item.id) AS primary_id \
@@ -5655,7 +5667,10 @@ fn append_leaf_user_data_condition(
                      WHERE leaf_data.item_id = {alias}.id AND leaf_data.user_id = "
                 ),
             );
-            sql.push_str(" AND leaf_data.playback_position_ticks > 0)");
+            sql.push_str(
+                " AND leaf_data.playback_position_ticks > 0 \
+                 AND leaf_data.is_hidden_from_resume = false)",
+            );
         }
     }
 }

@@ -389,6 +389,7 @@ async fn assert_version_query_plans(transaction: &sea_orm::DatabaseTransaction, 
                SELECT item_id, MAX(last_played_date) AS resume_last_played_date
                FROM jellyfin.user_data
                WHERE user_id = $1 AND playback_position_ticks > 0
+                 AND is_hidden_from_resume = false
                GROUP BY item_id
            ), resume_versions AS (
                SELECT DISTINCT ON (COALESCE(item.primary_version_id, item.id))

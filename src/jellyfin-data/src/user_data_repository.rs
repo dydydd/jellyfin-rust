@@ -25,6 +25,7 @@ pub struct NewUserData {
     pub subtitle_stream_index: Option<i32>,
     pub likes: Option<bool>,
     pub retention_date: Option<DateTime<Utc>>,
+    pub is_hidden_from_resume: bool,
 }
 
 impl NewUserData {
@@ -44,6 +45,7 @@ impl NewUserData {
             subtitle_stream_index: None,
             likes: None,
             retention_date: None,
+            is_hidden_from_resume: false,
         }
     }
 }
@@ -163,7 +165,8 @@ impl UserDataRepository {
             SELECT data.item_id, data.user_id, data.custom_data_key, data.rating,
                 data.playback_position_ticks, data.play_count, data.is_favorite,
                 data.last_played_date, data.played, data.audio_stream_index,
-                data.subtitle_stream_index, data.likes, data.retention_date
+                data.subtitle_stream_index, data.likes, data.retention_date,
+                data.is_hidden_from_resume
             FROM jellyfin.user_data AS data
             LEFT JOIN preferred_keys AS preferred USING (custom_data_key)
             WHERE data.item_id = $1 AND data.user_id = $2
@@ -225,7 +228,8 @@ impl UserDataRepository {
                 data.item_id, data.user_id, data.custom_data_key, data.rating,
                 data.playback_position_ticks, data.play_count, data.is_favorite,
                 data.last_played_date, data.played, data.audio_stream_index,
-                data.subtitle_stream_index, data.likes, data.retention_date
+                data.subtitle_stream_index, data.likes, data.retention_date,
+                data.is_hidden_from_resume
             FROM jellyfin.user_data AS data
             INNER JOIN requested_items AS requested
                 ON requested.item_id = data.item_id
@@ -356,7 +360,8 @@ impl UserDataRepository {
             RETURNING item_id, user_id, custom_data_key, rating,
                 playback_position_ticks, play_count, is_favorite,
                 last_played_date, played, audio_stream_index,
-                subtitle_stream_index, likes, retention_date
+                subtitle_stream_index, likes, retention_date,
+                is_hidden_from_resume
             ",
             [
                 item_id.into(),
@@ -433,7 +438,8 @@ impl UserDataRepository {
             RETURNING item_id, user_id, custom_data_key, rating,
                 playback_position_ticks, play_count, is_favorite,
                 last_played_date, played, audio_stream_index,
-                subtitle_stream_index, likes, retention_date
+                subtitle_stream_index, likes, retention_date,
+                is_hidden_from_resume
             ",
             [
                 item_id.into(),
@@ -448,6 +454,72 @@ impl UserDataRepository {
             .await?
             .ok_or_else(|| {
                 DbErr::RecordNotFound("favorite upsert returned no row".to_owned()).into()
+            })
+    }
+
+    /// Atomically changes only the Emby continue-watching suppression flag.
+    ///
+    /// Playback position and every ordinary Jellyfin user-data field are
+    /// deliberately left untouched so hiding an item is fully reversible.
+    ///
+    /// # Errors
+    ///
+    /// Returns a validation error when no current key is supplied, or a
+    /// database error when the upsert fails.
+    pub async fn set_hidden_from_resume(
+        &self,
+        item_id: Uuid,
+        user_id: Uuid,
+        keys: &[String],
+        is_hidden: bool,
+    ) -> Result<user_data::Model, UserDataError> {
+        let primary_key = keys.first().ok_or(UserDataError::EmptyKey)?;
+        let statement = Statement::from_sql_and_values(
+            DbBackend::Postgres,
+            r"
+            WITH preferred_keys AS (
+                SELECT value AS custom_data_key, ordinality AS priority
+                FROM jsonb_array_elements_text($3::jsonb) WITH ORDINALITY
+            ), chosen_key AS (
+                SELECT data.custom_data_key
+                FROM jellyfin.user_data AS data
+                LEFT JOIN preferred_keys AS preferred
+                    USING (custom_data_key)
+                WHERE data.item_id = $1 AND data.user_id = $2
+                ORDER BY preferred.priority NULLS LAST, data.custom_data_key
+                LIMIT 1
+            ), target_key AS (
+                SELECT COALESCE(
+                    (SELECT custom_data_key FROM chosen_key),
+                    $4::text
+                ) AS custom_data_key
+            )
+            INSERT INTO jellyfin.user_data (
+                item_id, user_id, custom_data_key, is_hidden_from_resume
+            )
+            SELECT $1, $2, custom_data_key, $5
+            FROM target_key
+            ON CONFLICT (item_id, user_id, custom_data_key) DO UPDATE
+            SET is_hidden_from_resume = EXCLUDED.is_hidden_from_resume
+            RETURNING item_id, user_id, custom_data_key, rating,
+                playback_position_ticks, play_count, is_favorite,
+                last_played_date, played, audio_stream_index,
+                subtitle_stream_index, likes, retention_date,
+                is_hidden_from_resume
+            ",
+            [
+                item_id.into(),
+                user_id.into(),
+                serde_json::json!(keys).into(),
+                primary_key.as_str().into(),
+                is_hidden.into(),
+            ],
+        );
+        user_data::Model::find_by_statement(statement)
+            .one(self.database.as_ref())
+            .await?
+            .ok_or_else(|| {
+                DbErr::RecordNotFound("hide-from-resume upsert returned no row".to_owned()).into()
             })
     }
 
@@ -506,7 +578,8 @@ impl UserDataRepository {
             RETURNING item_id, user_id, custom_data_key, rating,
                 playback_position_ticks, play_count, is_favorite,
                 last_played_date, played, audio_stream_index,
-                subtitle_stream_index, likes, retention_date
+                subtitle_stream_index, likes, retention_date,
+                is_hidden_from_resume
             ",
             [
                 item_id.into(),
@@ -599,7 +672,8 @@ impl UserDataRepository {
             RETURNING item_id, user_id, custom_data_key, rating,
                 playback_position_ticks, play_count, is_favorite,
                 last_played_date, played, audio_stream_index,
-                subtitle_stream_index, likes, retention_date
+                subtitle_stream_index, likes, retention_date,
+                is_hidden_from_resume
             ",
             [
                 item_id.into(),
@@ -679,7 +753,8 @@ impl UserDataRepository {
             RETURNING item_id, user_id, custom_data_key, rating,
                 playback_position_ticks, play_count, is_favorite,
                 last_played_date, played, audio_stream_index,
-                subtitle_stream_index, likes, retention_date
+                subtitle_stream_index, likes, retention_date,
+                is_hidden_from_resume
             ",
             [
                 item_id.into(),
@@ -765,7 +840,8 @@ impl UserDataRepository {
             RETURNING item_id, user_id, custom_data_key, rating,
                 playback_position_ticks, play_count, is_favorite,
                 last_played_date, played, audio_stream_index,
-                subtitle_stream_index, likes, retention_date
+                subtitle_stream_index, likes, retention_date,
+                is_hidden_from_resume
             ",
             [
                 item_id.into(),
@@ -873,7 +949,8 @@ impl UserDataRepository {
             RETURNING item_id, user_id, custom_data_key, rating,
                 playback_position_ticks, play_count, is_favorite,
                 last_played_date, played, audio_stream_index,
-                subtitle_stream_index, likes, retention_date
+                subtitle_stream_index, likes, retention_date,
+                is_hidden_from_resume
             ",
             [source_item_id.into(), user_id.into(), reset_position.into()],
         );
@@ -959,7 +1036,8 @@ impl UserDataRepository {
                 data.rating, data.playback_position_ticks,
                 data.play_count, data.is_favorite, data.last_played_date,
                 data.played, data.audio_stream_index,
-                data.subtitle_stream_index, data.likes, data.retention_date
+                data.subtitle_stream_index, data.likes, data.retention_date,
+                data.is_hidden_from_resume
             ",
             [source_item_id.into(), user_id.into()],
         );
@@ -1008,7 +1086,8 @@ impl UserDataRepository {
             RETURNING item_id, user_id, custom_data_key, rating,
                 playback_position_ticks, play_count, is_favorite,
                 last_played_date, played, audio_stream_index,
-                subtitle_stream_index, likes, retention_date
+                subtitle_stream_index, likes, retention_date,
+                is_hidden_from_resume
             ",
             [
                 item_id.into(),
@@ -1051,7 +1130,8 @@ impl UserDataRepository {
             RETURNING item_id, user_id, custom_data_key, rating,
                 playback_position_ticks, play_count, is_favorite,
                 last_played_date, played, audio_stream_index,
-                subtitle_stream_index, likes, retention_date
+                subtitle_stream_index, likes, retention_date,
+                is_hidden_from_resume
             ",
             [item_id.into(), user_id.into(), key.into()],
         );
@@ -1088,6 +1168,7 @@ impl UserDataRepository {
                     user_data::Column::SubtitleStreamIndex,
                     user_data::Column::Likes,
                     user_data::Column::RetentionDate,
+                    user_data::Column::IsHiddenFromResume,
                 ])
                 .to_owned(),
             )
@@ -1215,8 +1296,13 @@ impl UserDataRepository {
         if let Some(has_position) = query.has_playback_position {
             rows = if has_position {
                 rows.filter(user_data::Column::PlaybackPositionTicks.gt(0))
+                    .filter(user_data::Column::IsHiddenFromResume.eq(false))
             } else {
-                rows.filter(user_data::Column::PlaybackPositionTicks.eq(0))
+                rows.filter(
+                    user_data::Column::PlaybackPositionTicks
+                        .eq(0)
+                        .or(user_data::Column::IsHiddenFromResume.eq(true)),
+                )
             };
         }
         if let Some(min_date) = query.min_last_played_date {
@@ -1250,6 +1336,7 @@ fn to_active_model(data: NewUserData) -> user_data::ActiveModel {
         subtitle_stream_index: Set(data.subtitle_stream_index),
         likes: Set(data.likes),
         retention_date: Set(data.retention_date),
+        is_hidden_from_resume: Set(data.is_hidden_from_resume),
     }
 }
 
@@ -1268,6 +1355,7 @@ fn from_model(model: user_data::Model) -> NewUserData {
         subtitle_stream_index: model.subtitle_stream_index,
         likes: model.likes,
         retention_date: model.retention_date,
+        is_hidden_from_resume: model.is_hidden_from_resume,
     }
 }
 

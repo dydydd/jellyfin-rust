@@ -292,7 +292,8 @@ async fn assert_postgres_catalog(database: &DatabaseConnection) {
         .expect("resume index definition");
     assert!(resume_definition.contains("last_played_date desc nulls last, custom_data_key"));
     assert!(resume_definition.contains("include (playback_position_ticks)"));
-    assert!(resume_definition.contains("where (playback_position_ticks > 0)"));
+    assert!(resume_definition.contains("playback_position_ticks > 0"));
+    assert!(resume_definition.contains("is_hidden_from_resume = false"));
 }
 
 async fn assert_postgres_query_plans(database: &DatabaseConnection, fixture: &Fixture) {
@@ -411,6 +412,7 @@ async fn assert_resume_query_plan(transaction: &sea_orm::DatabaseTransaction, fi
              SELECT item_id, MAX(last_played_date) AS resume_last_played_date \
              FROM jellyfin.user_data \
              WHERE user_id = $1 AND playback_position_ticks > 0 \
+               AND is_hidden_from_resume = false \
              GROUP BY item_id \
          ), resume_versions AS ( \
              SELECT DISTINCT ON (COALESCE(item.primary_version_id, item.id)) \
