@@ -80,6 +80,24 @@
   unsupported Sync mutation methods stay in the explicit gap ledger. Emby System Ping, public
   system info, Branding configuration/CSS, and Features follow the generated Emby authenticated or
   elevated policies even though the corresponding Jellyfin bootstrap routes remain public.
+- Keep `/emby/Sync/Options` protocol-local and return all four generated SDK collection members even
+  when no legacy Sync provider exists. Bind its required `UserId`, optional item/parent/target ids,
+  and one-based `SyncCategory` values case-insensitively with last-duplicate-wins semantics. Keep
+  `/emby/Packages/Updates` administrator/API-key-only, require its case-insensitive `PackageType`,
+  and return an SDK-decodable empty array when no package-update provider exists; mixed-case Emby
+  authorization must not weaken this boundary or expose either route under Jellyfin root or `/api`.
+- Implement `/emby/AudioBooks/NextUp` as the target user's policy-aware resumable AudioBook query,
+  not a permanent empty placeholder. Bind the complete generated query surface case-insensitively,
+  preserve signed `Int32` paging, map `AlbumId` to the shared album filter, and reuse the batched
+  Items DTO projector so field, image, and user-data options remain consistent. Keep the route and
+  its response adaptation confined to `/emby`.
+- Derive Emby library-discovery prefixes, item types, audio codecs/layouts, containers, extended
+  video types, and official ratings from the full policy-filtered Items candidate set in one
+  set-based PostgreSQL facet query per request. Preserve the generated result shapes, deterministic
+  case-insensitive distinct ordering, signed paging, and the complete supported Items query binder;
+  never load a full item page or issue per-item stream/value lookups. Keep `/emby/Features`
+  administrator/API-key-only and return an empty SDK collection when no Emby feature provider is
+  registered, without adding any of these protocol-owned routes to Jellyfin root or `/api`.
 - Persist `POST /emby/Items/Access` assignments in the private PostgreSQL Emby relation without
   changing Jellyfin's item policy model or adding the route to root or `/api`. Bind the three body
   properties case-insensitively with last-duplicate-wins semantics, accept the generated .NET
