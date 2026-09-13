@@ -7,13 +7,14 @@ use std::sync::Arc;
 
 use axum::{
     Json, Router,
-    extract::{OriginalUri, State},
-    http::{HeaderMap, StatusCode},
+    extract::{OriginalUri, Request, State},
+    http::{HeaderMap, StatusCode, Uri, uri::PathAndQuery},
     response::Response,
     routing::get,
 };
 use jellyfin_api::AppState;
 use serde::Serialize;
+use tower::{ServiceExt, service_fn};
 
 mod auth_user;
 mod backup;
@@ -43,7 +44,124 @@ pub fn router(state: AppState) -> Router {
         ))
         .with_state(state);
 
-    Router::new().nest(EMBY_API_PREFIX, routes)
+    Router::new().nest(EMBY_API_PREFIX, case_insensitive_dedicated_routes(routes))
+}
+
+// Axum matches paths case-sensitively, while the ASP.NET router used by Emby
+// compares literal path segments without regard to ASCII case. Match against
+// the dedicated Emby templates before dispatch so a mixed-case static path
+// cannot be captured by a shared dynamic route (for example, `Updates` as a
+// package name). Dynamic segments are copied from the request unchanged.
+//
+// This list deliberately contains only protocol-owned routes. The shared
+// Jellyfin fallback remains untouched, as does the unprefixed Jellyfin tree.
+const DEDICATED_ROUTE_TEMPLATES: &[&str] = &[
+    "/AudioBooks/NextUp",
+    "/AudioCodecs",
+    "/AudioLayouts",
+    "/Artists/Prefixes",
+    "/BackupRestore/BackupInfo",
+    "/Branding/Configuration",
+    "/Containers",
+    "/DisplayPreferences/{display_preferences_id}",
+    "/Encoding/CodecConfiguration/Defaults",
+    "/Encoding/CodecInformation/Video",
+    "/Encoding/ToneMapOptions",
+    "/Environment/DefaultDirectoryBrowser",
+    "/Environment/DirectoryContents",
+    "/Environment/Drives",
+    "/Environment/NetworkDevices",
+    "/Environment/NetworkShares",
+    "/Environment/ParentPath",
+    "/Environment/ValidatePath",
+    "/ExtendedVideoTypes",
+    "/Features",
+    "/Items/Prefixes",
+    "/ItemTypes",
+    // Keep the literal route before the dynamic package-name route. This is
+    // the same precedence ASP.NET gives literal segments.
+    "/Packages/Updates",
+    "/Packages",
+    "/Packages/{name}",
+    "/OfficialRatings",
+    "/Shows/Missing",
+    "/StreamLanguages",
+    "/SubtitleCodecs",
+    "/System/Info/Public",
+    "/System/Info",
+    "/System/Logs/{name}/Lines",
+    "/System/Ping",
+    "/System/ReleaseNotes/Versions",
+    "/System/ReleaseNotes",
+    "/System/WakeOnLanInfo",
+    "/Tags",
+    "/UserSettings/{user_id}/Partial",
+    "/UserSettings/{user_id}",
+    "/Users/ItemAccess",
+    "/Users/Prefixes",
+    "/Users/Query",
+    "/VideoCodecs",
+];
+
+fn case_insensitive_dedicated_routes(routes: Router) -> Router {
+    Router::new().fallback_service(service_fn(move |mut request: Request| {
+        let routes = routes.clone();
+        async move {
+            normalize_dedicated_route_uri(request.uri_mut());
+            routes.oneshot(request).await
+        }
+    }))
+}
+
+fn normalize_dedicated_route_uri(uri: &mut Uri) {
+    let Some(path) = normalized_dedicated_path(uri.path()) else {
+        return;
+    };
+    let path_and_query = match uri.query() {
+        Some(query) => format!("{path}?{query}"),
+        None => path,
+    };
+    let Ok(path_and_query) = PathAndQuery::try_from(path_and_query) else {
+        return;
+    };
+    let mut parts = uri.clone().into_parts();
+    parts.path_and_query = Some(path_and_query);
+    if let Ok(normalized) = Uri::from_parts(parts) {
+        *uri = normalized;
+    }
+}
+
+fn normalized_dedicated_path(path: &str) -> Option<String> {
+    let request_segments = path.strip_prefix('/')?.split('/').collect::<Vec<_>>();
+    for template in DEDICATED_ROUTE_TEMPLATES {
+        let template_segments = template
+            .strip_prefix('/')
+            .expect("dedicated route templates are absolute")
+            .split('/')
+            .collect::<Vec<_>>();
+        if request_segments.len() != template_segments.len() {
+            continue;
+        }
+        let mut normalized = String::with_capacity(path.len());
+        let mut matches = true;
+        for (request_segment, template_segment) in
+            request_segments.iter().zip(template_segments.iter())
+        {
+            normalized.push('/');
+            if template_segment.starts_with('{') && template_segment.ends_with('}') {
+                normalized.push_str(request_segment);
+            } else if request_segment.eq_ignore_ascii_case(template_segment) {
+                normalized.push_str(template_segment);
+            } else {
+                matches = false;
+                break;
+            }
+        }
+        if matches {
+            return Some(normalized);
+        }
+    }
+    None
 }
 
 fn dedicated_routes() -> Router<Arc<AppState>> {
@@ -182,7 +300,7 @@ mod tests {
 
     use axum::{
         body::{Body, to_bytes},
-        extract::{MatchedPath, Request},
+        extract::{MatchedPath, Path, Request},
         http::{HeaderName, HeaderValue, Method, StatusCode},
         middleware::{self, Next},
         response::IntoResponse,
@@ -303,6 +421,155 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn mixed_case_dedicated_static_routes_keep_literal_precedence() {
+        let state = AppState::new(
+            DatabaseConnection::Disconnected,
+            "API Test Server".to_owned(),
+            "http://127.0.0.1:8096".to_owned(),
+        );
+        let dedicated = dedicated_routes()
+            .layer(middleware::from_fn(short_circuit_matched_route))
+            .with_state(Arc::new(state));
+        let app = case_insensitive_dedicated_routes(dedicated);
+
+        for (path, expected) in [
+            ("/pAcKaGeS/uPdAtEs", "/Packages/Updates"),
+            ("/uSeRs/qUeRy", "/Users/Query"),
+            ("/UsErS/iTeMaCcEsS", "/Users/ItemAccess"),
+            ("/uSeRs/pReFiXeS", "/Users/Prefixes"),
+            ("/iTeMs/pReFiXeS", "/Items/Prefixes"),
+            ("/aRtIsTs/pReFiXeS", "/Artists/Prefixes"),
+            (
+                "/sYsTeM/rElEaSeNoTeS/vErSiOnS",
+                "/System/ReleaseNotes/Versions",
+            ),
+        ] {
+            let response = app
+                .clone()
+                .oneshot(Request::get(path).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::NO_CONTENT, "{path}");
+            assert_eq!(
+                response.headers().get(&MATCHED_PATH_HEADER).unwrap(),
+                expected,
+                "{path} must reach the literal dedicated route"
+            );
+        }
+
+        for method in [Method::GET, Method::POST] {
+            let path = "/dIsPlAyPrEfErEnCeS/MiXeD%2BId?Client=Emby";
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method(method.clone())
+                        .uri(path)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::NO_CONTENT, "{method} {path}");
+            assert_eq!(
+                response.headers().get(&MATCHED_PATH_HEADER).unwrap(),
+                "/DisplayPreferences/{display_preferences_id}",
+                "{method} {path} must use the same dedicated route"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn dedicated_route_normalization_preserves_dynamic_values_query_and_original_uri() {
+        async fn observe_request(
+            OriginalUri(original): OriginalUri,
+            uri: Uri,
+            Path(name): Path<String>,
+        ) -> Json<serde_json::Value> {
+            Json(serde_json::json!({
+                "OriginalUri": original.to_string(),
+                "RoutedUri": uri.to_string(),
+                "Name": name,
+            }))
+        }
+
+        let app = Router::new().nest(
+            EMBY_API_PREFIX,
+            case_insensitive_dedicated_routes(
+                Router::new().route("/Packages/{name}", get(observe_request)),
+            ),
+        );
+        let requested = "/emby/pAcKaGeS/MiXeD%20Name?Client=Emby%20Swift&Token=AaBb";
+        let response = app
+            .clone()
+            .oneshot(Request::get(requested).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let value: serde_json::Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), 64 * 1024).await.unwrap())
+                .unwrap();
+        assert_eq!(value["OriginalUri"], requested);
+        assert_eq!(
+            value["RoutedUri"],
+            "/Packages/MiXeD%20Name?Client=Emby%20Swift&Token=AaBb"
+        );
+        assert_eq!(value["Name"], "MiXeD Name");
+
+        assert_eq!(
+            status(&app, "/pAcKaGeS/MiXeD%20Name").await,
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(normalized_dedicated_path("/iTeMs/NotAPrefix"), None);
+    }
+
+    #[tokio::test]
+    async fn generated_dedicated_operations_have_mixed_case_dispatch() {
+        let contract: ClientContract =
+            serde_json::from_str(include_str!("../tests/fixtures/emby_operations.json"))
+                .expect("checked-in Emby operation inventory must be valid");
+        let state = AppState::new(
+            DatabaseConnection::Disconnected,
+            "API Test Server".to_owned(),
+            "http://127.0.0.1:8096".to_owned(),
+        );
+        let dedicated = dedicated_routes()
+            .with_state(Arc::new(state))
+            .layer(middleware::from_fn(short_circuit_matched_route));
+        let mixed_case = case_insensitive_dedicated_routes(dedicated.clone());
+
+        let mut checked = 0;
+        for operation in contract.operations {
+            if matches!(operation.tag.as_str(), "LiveTvService" | "PluginService")
+                || operation.path == "/LiveTv"
+                || operation.path.starts_with("/LiveTv/")
+            {
+                continue;
+            }
+            let method = Method::from_bytes(operation.method.as_bytes()).unwrap();
+            let canonical = materialize_path(&operation.path);
+            let Some(expected_route) = matched_route(&dedicated, method.clone(), &canonical).await
+            else {
+                continue;
+            };
+
+            checked += 1;
+            let path = alternating_ascii_case(&canonical);
+            assert_eq!(
+                matched_route(&mixed_case, method, &path).await.as_deref(),
+                Some(expected_route.as_str()),
+                "dedicated Emby operation lost mixed-case dispatch: {} {} ({path})",
+                operation.method,
+                operation.path
+            );
+        }
+        assert!(
+            checked > 20,
+            "expected to audit the dedicated route surface"
+        );
+    }
+
+    #[tokio::test]
     async fn generated_emby_client_route_inventory_audit() {
         let contract: ClientContract =
             serde_json::from_str(include_str!("../tests/fixtures/emby_operations.json"))
@@ -366,6 +633,10 @@ mod tests {
     }
 
     async fn route_matches(app: &Router, method: Method, path: &str) -> bool {
+        matched_route(app, method, path).await.is_some()
+    }
+
+    async fn matched_route(app: &Router, method: Method, path: &str) -> Option<String> {
         app.clone()
             .oneshot(
                 Request::builder()
@@ -378,7 +649,9 @@ mod tests {
             .await
             .unwrap()
             .headers()
-            .contains_key(&MATCHED_PATH_HEADER)
+            .get(&MATCHED_PATH_HEADER)
+            .and_then(|value| value.to_str().ok())
+            .map(ToOwned::to_owned)
     }
 
     fn materialize_path(template: &str) -> String {
@@ -396,6 +669,18 @@ mod tests {
             }
         }
         path
+    }
+
+    fn alternating_ascii_case(path: &str) -> String {
+        path.char_indices()
+            .map(|(index, character)| {
+                if index % 2 == 0 {
+                    character.to_ascii_lowercase()
+                } else {
+                    character.to_ascii_uppercase()
+                }
+            })
+            .collect()
     }
 
     async fn status(app: &Router, uri: &str) -> StatusCode {
