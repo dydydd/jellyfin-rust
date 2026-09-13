@@ -59,6 +59,48 @@
   NextUp candidates while leaving played, favorite, rating, and recent activity semantics intact.
   Keep the route protocol-local, bind the required `Hide` query case-insensitively, and preserve
   ordinary self-only target authorization with administrator and API-key overrides.
+- Keep legacy Emby GameGenre entities protocol-local. Reconcile their deterministic item-by-name
+  rows from real Game genre values in bounded pages, preserve signed pagination and user-less global
+  query behavior, apply an explicit user's library policy, and expose GameGenre image routes only
+  below `/emby`; unprefixed Jellyfin must not acquire Game or GameGenre endpoints.
+- Store Emby's opaque encoding editor objects under private `emby-encoding-*` named-configuration
+  keys. GET requires an authenticated user and POST requires administrator or API-key authority;
+  preserve submitted JSON objects verbatim, keep codec context keys distinct, and never expose these
+  records through Jellyfin's public system-configuration namespace or treat them as runtime FFmpeg
+  configuration.
+- Persist Emby's nullable `WasSearched` report as per-user PostgreSQL state, with target lookup and
+  self/administrator/API-key authorization ahead of body validation. Clear operations are
+  idempotent, user deletion cascades the state, and neither the storage nor its routes may leak into
+  the unprefixed Jellyfin API.
+- Adapt Emby `UserPolicy` and `UserConfiguration` only on `/emby` user DTOs and mutations. Bind all
+  top-level properties case-insensitively with last-duplicate-wins semantics, accept numeric strings
+  where the official JSON defaults do, retain Emby-only enum values and fields in nested PostgreSQL
+  JSON beside the shared typed view, and batch-load response contracts. Overlay current shared
+  values onto every mapped response field while preserving protocol-only values, and preserve the
+  nested documents when login counters or Jellyfin mutations rewrite shared policy/configuration.
+  Do not buffer unrelated `/Users/**` item pages for this adaptation.
+- Treat Emby's `/LiveStreams/MediaInfo` as a lookup and access-time touch of a real entry in the
+  shared live-stream registry. Match ids case-insensitively, reject missing ids, return not found for
+  unknown, closed, or expired streams, and keep the authenticated empty-response operation under
+  `/emby` without inventing a successful stream.
+- Advertise Emby's three dashboard-backed CopyData categories in official UI order: `UserPolicy`,
+  `UserConfiguration`, then `UserData`. Copy selected user JSON together with every corresponding
+  derived column, and copy user-data rows to deduplicated targets with a set-based PostgreSQL
+  operation, all in one transaction. Preserve administrator/enabled-user invariants, revoke sessions
+  for newly disabled targets, retain unrelated target user-data rows, and make any missing source or
+  target abort the whole copy. Apply the same categories to `/emby/Users/New` when
+  `CopyFromUserId` is supplied; omitted or empty nullable copy-option collections copy no category
+  because the dashboard always submits its checkbox array explicitly. Keep binding case-insensitive,
+  mutations administrator/API-key-only, user-updated notifications equivalent, and all behavior
+  protocol-local.
+- Keep Emby's bulk metadata reset administrator/API-key-only and confined to `/emby`. Bind the
+  required comma-separated item ids case-insensitively, validate and lock every target before any
+  write, then remove historical casing variants of lock fields and persist the official unlocked
+  values in fixed 128-item batches. Preserve provider ids and unrelated metadata for the subsequent
+  full replacement refresh, reserve capacity in one bounded refresh queue before committing the
+  reset, process queued items with at most four refreshes in flight, and return after enqueueing
+  instead of waiting on remote providers. Never add this legacy mutation to Jellyfin's unprefixed
+  routes.
 
 ## Working practices
 

@@ -1,4 +1,3 @@
-GET /GameGenres
 GET /Parties
 POST /Parties
 GET /swagger
@@ -10,18 +9,6 @@ GET /Devices/CameraUploads
 POST /Devices/CameraUploads
 GET /Dlna/ProfileInfos
 POST /Dlna/Profiles
-GET /Encoding/FullToneMapOptions
-POST /Encoding/FullToneMapOptions
-GET /Encoding/PublicToneMapOptions
-POST /Encoding/PublicToneMapOptions
-GET /Encoding/SubtitleOptions
-POST /Encoding/SubtitleOptions
-GET /Encoding/FfmpegOptions
-POST /Encoding/FfmpegOptions
-GET /Encoding/CodecParameters
-POST /Encoding/CodecParameters
-GET /GameGenres/{Name}
-POST /LiveStreams/MediaInfo
 POST /Notifications/Admin
 GET /Parties/Info
 GET /Parties/Messages
@@ -51,7 +38,6 @@ DELETE /Dlna/Profiles/{Id}
 GET /Dlna/Profiles/Default
 GET /Games/{Id}/Similar
 POST /Items/RemoteSearch/Game
-POST /Items/Metadata/Reset
 POST /Items/Shared/Leave
 POST /Notifications/Services/Test
 GET /Notifications/Services/Defaults
@@ -65,9 +51,6 @@ POST /Sync/Items/Cancel
 DELETE /Sync/{TargetId}/Items
 GET /Sync/Items/Ready
 DELETE /Sync/JobItems/{Id}
-DELETE /Users/{Id}/RecentlySearched
-POST /Users/{UserId}/CopyData
-POST /Users/{UserId}/SearchedItems/
 GET /Dlna/{UuId}/contentdirectory/contentdirectory.xml
 HEAD /Dlna/{UuId}/contentdirectory/contentdirectory.xml
 GET /Dlna/{UuId}/contentdirectory/contentdirectory
@@ -79,8 +62,6 @@ HEAD /Dlna/{UuId}/connectionmanager/connectionmanager
 POST /Dlna/{UuId}/contentdirectory/control
 POST /Dlna/{UuId}/connectionmanager/control
 GET /Dlna/{UuId}/icons/{Filename}
-GET /GameGenres/{Name}/Images/{Type}
-HEAD /GameGenres/{Name}/Images/{Type}
 POST /Sync/Jobs/{Id}/Delete
 POST /Sync/{TargetId}/Items/Delete
 POST /Sync/JobItems/{Id}/Transferred
@@ -91,9 +72,6 @@ POST /Sync/JobItems/{Id}/Enable
 POST /Sync/JobItems/{Id}/Delete
 POST /Sync/JobItems/{Id}/MarkForRemoval
 POST /Sync/JobItems/{Id}/UnmarkForRemoval
-POST /Users/{Id}/RecentlySearched/Delete
 POST /Users/{Id}/Connect/Link
 DELETE /Users/{Id}/Connect/Link
-GET /GameGenres/{Name}/Images/{Type}/{Index}
-HEAD /GameGenres/{Name}/Images/{Type}/{Index}
 POST /Users/{Id}/Connect/Link/Delete
