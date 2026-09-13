@@ -20,6 +20,7 @@ mod alternate_sources;
 mod auth_user;
 mod backup;
 mod bif;
+mod dlna;
 mod encoding;
 mod environment;
 mod hide_from_resume;
@@ -33,6 +34,7 @@ mod packages;
 mod plugins;
 mod recent_searches;
 mod section_items;
+mod sync;
 mod system_misc;
 mod track_selections;
 mod typed_settings;
@@ -49,6 +51,7 @@ pub fn router(state: AppState) -> Router {
     let state = Arc::new(state);
     let fallback = jellyfin_api::unprefixed_router(state.as_ref().clone());
     let routes = dedicated_routes()
+        .merge(swagger_alias_routes(fallback.clone()))
         .fallback_service(fallback)
         .layer(axum::middleware::from_fn_with_state(
             Arc::clone(&state),
@@ -61,6 +64,22 @@ pub fn router(state: AppState) -> Router {
         .with_state(state);
 
     Router::new().nest(EMBY_API_PREFIX, case_insensitive_dedicated_routes(routes))
+}
+
+// The shared Jellyfin document owns its OpenAPI bytes and response headers.
+// Dispatch Emby's extensionless alias to that existing route without adding
+// `/swagger` to Jellyfin's unprefixed or `/api` trees.
+fn swagger_alias_routes(fallback: Router) -> Router<Arc<AppState>> {
+    Router::new().route_service(
+        "/swagger",
+        service_fn(move |mut request: Request| {
+            let fallback = fallback.clone();
+            async move {
+                *request.uri_mut() = Uri::from_static("/swagger.json");
+                fallback.oneshot(request).await
+            }
+        }),
+    )
 }
 
 // Axum matches paths case-sensitively, while the ASP.NET router used by Emby
@@ -82,6 +101,7 @@ const DEDICATED_ROUTE_TEMPLATES: &[&str] = &[
     "/BackupRestore/BackupInfo",
     "/Branding/Configuration",
     "/Containers",
+    "/Dlna/ProfileInfos",
     "/DisplayPreferences/{display_preferences_id}",
     "/Encoding/CodecConfiguration/Defaults",
     "/Encoding/CodecParameters",
@@ -123,7 +143,12 @@ const DEDICATED_ROUTE_TEMPLATES: &[&str] = &[
     "/OfficialRatings",
     "/Shows/Missing",
     "/StreamLanguages",
+    "/swagger",
     "/SubtitleCodecs",
+    "/Sync/JobItems",
+    "/Sync/Items/Ready",
+    "/Sync/Jobs",
+    "/Sync/Targets",
     "/System/Info/Public",
     "/System/Info",
     "/System/Logs/{name}/Lines",
@@ -348,6 +373,7 @@ fn dedicated_routes() -> Router<Arc<AppState>> {
         .merge(alternate_sources::routes())
         .merge(backup::routes())
         .merge(bif::routes())
+        .merge(dlna::routes())
         .merge(encoding::routes())
         .merge(environment::routes())
         .merge(hide_from_resume::routes())
@@ -361,6 +387,7 @@ fn dedicated_routes() -> Router<Arc<AppState>> {
         .merge(plugins::routes())
         .merge(recent_searches::routes())
         .merge(section_items::routes())
+        .merge(sync::routes())
         .merge(system_misc::routes())
         .merge(track_selections::routes())
         .merge(typed_settings::routes())
@@ -491,7 +518,7 @@ mod tests {
     use axum::{
         body::{Body, to_bytes},
         extract::{MatchedPath, Path, Request},
-        http::{HeaderName, HeaderValue, Method, StatusCode},
+        http::{HeaderName, HeaderValue, Method, StatusCode, header},
         middleware::{self, Next},
         response::IntoResponse,
     };
@@ -523,6 +550,7 @@ mod tests {
             "http://127.0.0.1:8096".to_owned(),
         );
         let jellyfin = jellyfin_api::router(state.clone());
+        let emby_handlers = dedicated_routes().with_state(Arc::new(state.clone()));
         let emby = router(state);
 
         assert_eq!(status(&jellyfin, "/GetUtcTime").await, StatusCode::OK);
@@ -534,7 +562,7 @@ mod tests {
         assert_ne!(status(&emby, "/api/GetUtcTime").await, StatusCode::OK);
 
         let jellyfin_info = body(&jellyfin, "/System/Info/Public").await;
-        let emby_info = body(&emby, "/emby/System/Info/Public").await;
+        let emby_info = body(&emby_handlers, "/System/Info/Public").await;
         assert!(jellyfin_info.get("ProductName").is_some());
         assert!(emby_info.get("ProductName").is_none());
         assert_eq!(emby_info["Version"], EMBY_API_VERSION);
@@ -542,19 +570,19 @@ mod tests {
         assert!(emby_info["RemoteAddresses"].is_array());
 
         let jellyfin_info = body(&jellyfin, "/System/Info").await;
-        let emby_info = body(&emby, "/emby/System/Info").await;
+        let emby_info = body(&emby_handlers, "/System/Info").await;
         assert!(jellyfin_info.get("WebPath").is_some());
         assert!(emby_info.get("WebPath").is_none());
         assert!(emby_info.get("LocalAddresses").is_some());
         assert!(emby_info.get("CompletedInstallations").is_some());
 
         let jellyfin_branding = body(&jellyfin, "/Branding/Configuration").await;
-        let emby_branding = body(&emby, "/emby/Branding/Configuration").await;
+        let emby_branding = body(&emby_handlers, "/Branding/Configuration").await;
         assert!(jellyfin_branding.get("SplashscreenEnabled").is_some());
         assert!(emby_branding.get("SplashscreenEnabled").is_none());
         assert_eq!(
             status(&emby, "/emby/branding/css.css").await,
-            StatusCode::OK
+            StatusCode::UNAUTHORIZED
         );
         assert_eq!(
             status(&emby, "/emby/localization/cultures").await,
@@ -682,7 +710,7 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(response.status(), StatusCode::NOT_IMPLEMENTED, "{path}");
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "{path}");
 
         for method in [Method::GET, Method::POST] {
             let path = "/dIsPlAyPrEfErEnCeS/MiXeD%2BId?Client=Emby";
@@ -760,13 +788,23 @@ mod tests {
             "API Test Server".to_owned(),
             "http://127.0.0.1:8096".to_owned(),
         );
-        let dedicated = dedicated_routes()
-            .with_state(Arc::new(state.clone()))
-            .layer(middleware::from_fn(short_circuit_matched_route));
-        let shared = jellyfin_api::unprefixed_router(state)
-            .layer(middleware::from_fn(short_circuit_matched_route));
+        let shared_routes = jellyfin_api::unprefixed_router(state.clone());
+        let dedicated_routes = dedicated_routes()
+            .merge(swagger_alias_routes(shared_routes.clone()))
+            .with_state(Arc::new(state));
+        let dedicated = dedicated_routes
+            .clone()
+            .route_layer(middleware::from_fn(short_circuit_matched_route));
+        let shared = shared_routes
+            .clone()
+            .route_layer(middleware::from_fn(short_circuit_matched_route));
         let all_routes = dedicated.clone().fallback_service(shared.clone());
         let mixed_case = case_insensitive_dedicated_routes(all_routes.clone());
+        let mixed_case_routes = case_insensitive_dedicated_routes(
+            dedicated_routes
+                .clone()
+                .fallback_service(shared_routes.clone()),
+        );
 
         let mut checked = 0;
         for operation in contract.operations {
@@ -778,15 +816,26 @@ mod tests {
             }
             let method = Method::from_bytes(operation.method.as_bytes()).unwrap();
             let canonical = materialize_path(&operation.path);
-            let expected_route = matched_route(&dedicated, method.clone(), &canonical)
-                .await
-                .or(matched_route(&shared, method.clone(), &canonical).await);
+            let expected_route =
+                if method_is_allowed(&dedicated_routes, method.clone(), &canonical).await {
+                    matched_route(&dedicated, method.clone(), &canonical).await
+                } else if method_is_allowed(&shared_routes, method.clone(), &canonical).await {
+                    matched_route(&shared, method.clone(), &canonical).await
+                } else {
+                    None
+                };
             let Some(expected_route) = expected_route else {
                 continue;
             };
 
             checked += 1;
             let path = alternating_ascii_case(&canonical);
+            assert!(
+                method_is_allowed(&mixed_case_routes, method.clone(), &path).await,
+                "supported Emby operation lost its method dispatch: {} {} ({path})",
+                operation.method,
+                operation.path
+            );
             assert_eq!(
                 matched_route(&mixed_case, method, &path).await.as_deref(),
                 Some(expected_route.as_str()),
@@ -813,11 +862,16 @@ mod tests {
             "API Test Server".to_owned(),
             "http://127.0.0.1:8096".to_owned(),
         );
-        let dedicated = dedicated_routes()
-            .with_state(Arc::new(state.clone()))
-            .layer(middleware::from_fn(short_circuit_matched_route));
-        let shared = jellyfin_api::unprefixed_router(state)
-            .layer(middleware::from_fn(short_circuit_matched_route));
+        let shared_routes = jellyfin_api::unprefixed_router(state.clone());
+        let dedicated_routes = dedicated_routes()
+            .merge(swagger_alias_routes(shared_routes.clone()))
+            .with_state(Arc::new(state));
+        let dedicated = dedicated_routes
+            .clone()
+            .route_layer(middleware::from_fn(short_circuit_matched_route));
+        let shared = shared_routes
+            .clone()
+            .route_layer(middleware::from_fn(short_circuit_matched_route));
         let mut missing = BTreeSet::new();
         let mut checked = 0;
         for operation in contract.operations {
@@ -830,8 +884,10 @@ mod tests {
             checked += 1;
             let method = Method::from_bytes(operation.method.as_bytes()).unwrap();
             let path = materialize_path(&operation.path);
-            if !route_matches(&dedicated, method.clone(), &path).await
-                && !route_matches(&shared, method, &path).await
+            if !(route_matches(&dedicated, method.clone(), &path).await
+                && method_is_allowed(&dedicated_routes, method.clone(), &path).await)
+                && !(route_matches(&shared, method.clone(), &path).await
+                    && method_is_allowed(&shared_routes, method, &path).await)
             {
                 missing.insert(format!("{} {}", operation.method, operation.path));
             }
@@ -866,6 +922,29 @@ mod tests {
 
     async fn route_matches(app: &Router, method: Method, path: &str) -> bool {
         matched_route(app, method, path).await.is_some()
+    }
+
+    async fn method_is_allowed(app: &Router, method: Method, path: &str) -> bool {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::OPTIONS)
+                    .uri(path)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        response
+            .headers()
+            .get(header::ALLOW)
+            .and_then(|value| value.to_str().ok())
+            .is_some_and(|allowed| {
+                allowed
+                    .split(',')
+                    .any(|candidate| candidate.trim().eq_ignore_ascii_case(method.as_str()))
+            })
     }
 
     async fn matched_route(app: &Router, method: Method, path: &str) -> Option<String> {

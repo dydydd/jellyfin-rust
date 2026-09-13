@@ -1,6 +1,6 @@
 use axum::{
     Router,
-    body::{Body, to_bytes},
+    body::Body,
     extract::{MatchedPath, Request},
     http::{HeaderName, HeaderValue, StatusCode},
     middleware::{self, Next},
@@ -55,15 +55,13 @@ async fn combined_server_keeps_protocol_routes_separate() {
     );
 
     let emby = response("/emby/System/Info/Public").await;
-    assert_eq!(emby.status(), StatusCode::OK);
+    assert_eq!(emby.status(), StatusCode::UNAUTHORIZED);
     // Emby case-insensitive dispatch happens inside the `/emby` service, so
     // middleware around the combined router cannot observe its inner
-    // `MatchedPath`. Verify the protocol-specific wire shape instead.
+    // `MatchedPath`. The generated Emby contract protects this otherwise
+    // public Jellyfin bootstrap route; its authenticated wire shape is covered
+    // by the PostgreSQL-backed discovery integration test.
     assert!(emby.headers().get(&MATCHED_PATH_HEADER).is_none());
-    let emby_info: serde_json::Value =
-        serde_json::from_slice(&to_bytes(emby.into_body(), 64 * 1024).await.unwrap()).unwrap();
-    assert_eq!(emby_info["Version"], "4.10.0.40");
-    assert!(emby_info.get("ProductName").is_none());
 
     let missing = response("/emby/ThisRouteDoesNotExist").await;
     // The Emby protocol middleware intentionally authenticates unknown paths

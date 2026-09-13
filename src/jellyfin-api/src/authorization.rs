@@ -301,6 +301,48 @@ fn route_policy(method: &Method, path: &str) -> RoutePolicy {
         .split('/')
         .filter(|segment| !segment.is_empty())
         .collect::<Vec<_>>();
+    // Emby exposes the extensionless Swagger document publicly, while the
+    // Jellyfin root intentionally keeps only its existing `.json` aliases.
+    if is_emby_protocol
+        && matches!(segments.as_slice(), [segment] if segment.eq_ignore_ascii_case("swagger"))
+    {
+        return RoutePolicy::Public;
+    }
+    // Persisted Emby DLNA profiles are administrator configuration.  Keep the
+    // rule protocol-local because Jellyfin has no matching unprefixed route.
+    if is_emby_protocol
+        && matches!(segments.as_slice(), [dlna, profiles]
+            if dlna.eq_ignore_ascii_case("Dlna")
+                && profiles.eq_ignore_ascii_case("ProfileInfos"))
+    {
+        return RoutePolicy::Elevated;
+    }
+    // Emby's generated contract requires an authenticated user for discovery
+    // and branding routes that Jellyfin deliberately exposes publicly. Keep
+    // these overrides protocol-local so the root and `/api` trees retain
+    // Jellyfin's existing anonymous bootstrap behavior.
+    if is_emby_protocol
+        && (matches!(segments.as_slice(), [system, ping]
+            if system.eq_ignore_ascii_case("System") && ping.eq_ignore_ascii_case("Ping"))
+            || matches!(segments.as_slice(), [system, info, public]
+                if system.eq_ignore_ascii_case("System")
+                    && info.eq_ignore_ascii_case("Info")
+                    && public.eq_ignore_ascii_case("Public"))
+            || matches!(segments.as_slice(), [branding, endpoint]
+                if branding.eq_ignore_ascii_case("Branding")
+                    && ["Configuration", "Css", "Css.css"]
+                        .iter()
+                        .any(|candidate| endpoint.eq_ignore_ascii_case(candidate))))
+    {
+        return RoutePolicy::Default;
+    }
+    // Feature discovery reveals installed server capabilities in Emby and is
+    // explicitly administrator-only in its generated wire contract.
+    if is_emby_protocol
+        && matches!(segments.as_slice(), [features] if features.eq_ignore_ascii_case("Features"))
+    {
+        return RoutePolicy::Elevated;
+    }
     // Emby's generated Android/iOS contract exposes this legacy DELETE to any
     // authenticated user. Keep Jellyfin's unprefixed endpoint on the current
     // RequiresElevation policy.
@@ -759,10 +801,6 @@ mod tests {
             RoutePolicy::Public
         );
         assert_eq!(
-            route_policy(&Method::GET, "/emby/Branding/Configuration"),
-            RoutePolicy::Public
-        );
-        assert_eq!(
             route_policy(&Method::GET, "/emby/Localization/Cultures"),
             RoutePolicy::FirstTimeSetupOrDefault
         );
@@ -944,6 +982,93 @@ mod tests {
             ),
             RoutePolicy::Public
         );
+    }
+
+    #[test]
+    fn emby_discovery_authorization_matches_generated_contract() {
+        for method in [Method::GET, Method::POST, Method::HEAD] {
+            for route in [
+                "/emby/System/Ping",
+                "/emby/system/ping",
+                "/emby/sYsTeM/pInG",
+            ] {
+                assert_eq!(
+                    route_policy(&method, route),
+                    RoutePolicy::Default,
+                    "Emby ping must authenticate for {method} {route}",
+                );
+            }
+        }
+
+        for route in [
+            "/emby/System/Info/Public",
+            "/emby/system/info/public",
+            "/emby/sYsTeM/iNfO/pUbLiC",
+            "/emby/Branding/Configuration",
+            "/emby/branding/configuration",
+            "/emby/bRaNdInG/cOnFiGuRaTiOn",
+            "/emby/Branding/Css",
+            "/emby/branding/css",
+            "/emby/bRaNdInG/cSs",
+            "/emby/Branding/Css.css",
+            "/emby/branding/css.css",
+            "/emby/bRaNdInG/cSs.CsS",
+        ] {
+            assert_eq!(
+                route_policy(&Method::GET, route),
+                RoutePolicy::Default,
+                "Emby user-authenticated route {route}",
+            );
+        }
+
+        for route in ["/emby/Features", "/emby/features", "/emby/fEaTuReS"] {
+            assert_eq!(
+                route_policy(&Method::GET, route),
+                RoutePolicy::Elevated,
+                "Emby administrator route {route}",
+            );
+        }
+    }
+
+    #[test]
+    fn emby_discovery_overrides_preserve_public_protocol_exceptions() {
+        for route in [
+            "/emby/swagger",
+            "/emby/sWaGgEr",
+            "/emby/Users/Public",
+            "/emby/uSeRs/pUbLiC",
+            "/emby/Users/AuthenticateByName",
+            "/emby/uSeRs/aUtHeNtIcAtEbYnAmE",
+            "/emby/Users/ForgotPassword",
+            "/emby/uSeRs/fOrGoTpAsSwOrD",
+            "/emby/Users/ForgotPassword/Pin",
+            "/emby/uSeRs/fOrGoTpAsSwOrD/pIn",
+        ] {
+            assert_eq!(
+                route_policy(&Method::GET, route),
+                RoutePolicy::Public,
+                "existing Emby public exception {route}",
+            );
+        }
+
+        for route in [
+            "/System/Info/Public",
+            "/system/info/public",
+            "/System/Ping",
+            "/system/ping",
+            "/Branding/Configuration",
+            "/branding/configuration",
+            "/Branding/Css",
+            "/branding/css",
+            "/Branding/Css.css",
+            "/branding/css.css",
+        ] {
+            assert_eq!(
+                route_policy(&Method::GET, route),
+                RoutePolicy::Public,
+                "Jellyfin public route {route}",
+            );
+        }
     }
 
     #[test]

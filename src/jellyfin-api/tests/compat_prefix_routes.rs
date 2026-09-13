@@ -1,7 +1,7 @@
 use axum::{
     Router,
     body::{Body, to_bytes},
-    http::{Request, StatusCode},
+    http::{Method, Request, StatusCode},
 };
 use jellyfin_api::AppState;
 use sea_orm::DatabaseConnection;
@@ -23,6 +23,30 @@ async fn jellyfin_root_and_api_prefix_serve_the_same_routes() {
         assert_eq!(response.status(), StatusCode::OK);
         let body = body_json(response).await;
         assert!(body["RequestReceptionTime"].is_string());
+
+        for path in [
+            "/System/Info/Public",
+            "/Branding/Configuration",
+            "/Branding/Css",
+            "/Branding/Css.css",
+        ] {
+            assert_eq!(
+                request(&app, Method::GET, &format!("{prefix}{path}"))
+                    .await
+                    .status(),
+                StatusCode::OK,
+                "anonymous Jellyfin bootstrap route {prefix}{path}",
+            );
+        }
+        for method in [Method::GET, Method::POST, Method::HEAD] {
+            assert_eq!(
+                request(&app, method.clone(), &format!("{prefix}/System/Ping"))
+                    .await
+                    .status(),
+                StatusCode::OK,
+                "anonymous Jellyfin ping route {method} {prefix}/System/Ping",
+            );
+        }
     }
 }
 
@@ -48,9 +72,15 @@ fn app() -> Router {
 }
 
 async fn get(app: &Router, uri: &str) -> axum::response::Response {
+    request(app, Method::GET, uri).await
+}
+
+async fn request(app: &Router, method: Method, uri: &str) -> axum::response::Response {
     app.clone()
         .oneshot(
-            Request::get(uri)
+            Request::builder()
+                .method(method)
+                .uri(uri)
                 .body(Body::empty())
                 .expect("valid request"),
         )

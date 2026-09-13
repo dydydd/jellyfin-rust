@@ -74,6 +74,12 @@
   ordinary folder, tag, rating, and parental policy. Accept Emby's nullable signed 64-bit Game
   search `ItemId`, including numeric strings, without fabricating a Jellyfin UUID mapping, and keep
   both routes absent from the root and `/api` trees.
+- Keep Emby's extensionless `/swagger`, retired read-only Sync discovery, and DLNA ProfileInfos
+  routes protocol-local. Empty providers return their generated SDK collection shapes; required
+  Sync query names bind case-insensitively, DLNA profile discovery is administrator-only, and the
+  unsupported Sync mutation methods stay in the explicit gap ledger. Emby System Ping, public
+  system info, Branding configuration/CSS, and Features follow the generated Emby authenticated or
+  elevated policies even though the corresponding Jellyfin bootstrap routes remain public.
 - Store Emby's opaque encoding editor objects under private `emby-encoding-*` named-configuration
   keys. GET requires an authenticated user and POST requires administrator or API-key authority;
   preserve submitted JSON objects verbatim, keep codec context keys distinct, and never expose these
