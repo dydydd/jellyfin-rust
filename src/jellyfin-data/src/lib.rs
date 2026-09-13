@@ -101,8 +101,8 @@ pub use trickplay_info_repository::{
 };
 pub use tuner_host_repository::{NewTunerHost, TunerHostRepository, TunerHostStoreError};
 pub use user_data_repository::{
-    GenericUserDataPatch, NewUserData, PreferredUserDataKey, UserDataError, UserDataPatch,
-    UserDataQuery, UserDataRepository,
+    GenericUserDataPatch, NewUserData, PreferredUserDataKey, RememberedTrackSelection,
+    UserDataError, UserDataPatch, UserDataQuery, UserDataRepository,
 };
 pub use user_profile_image_repository::{
     NewUserProfileImage, UserProfileImageRepository, UserProfileImageStoreError,

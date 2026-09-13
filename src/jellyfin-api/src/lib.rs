@@ -32,8 +32,9 @@ use jellyfin_data::{
     DeviceOptionsRepository, DeviceRepository, DisplayPreferenceRepository,
     DisplayPreferenceStoreError, ItemUpdateStoreError, ItemValueRepository, KeyframeDataRepository,
     NamedConfigurationRepository, NamedConfigurationStoreError, PersonRepository,
-    QuickConnectRepository, ServerConfigurationRepository, ServerConfigurationStoreError,
-    SessionCommandRepository, SessionCommandStoreError, UserDataRepository,
+    QuickConnectRepository, RememberedTrackSelection, ServerConfigurationRepository,
+    ServerConfigurationStoreError, SessionCommandRepository, SessionCommandStoreError,
+    UserDataRepository,
     entities::{user, user_profile_image},
 };
 use jellyfin_drawing::{ImageProcessingError, ImageProcessor};
@@ -1075,6 +1076,46 @@ impl AppState {
         let dto: UserItemDataDto = update.into();
         websocket::broadcast_user_data_changed(self, target_user_id, &dto).await;
         Ok(dto)
+    }
+
+    /// Clears one class of remembered Emby stream selections for an
+    /// authorized target user using one set-based PostgreSQL update.
+    #[allow(clippy::result_large_err)]
+    pub async fn clear_emby_track_selections_for_request(
+        &self,
+        headers: &HeaderMap,
+        uri: &Uri,
+        requested_user_id: &str,
+        track_type: &str,
+    ) -> Result<StatusCode, Response> {
+        let identity = authorization::require_default(self, headers, uri)
+            .await
+            .map_err(IntoResponse::into_response)?;
+        let requested_user_id = Uuid::parse_str(requested_user_id)
+            .map_err(|_| ApiError::InvalidRequest.into_response())?;
+        // Authorize and resolve the target before inspecting TrackType. This
+        // preserves 403/404 precedence for another or missing user.
+        let target_user_id = identity
+            .target_user_id(Some(requested_user_id))
+            .map_err(IntoResponse::into_response)?;
+        self.users
+            .get(target_user_id)
+            .await
+            .map_err(ApiError::from)
+            .map_err(IntoResponse::into_response)?;
+        let selection = if track_type.eq_ignore_ascii_case("Audio") {
+            RememberedTrackSelection::Audio
+        } else if track_type.eq_ignore_ascii_case("Subtitle") {
+            RememberedTrackSelection::Subtitle
+        } else {
+            return Err(ApiError::InvalidRequest.into_response());
+        };
+        self.user_data
+            .clear_remembered_track_selection_for_authorized_user(target_user_id, selection)
+            .await
+            .map_err(ApiError::from)
+            .map_err(IntoResponse::into_response)?;
+        Ok(StatusCode::OK)
     }
 
     /// Snapshot plugin/package data for the Emby protocol adapter.

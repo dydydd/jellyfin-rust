@@ -1,7 +1,8 @@
 use chrono::{DateTime, Utc};
 use sea_orm::{
     ColumnTrait, DbBackend, DbErr, EntityTrait, FromQueryResult, Order, QueryFilter, QueryOrder,
-    QuerySelect, Set, Statement, sea_query::OnConflict,
+    QuerySelect, Set, Statement,
+    sea_query::{Expr, OnConflict},
 };
 use std::collections::HashMap;
 use thiserror::Error;
@@ -95,6 +96,13 @@ pub struct UserDataQuery {
     pub limit: Option<u64>,
 }
 
+/// One remembered media-track selection stored on every user-data row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RememberedTrackSelection {
+    Audio,
+    Subtitle,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PreferredUserDataKey {
     pub item_id: Uuid,
@@ -137,6 +145,34 @@ impl UserDataRepository {
         Self {
             database: database.into(),
         }
+    }
+
+    /// Clears one remembered stream-selection column across every row owned by
+    /// the target user in one PostgreSQL update.
+    ///
+    /// Every unrelated user-data value and the other stream-selection column
+    /// remain unchanged.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error when the set-based update fails.
+    pub async fn clear_remembered_track_selection(
+        &self,
+        user_id: Uuid,
+        selection: RememberedTrackSelection,
+    ) -> Result<u64, UserDataError> {
+        let update = user_data::Entity::update_many().filter(user_data::Column::UserId.eq(user_id));
+        let update = match selection {
+            RememberedTrackSelection::Audio => update.col_expr(
+                user_data::Column::AudioStreamIndex,
+                Expr::value(Option::<i32>::None),
+            ),
+            RememberedTrackSelection::Subtitle => update.col_expr(
+                user_data::Column::SubtitleStreamIndex,
+                Expr::value(Option::<i32>::None),
+            ),
+        };
+        Ok(update.exec(self.database.as_ref()).await?.rows_affected)
     }
 
     /// Resolves a user-data row using current keys in priority order, then the

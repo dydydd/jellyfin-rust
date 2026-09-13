@@ -29,6 +29,7 @@ mod packages;
 mod plugins;
 mod section_items;
 mod system_misc;
+mod track_selections;
 mod typed_settings;
 mod users;
 
@@ -114,6 +115,8 @@ const DEDICATED_ROUTE_TEMPLATES: &[&str] = &[
     "/Users/{user_id}/HomeSections/Move",
     "/Users/{user_id}/HomeSections",
     "/Users/{user_id}/Sections/{section_id}/Items",
+    "/Users/{user_id}/TrackSelections/{track_type}/Delete",
+    "/Users/{user_id}/TrackSelections/{track_type}",
     "/Users/{user_id}/TypedSettings/{key}",
     "/Users/ItemAccess",
     "/Users/CopyDataOptions",
@@ -210,6 +213,7 @@ fn dedicated_routes() -> Router<Arc<AppState>> {
         .merge(plugins::routes())
         .merge(section_items::routes())
         .merge(system_misc::routes())
+        .merge(track_selections::routes())
         .merge(typed_settings::routes())
         .merge(users::routes())
         .route("/Branding/Configuration", get(branding_configuration))

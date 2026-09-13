@@ -415,6 +415,12 @@
 - Keep Android and Swift user-data routes case-insensitive too: `UserItems` user-data and rating,
   resume, `UserFavoriteItems`, `UserPlayedItems`, and legacy user item-data routes need fully
   lowercase aliases with the same authorization and mutation semantics.
+- Keep Emby remembered-track clearing isolated below `/emby`: DELETE and legacy POST `/Delete`
+  aliases must clear only the selected Audio or Subtitle index for every target-user row in one
+  set-based PostgreSQL update. Ordinary users may target only themselves, while administrators and
+  API keys may target another existing user; preserve target authorization/404 precedence over an
+  invalid case-insensitive `TrackType`, return 200 on success, and do not expose either alias from
+  the Jellyfin root router.
 - Bind target `UserId` as `userId`, `UserId`, and fully lowercase `userid` on UserData, Rating, and
   DisplayPreferences operations; bind DisplayPreferences `ItemId` equivalently. A lowercase target
   id must never be ignored and silently redirected to the authenticated user: foreign targets keep

@@ -1,6 +1,6 @@
 use jellyfin_data::{
-    BaseItemError, BaseItemRepository, GenericUserDataPatch, PreferredUserDataKey, UserDataError,
-    UserDataRepository,
+    BaseItemError, BaseItemRepository, GenericUserDataPatch, PreferredUserDataKey,
+    RememberedTrackSelection, UserDataError, UserDataRepository,
     entities::{base_item, user_data},
 };
 use jellyfin_model::{UpdateUserItemDataDto, UserItemDataDto, UserPolicy};
@@ -57,6 +57,23 @@ impl UserDataService {
             items: BaseItemRepository::new(std::sync::Arc::clone(&database)),
             user_data: UserDataRepository::new(database),
         }
+    }
+
+    /// Clears all remembered audio or subtitle selections after the API layer
+    /// has authenticated and authorized the target user.
+    ///
+    /// # Errors
+    ///
+    /// Returns persistence errors from the set-based PostgreSQL update.
+    pub async fn clear_remembered_track_selection_for_authorized_user(
+        &self,
+        target_user_id: Uuid,
+        selection: RememberedTrackSelection,
+    ) -> Result<u64, UserDataServiceError> {
+        Ok(self
+            .user_data
+            .clear_remembered_track_selection(target_user_id, selection)
+            .await?)
     }
 
     /// Loads an item only when it is visible to the requested user.
