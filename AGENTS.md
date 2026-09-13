@@ -104,6 +104,26 @@
   one-based numeric enum values and numeric strings, lock validated users/items in deterministic
   order, and apply each deduplicated Cartesian-product mutation atomically; `None`, null, or an
   omitted level removes explicit assignments.
+- Implement `POST /emby/Items/Shared/Leave` as an atomic, idempotent removal from that same private
+  Emby item-access relation. Bind nullable `ItemIds` and `UserId` case-insensitively with
+  last-duplicate-wins semantics, target the current device user when `UserId` is omitted, and keep
+  explicit targets self/administrator/API-key authorized. Resolve and authorize the target before
+  parsing item ids, validate every referenced item before deleting any assignment, and keep an
+  omitted or empty item list as a successful no-op without exposing the route under root or `/api`.
+- Resolve `GET /emby/Persons/{Id}/Credits` only from the exact deterministic canonical Person item,
+  while keeping internal `people.id` values private. Query every policy-visible credited item and
+  its relationship set-wise, group results in Emby's eight generated `PersonType` enum order, and
+  omit unsupported Jellyfin-only credit kinds so Swift can decode the entire response. The
+  generated operation has no paging or user query: a device session supplies its own policy
+  context, an API key uses the user-less global item view, and unknown query pairs are ignored.
+- Keep Emby's BoxSet provider discovery routes provider-backed rather than returning placeholders.
+  `ProviderItems` and `Missing` return a pre-page-counted `QueryResult<RemoteSearchResult>` from the
+  configured TMDb collection parts, preserve provider order, compare existing linked children by
+  case-insensitive provider ids in bounded set queries, and authorize the target BoxSet through the
+  requested user's normal item policy. Preserve signed `Int32` Skip/Take paging; force missing-only
+  results on `Missing`, exclude unaired entries unless requested, and keep both routes below
+  `/emby` only. The inherited generated Items/DTO query surface is accepted but, matching Emby's
+  official collection handler, only user, paging, missing, and unaired inputs affect this result.
 - Implement `/emby/Shows/Missing` through the shared authorized Items query while forcibly replacing
   every casing or encoded spelling of `IncludeItemTypes` and `IsMissing` with `Episode` and `true`.
   Preserve all other query pairs, signed pagination, target-user policy, batched DTO projection, and
