@@ -162,7 +162,9 @@ pub(crate) async fn require_route_auth(
     let policy_path = request
         .extensions()
         .get::<OriginalUri>()
-        .map_or_else(|| request.uri().path(), |uri| uri.0.path());
+        .map(|uri| uri.0.path())
+        .filter(|path| *path == "/emby" || path.starts_with("/emby/"))
+        .unwrap_or_else(|| request.uri().path());
     let policy = route_policy(request.method(), policy_path);
     match policy {
         RoutePolicy::Public => Ok(next.run(request).await),
