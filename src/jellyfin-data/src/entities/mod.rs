@@ -28,4 +28,5 @@ pub mod tuner_host;
 pub mod user;
 pub mod user_data;
 pub mod user_profile_image;
+pub mod user_search_state;
 pub mod virtual_folder;

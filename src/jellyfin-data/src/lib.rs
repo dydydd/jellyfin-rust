@@ -25,6 +25,7 @@ mod trickplay_info_repository;
 mod tuner_host_repository;
 mod user_data_repository;
 mod user_profile_image_repository;
+mod user_search_state_repository;
 mod virtual_folder_repository;
 
 pub use activity_log_repository::{
@@ -102,11 +103,12 @@ pub use trickplay_info_repository::{
 pub use tuner_host_repository::{NewTunerHost, TunerHostRepository, TunerHostStoreError};
 pub use user_data_repository::{
     GenericUserDataPatch, NewUserData, PreferredUserDataKey, RememberedTrackSelection,
-    UserDataError, UserDataPatch, UserDataQuery, UserDataRepository,
+    UserDataCopyResult, UserDataError, UserDataPatch, UserDataQuery, UserDataRepository,
 };
 pub use user_profile_image_repository::{
     NewUserProfileImage, UserProfileImageRepository, UserProfileImageStoreError,
 };
+pub use user_search_state_repository::UserSearchStateRepository;
 pub use virtual_folder_repository::{
     ItemLibraryOptions, NewMediaPath, NewVirtualFolder, VirtualFolderError,
     VirtualFolderRepository, VirtualFolderWithPaths,

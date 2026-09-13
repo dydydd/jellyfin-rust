@@ -96,6 +96,15 @@ pub struct UserDataQuery {
     pub limit: Option<u64>,
 }
 
+/// Result of one atomic, set-based user-data copy operation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, FromQueryResult)]
+pub struct UserDataCopyResult {
+    /// The first requested user missing at statement time. No rows are copied
+    /// when this is populated.
+    pub missing_user_id: Option<Uuid>,
+    pub rows_copied: i64,
+}
+
 /// One remembered media-track selection stored on every user-data row.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RememberedTrackSelection {
@@ -145,6 +154,93 @@ impl UserDataRepository {
         Self {
             database: database.into(),
         }
+    }
+
+    /// Copies every persisted user-data value from one user to many targets
+    /// in one PostgreSQL statement.
+    ///
+    /// Targets are deduplicated in PostgreSQL. Existing rows with the same
+    /// `(item, user, custom key)` are replaced from the source, while unrelated
+    /// target rows are retained. The statement checks the source and complete
+    /// target set before its data-modifying CTE, so one missing user prevents
+    /// every write rather than leaving a partially copied target set.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error when validation or copying fails.
+    pub async fn copy_all_for_users(
+        &self,
+        source_user_id: Uuid,
+        target_user_ids: &[Uuid],
+    ) -> Result<UserDataCopyResult, UserDataError> {
+        let targets = target_user_ids
+            .iter()
+            .map(Uuid::to_string)
+            .collect::<Vec<_>>();
+        let statement = Statement::from_sql_and_values(
+            DbBackend::Postgres,
+            r"
+            WITH target_users AS (
+                SELECT DISTINCT value::uuid AS user_id
+                FROM jsonb_array_elements_text($2::jsonb)
+            ), requested_users AS (
+                SELECT $1::uuid AS user_id
+                UNION
+                SELECT user_id FROM target_users
+            ), missing_users AS (
+                SELECT requested.user_id
+                FROM requested_users AS requested
+                LEFT JOIN jellyfin.users AS users ON users.id = requested.user_id
+                WHERE users.id IS NULL
+            ), copied AS (
+                INSERT INTO jellyfin.user_data (
+                    item_id, user_id, custom_data_key, rating,
+                    playback_position_ticks, play_count, is_favorite,
+                    last_played_date, played, audio_stream_index,
+                    subtitle_stream_index, likes, retention_date,
+                    is_hidden_from_resume
+                )
+                SELECT source.item_id, targets.user_id, source.custom_data_key,
+                    source.rating, source.playback_position_ticks,
+                    source.play_count, source.is_favorite,
+                    source.last_played_date, source.played,
+                    source.audio_stream_index, source.subtitle_stream_index,
+                    source.likes, source.retention_date,
+                    source.is_hidden_from_resume
+                FROM jellyfin.user_data AS source
+                CROSS JOIN target_users AS targets
+                WHERE source.user_id = $1
+                    AND targets.user_id <> $1
+                    AND NOT EXISTS (SELECT 1 FROM missing_users)
+                ON CONFLICT (item_id, user_id, custom_data_key) DO UPDATE
+                SET rating = EXCLUDED.rating,
+                    playback_position_ticks = EXCLUDED.playback_position_ticks,
+                    play_count = EXCLUDED.play_count,
+                    is_favorite = EXCLUDED.is_favorite,
+                    last_played_date = EXCLUDED.last_played_date,
+                    played = EXCLUDED.played,
+                    audio_stream_index = EXCLUDED.audio_stream_index,
+                    subtitle_stream_index = EXCLUDED.subtitle_stream_index,
+                    likes = EXCLUDED.likes,
+                    retention_date = EXCLUDED.retention_date,
+                    is_hidden_from_resume = EXCLUDED.is_hidden_from_resume
+                RETURNING 1
+            )
+            SELECT (
+                    SELECT user_id
+                    FROM missing_users
+                    ORDER BY user_id
+                    LIMIT 1
+                ) AS missing_user_id,
+                COUNT(*)::bigint AS rows_copied
+            FROM copied
+            ",
+            [source_user_id.into(), serde_json::json!(targets).into()],
+        );
+        UserDataCopyResult::find_by_statement(statement)
+            .one(self.database.as_ref())
+            .await?
+            .ok_or_else(|| DbErr::Custom("user-data copy returned no result".to_owned()).into())
     }
 
     /// Clears one remembered stream-selection column across every row owned by

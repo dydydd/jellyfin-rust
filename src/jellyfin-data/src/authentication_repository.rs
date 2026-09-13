@@ -296,6 +296,24 @@ impl DeviceRepository {
         Ok(devices.exec(self.database.as_ref()).await?.rows_affected)
     }
 
+    /// Revokes all device sessions for a set of users in one statement,
+    /// preserving an optional token used by the administrative caller.
+    pub async fn revoke_users_tokens(
+        &self,
+        user_ids: &[Uuid],
+        except_access_token: Option<&str>,
+    ) -> Result<u64, AuthenticationStoreError> {
+        if user_ids.is_empty() {
+            return Ok(0);
+        }
+        let mut devices = device::Entity::delete_many()
+            .filter(device::Column::UserId.is_in(user_ids.iter().copied()));
+        if let Some(token) = except_access_token {
+            devices = devices.filter(device::Column::AccessToken.ne(token));
+        }
+        Ok(devices.exec(self.database.as_ref()).await?.rows_affected)
+    }
+
     /// Deletes a device authentication record by exact access token.
     ///
     /// # Errors

@@ -1,10 +1,12 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 
 use jellyfin_extensions::StringExtensions;
 use sea_orm::{
-    ActiveEnum, ActiveModelTrait, ActiveValue::Set, ConnectionTrait, DatabaseTransaction,
-    DbBackend, DbErr, EntityTrait, IntoActiveModel, QuerySelect, Statement, TransactionTrait,
-    sea_query::OnConflict,
+    ActiveEnum, ActiveModelTrait,
+    ActiveValue::Set,
+    ColumnTrait, ConnectionTrait, DatabaseTransaction, DbBackend, DbErr, EntityTrait,
+    IntoActiveModel, QueryFilter, QueryOrder, QuerySelect, Statement, TransactionTrait,
+    sea_query::{Expr, OnConflict},
 };
 use serde_json::{Map, Value};
 use thiserror::Error;
@@ -227,6 +229,179 @@ impl ItemUpdateRepository {
         let updated = active.update(&transaction).await?;
         transaction.commit().await?;
         Ok(updated)
+    }
+
+    /// Merges provider identifiers into one item's current identifier map.
+    ///
+    /// Existing values win case-insensitively, allowing a refresh provider to
+    /// replace its own identifier while restoring unrelated identifiers that
+    /// another provider patch omitted. Historical outer `ProviderIds` casing
+    /// variants are folded into the canonical property in the same row-locked
+    /// transaction.
+    ///
+    /// # Errors
+    ///
+    /// Returns not-found, invalid-metadata, or database errors.
+    pub async fn merge_provider_ids_if_missing(
+        &self,
+        item_id: Uuid,
+        provider_ids: &BTreeMap<String, String>,
+    ) -> Result<base_item::Model, ItemUpdateStoreError> {
+        let transaction = self.database.begin().await?;
+        let item = base_item::Entity::find_by_id(item_id)
+            .lock_exclusive()
+            .one(&transaction)
+            .await?
+            .ok_or(ItemUpdateStoreError::NotFound)?;
+        let mut object = match item.data.clone() {
+            None => Map::new(),
+            Some(Value::Object(object)) => object,
+            Some(_) => return Err(ItemUpdateStoreError::InvalidMetadata),
+        };
+
+        let mut merged = BTreeMap::new();
+        if let Some(Value::Object(current)) = object.get("ProviderIds") {
+            merge_provider_id_object(&mut merged, current);
+        }
+        for (key, value) in &object {
+            if key != "ProviderIds"
+                && key.eq_ignore_ascii_case("ProviderIds")
+                && let Value::Object(current) = value
+            {
+                merge_provider_id_object(&mut merged, current);
+            }
+        }
+        for (key, value) in provider_ids {
+            insert_provider_id_if_missing(&mut merged, key, value);
+        }
+
+        object.retain(|key, _| !key.eq_ignore_ascii_case("ProviderIds"));
+        object.insert(
+            "ProviderIds".to_owned(),
+            Value::Object(
+                merged
+                    .into_iter()
+                    .map(|(key, value)| (key, Value::String(value)))
+                    .collect(),
+            ),
+        );
+        let merged_data = Value::Object(object);
+        if item.data.as_ref() == Some(&merged_data) {
+            transaction.commit().await?;
+            return Ok(item);
+        }
+        let mut active = item.into_active_model();
+        active.data = Set(Some(merged_data));
+        let updated = active.update(&transaction).await?;
+        transaction.commit().await?;
+        Ok(updated)
+    }
+
+    /// Resets user-controlled metadata lock settings for a bounded item set.
+    ///
+    /// Every requested item is resolved and locked before any row is changed,
+    /// so a missing id cannot leave an earlier item partially reset. JSON keys
+    /// are matched case-insensitively because historical editors persisted
+    /// both PascalCase and camelCase spellings. The remaining metadata,
+    /// including provider ids used by the subsequent full refresh, is kept
+    /// byte-for-byte at the JSON value level.
+    ///
+    /// # Errors
+    ///
+    /// Returns not-found if any requested item does not exist, invalid
+    /// metadata for a non-object JSON value, or the underlying database error.
+    pub async fn reset_metadata_settings(
+        &self,
+        item_ids: &[Uuid],
+    ) -> Result<u64, ItemUpdateStoreError> {
+        if item_ids.is_empty() {
+            return Ok(0);
+        }
+
+        let mut seen = HashSet::with_capacity(item_ids.len());
+        let mut item_ids = item_ids
+            .iter()
+            .copied()
+            .filter(|item_id| seen.insert(*item_id))
+            .collect::<Vec<_>>();
+        // Every transaction acquires overlapping row locks in one canonical
+        // order, including across the fixed-size query boundary.
+        item_ids.sort_unstable();
+        let transaction = self.database.begin().await?;
+        let mut items = Vec::with_capacity(item_ids.len());
+        for batch in item_ids.chunks(128) {
+            let mut batch_items = base_item::Entity::find()
+                .filter(base_item::Column::Id.is_in(batch.iter().copied()))
+                .order_by_asc(base_item::Column::Id)
+                .lock_exclusive()
+                .all(&transaction)
+                .await?;
+            if batch_items.len() != batch.len() {
+                return Err(ItemUpdateStoreError::NotFound);
+            }
+            items.append(&mut batch_items);
+        }
+        if items
+            .iter()
+            .any(|item| item.data.as_ref().is_some_and(|data| !data.is_object()))
+        {
+            return Err(ItemUpdateStoreError::InvalidMetadata);
+        }
+
+        // The generated request carries ids in one query string, but still
+        // keep each SQL statement bounded. This matches the repository's
+        // fixed-size metadata relation writes without issuing one UPDATE per
+        // item.
+        let mut rows_affected = 0_u64;
+        for batch in item_ids.chunks(128) {
+            let result = base_item::Entity::update_many()
+                .col_expr(
+                    base_item::Column::Data,
+                    Expr::cust(
+                        r#"COALESCE(
+                            (
+                                SELECT jsonb_object_agg(entry.key, entry.value)
+                                FROM jsonb_each(COALESCE("data", '{}'::jsonb)) AS entry
+                                WHERE lower(entry.key) NOT IN ('islocked', 'lockedfields')
+                            ),
+                            '{}'::jsonb
+                        ) || '{"IsLocked":false,"LockedFields":[]}'::jsonb"#,
+                    ),
+                )
+                .filter(base_item::Column::Id.is_in(batch.iter().copied()))
+                .exec(&transaction)
+                .await?;
+            rows_affected += result.rows_affected;
+        }
+        if rows_affected != u64::try_from(item_ids.len()).unwrap_or(u64::MAX) {
+            return Err(ItemUpdateStoreError::NotFound);
+        }
+        transaction.commit().await?;
+        Ok(rows_affected)
+    }
+}
+
+fn merge_provider_id_object(
+    target: &mut BTreeMap<String, String>,
+    source: &serde_json::Map<String, Value>,
+) {
+    for (key, value) in source {
+        if let Some(value) = value.as_str() {
+            insert_provider_id_if_missing(target, key, value);
+        }
+    }
+}
+
+fn insert_provider_id_if_missing(
+    provider_ids: &mut BTreeMap<String, String>,
+    key: &str,
+    value: &str,
+) {
+    if !provider_ids
+        .keys()
+        .any(|existing| existing.eq_ignore_ascii_case(key))
+    {
+        provider_ids.insert(key.to_owned(), value.to_owned());
     }
 }
 

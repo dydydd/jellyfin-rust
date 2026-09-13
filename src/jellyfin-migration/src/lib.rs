@@ -61,6 +61,7 @@ mod m20260906_000058_repair_alternate_relationship_order;
 mod m20260913_000059_add_metadata_options_configuration;
 mod m20260913_000060_bound_device_option_ids;
 mod m20260913_000061_add_hidden_from_resume;
+mod m20260913_000062_create_user_search_state;
 pub mod startup_routines;
 
 #[doc(hidden)]
@@ -169,6 +170,7 @@ pub use m20260906_000058_repair_alternate_relationship_order::Migration as Repai
 pub use m20260913_000059_add_metadata_options_configuration::Migration as AddMetadataOptionsConfigurationMigration;
 pub use m20260913_000060_bound_device_option_ids::Migration as BoundDeviceOptionIdsMigration;
 pub use m20260913_000061_add_hidden_from_resume::Migration as AddHiddenFromResumeMigration;
+pub use m20260913_000062_create_user_search_state::Migration as CreateUserSearchStateMigration;
 
 pub use startup_routines::{
     ALL_STARTUP_ROUTINES, MigrationStage, StartupMigrationRoutine, StartupMigrationRunner,
@@ -241,6 +243,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20260913_000059_add_metadata_options_configuration::Migration),
             Box::new(m20260913_000060_bound_device_option_ids::Migration),
             Box::new(m20260913_000061_add_hidden_from_resume::Migration),
+            Box::new(m20260913_000062_create_user_search_state::Migration),
         ]
     }
 }

@@ -792,7 +792,7 @@ impl BaseItemRepository {
                   date_created, date_modified) \
              SELECT candidate.id, candidate.item_type, candidate.name, candidate.name, \
                     candidate.path, \
-                    CASE WHEN candidate.item_type IN ('MusicArtist', 'Person') \
+                    CASE WHEN candidate.item_type IN ('GameGenre', 'MusicArtist', 'Person') \
                          THEN false ELSE true END, \
                     candidate.presentation_unique_key, \
                     candidate.date_created, candidate.date_modified \
@@ -803,6 +803,8 @@ impl BaseItemRepository {
                    AND (existing.item_type = candidate.item_type \
                         OR existing.item_type = CASE candidate.item_type \
                             WHEN 'Genre' THEN 'MediaBrowser.Controller.Entities.Genre' \
+                            WHEN 'GameGenre' THEN \
+                                'MediaBrowser.Controller.Entities.GameGenre' \
                             WHEN 'MusicGenre' THEN \
                                 'MediaBrowser.Controller.Entities.Audio.MusicGenre' \
                             ELSE candidate.item_type END)\

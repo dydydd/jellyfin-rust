@@ -89,6 +89,7 @@ pub struct ItemValueCounts {
     pub album_count: u64,
     pub artist_count: u64,
     pub episode_count: u64,
+    pub game_count: u64,
     pub movie_count: u64,
     pub music_video_count: u64,
     pub program_count: u64,
@@ -671,6 +672,76 @@ impl ItemValueRepository {
             .await?)
     }
 
+    /// Lists one keyset page of Emby's legacy `GameGenre` entities required
+    /// by persisted Game genre values.
+    ///
+    /// This query is intentionally separate from Jellyfin's Genre backfill:
+    /// the two protocol surfaces may reference the same normalized value, but
+    /// they require different CLR identities and metadata directories.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error when the set-based query fails.
+    pub async fn required_game_genre_entities_page(
+        &self,
+        after: Option<&ItemByNameValue>,
+        limit: usize,
+    ) -> Result<Vec<ItemByNameValue>, ItemValueError> {
+        const MAX_PAGE_SIZE: usize = 512;
+        let mut sql = String::from(
+            "WITH names AS (\
+                 SELECT value.clean_value, MIN(value.value) AS name \
+                 FROM jellyfin.item_values AS value \
+                 JOIN jellyfin.item_value_map AS map \
+                   ON map.item_value_id = value.item_value_id \
+                 JOIN jellyfin.base_items AS item ON item.id = map.item_id \
+                 WHERE value.type = 2 \
+                   AND item.item_type IN (\
+                       'Game', 'MediaBrowser.Controller.Entities.Game'\
+                   ) \
+                 GROUP BY value.clean_value\
+             ), required AS (\
+                 SELECT 'GameGenre'::text AS item_type, names.name FROM names \
+                 WHERE NOT EXISTS (\
+                     SELECT 1 FROM jellyfin.base_items AS existing \
+                     WHERE existing.clean_name = names.clean_value \
+                       AND existing.item_type IN (\
+                           'GameGenre', \
+                           'MediaBrowser.Controller.Entities.GameGenre'\
+                       )\
+                 )\
+             ) \
+             SELECT item_type, name FROM required",
+        );
+        let mut values = Vec::with_capacity(3);
+        if let Some(after) = after {
+            push_bind(
+                &mut sql,
+                &mut values,
+                after.item_type.clone(),
+                " WHERE (item_type, name) > (",
+            );
+            push_bind(&mut sql, &mut values, after.name.clone(), ", ");
+            sql.push(')');
+        }
+        sql.push_str(" ORDER BY item_type, name LIMIT ");
+        push_bind(
+            &mut sql,
+            &mut values,
+            i64::try_from(limit.clamp(1, MAX_PAGE_SIZE)).unwrap_or(512),
+            "",
+        );
+        Ok(
+            ItemByNameValue::find_by_statement(Statement::from_sql_and_values(
+                DbBackend::Postgres,
+                sql,
+                values,
+            ))
+            .all(self.database.as_ref())
+            .await?,
+        )
+    }
+
     /// Lists one keyset page of persisted Studio entities required after a library scan.
     ///
     /// The source is the normalized set of Studio values still attached to a
@@ -846,7 +917,7 @@ impl ItemValueRepository {
                         ) AS clean_value, \
                         by_name.presentation_unique_key, \
                         value.item_count, value.album_count, value.artist_count, \
-                        value.episode_count, value.movie_count, value.music_video_count, \
+                        value.episode_count, value.game_count, value.movie_count, value.music_video_count, \
                         value.program_count, value.series_count, value.song_count, \
                         value.trailer_count \
                  FROM values AS value \
@@ -854,7 +925,7 @@ impl ItemValueRepository {
                    ON by_name.clean_name = value.clean_value \
                  WHERE TRUE",
         );
-        let item_types = expand_item_type_aliases(&[item_type.to_owned()]);
+        let item_types = item_by_name_type_aliases(item_type);
         append_string_list_filter(
             &mut cte,
             &mut values,
@@ -868,7 +939,7 @@ impl ItemValueRepository {
             "), representatives AS (\
                  SELECT DISTINCT ON (presentation_unique_key) \
                         item_value_id, value, clean_value, item_count, album_count, \
-                        artist_count, episode_count, movie_count, music_video_count, \
+                        artist_count, episode_count, game_count, movie_count, music_video_count, \
                         program_count, series_count, song_count, trailer_count \
                  FROM by_name_candidates \
                  ORDER BY presentation_unique_key, item_value_id\
@@ -911,7 +982,7 @@ impl ItemValueRepository {
         };
         let mut page_sql = format!(
             "{cte} SELECT item_value_id, value, item_count, album_count, artist_count, \
-                    episode_count, movie_count, music_video_count, program_count, \
+                    episode_count, game_count, movie_count, music_video_count, program_count, \
                     series_count, song_count, trailer_count \
              FROM {source} ORDER BY {order}"
         );
@@ -951,6 +1022,7 @@ impl ItemValueRepository {
                         album_count: count("album_count")?,
                         artist_count: count("artist_count")?,
                         episode_count: count("episode_count")?,
+                        game_count: count("game_count")?,
                         movie_count: count("movie_count")?,
                         music_video_count: count("music_video_count")?,
                         program_count: count("program_count")?,
@@ -1102,6 +1174,9 @@ fn append_item_value_count_buckets_cte(sql: &mut String) {
                     COUNT(DISTINCT item_id) FILTER (WHERE item_type IN (\
                         'Episode', 'MediaBrowser.Controller.Entities.TV.Episode'\
                     ))::bigint AS episode_count, \
+                    COUNT(DISTINCT item_id) FILTER (WHERE item_type IN (\
+                        'Game', 'MediaBrowser.Controller.Entities.Game'\
+                    ))::bigint AS game_count, \
                     COUNT(DISTINCT item_id) FILTER (WHERE item_type IN (\
                         'Movie', 'MediaBrowser.Controller.Entities.Movies.Movie'\
                     ))::bigint AS movie_count, \
@@ -1667,7 +1742,7 @@ fn append_by_name_item_type_filter(
     item_type: &str,
     table: &str,
 ) {
-    let item_types = expand_item_type_aliases(&[item_type.to_owned()]);
+    let item_types = item_by_name_type_aliases(item_type);
     append_string_list_filter(
         sql,
         values,
@@ -1675,6 +1750,17 @@ fn append_by_name_item_type_filter(
         &item_types,
         false,
     );
+}
+
+fn item_by_name_type_aliases(item_type: &str) -> Vec<String> {
+    if item_type.eq_ignore_ascii_case("GameGenre") {
+        vec![
+            "GameGenre".to_owned(),
+            "MediaBrowser.Controller.Entities.GameGenre".to_owned(),
+        ]
+    } else {
+        expand_item_type_aliases(&[item_type.to_owned()])
+    }
 }
 
 fn append_string_list_filter(
