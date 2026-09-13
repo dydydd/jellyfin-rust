@@ -613,8 +613,8 @@ pub struct BaseItemPerson {
     pub name: String,
     pub id: String,
     pub role: String,
-    #[serde(rename = "Type")]
-    pub person_type: PersonKind,
+    #[serde(rename = "Type", skip_serializing_if = "Option::is_none")]
+    pub person_type: Option<PersonKind>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub primary_image_tag: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -2634,7 +2634,7 @@ pub(crate) async fn load_relation_metadata(
                         name: credit.person.name,
                         id: canonical.id.simple().to_string(),
                         role: credit.role,
-                        person_type: person_kind_from_name(&credit.person_type),
+                        person_type: Some(person_kind_from_name(&credit.person_type)),
                         primary_image_tag: image.map(|image| image.tag.clone()),
                         image_blur_hashes,
                     })
@@ -3978,9 +3978,9 @@ fn metadata_remote_trailers(data: Option<&Value>) -> Vec<MediaUrl> {
         .unwrap_or_default()
 }
 
-/// Removes relation fields whose identifiers have incompatible Jellyfin and
-/// Emby wire types. Emby's generated clients declare these optional ids as
-/// `Int64`; sending Jellyfin's GUID string makes Swift reject the whole item.
+/// Adapts fields whose Jellyfin values are outside Emby's generated BaseItem
+/// wire contract. Swift's `Codable` rejects the whole enclosing item when an
+/// optional field contains an unknown enum value or incompatible id type.
 ///
 /// Only the first URI path segment selects the protocol. This keeps every
 /// unprefixed Jellyfin response unchanged and avoids treating a later dynamic
@@ -4000,7 +4000,55 @@ pub(crate) fn omit_incompatible_emby_relations(uri: &axum::http::Uri, items: &mu
         // shared Rust DTO. TagItems and Collections do not exist on this DTO.
         item.studios.clear();
         item.genre_items.clear();
+
+        // Emby's PersonType predates Jellyfin's expanded credit kinds. Preserve
+        // the person but omit the optional Type instead of inventing a role.
+        for person in &mut item.people {
+            if person
+                .person_type
+                .is_some_and(|kind| !is_emby_person_kind(kind))
+            {
+                person.person_type = None;
+            }
+        }
+
+        // Emby does not define Jellyfin's Lyric stream kind. Filtering the
+        // typed DTO before serialization avoids buffering or rewriting JSON.
+        if let Some(streams) = &mut item.media_streams {
+            streams.retain(|stream| stream.stream_type != MediaStreamType::Lyric);
+        }
+        if let Some(sources) = &mut item.media_sources {
+            for source in sources {
+                source
+                    .media_streams
+                    .retain(|stream| stream.stream_type != MediaStreamType::Lyric);
+            }
+        }
+
+        // Remote and Offline are Jellyfin-only LocationType values. The Emby
+        // property is optional, so omission retains decodability without
+        // inventing a FileSystem or Virtual location.
+        if matches!(
+            item.location_type,
+            Some(LocationType::Remote | LocationType::Offline)
+        ) {
+            item.location_type = None;
+        }
     }
+}
+
+const fn is_emby_person_kind(kind: PersonKind) -> bool {
+    matches!(
+        kind,
+        PersonKind::Actor
+            | PersonKind::Director
+            | PersonKind::Writer
+            | PersonKind::Producer
+            | PersonKind::GuestStar
+            | PersonKind::Composer
+            | PersonKind::Conductor
+            | PersonKind::Lyricist
+    )
 }
 
 #[cfg(test)]
@@ -4023,8 +4071,119 @@ mod tests {
                 name: "Artist".to_owned(),
                 id: "dddddddddddddddddddddddddddddddd".to_owned(),
             }]),
+            people: vec![
+                BaseItemPerson {
+                    name: "Unknown credit".to_owned(),
+                    id: "person-unknown".to_owned(),
+                    role: String::new(),
+                    person_type: Some(PersonKind::Unknown),
+                    primary_image_tag: None,
+                    image_blur_hashes: None,
+                },
+                BaseItemPerson {
+                    name: "Narrator".to_owned(),
+                    id: "person-narrator".to_owned(),
+                    role: "Narrator".to_owned(),
+                    person_type: Some(PersonKind::Narrator),
+                    primary_image_tag: None,
+                    image_blur_hashes: None,
+                },
+                BaseItemPerson {
+                    name: "Actor".to_owned(),
+                    id: "person-actor".to_owned(),
+                    role: "Lead".to_owned(),
+                    person_type: Some(PersonKind::Actor),
+                    primary_image_tag: None,
+                    image_blur_hashes: None,
+                },
+            ],
+            media_streams: Some(vec![
+                MediaStream {
+                    stream_type: MediaStreamType::Lyric,
+                    ..MediaStream::default()
+                },
+                MediaStream {
+                    stream_type: MediaStreamType::Audio,
+                    ..MediaStream::default()
+                },
+            ]),
+            media_sources: Some(vec![MediaSourceInfo {
+                media_streams: vec![
+                    MediaStream {
+                        stream_type: MediaStreamType::Audio,
+                        ..MediaStream::default()
+                    },
+                    MediaStream {
+                        stream_type: MediaStreamType::Lyric,
+                        ..MediaStream::default()
+                    },
+                ],
+                ..MediaSourceInfo::default()
+            }]),
+            location_type: Some(LocationType::Remote),
             ..BaseItemDto::default()
         }
+    }
+
+    #[derive(Debug, Deserialize, PartialEq)]
+    #[serde(rename_all = "PascalCase")]
+    enum StrictEmbyPersonType {
+        Actor,
+        Director,
+        Writer,
+        Producer,
+        GuestStar,
+        Composer,
+        Conductor,
+        Lyricist,
+    }
+
+    #[derive(Debug, Deserialize, PartialEq)]
+    #[serde(rename_all = "PascalCase")]
+    enum StrictEmbyMediaStreamType {
+        Unknown,
+        Audio,
+        Video,
+        Subtitle,
+        EmbeddedImage,
+        Attachment,
+        Data,
+    }
+
+    #[derive(Debug, Deserialize, PartialEq)]
+    #[serde(rename_all = "PascalCase")]
+    enum StrictEmbyLocationType {
+        FileSystem,
+        Virtual,
+    }
+
+    #[derive(Debug, Deserialize)]
+    #[serde(rename_all = "PascalCase")]
+    struct StrictEmbyPerson {
+        #[serde(rename = "Type")]
+        person_type: Option<StrictEmbyPersonType>,
+    }
+
+    #[derive(Debug, Deserialize)]
+    #[serde(rename_all = "PascalCase")]
+    struct StrictEmbyMediaStream {
+        #[serde(rename = "Type")]
+        stream_type: StrictEmbyMediaStreamType,
+    }
+
+    #[derive(Debug, Deserialize)]
+    #[serde(rename_all = "PascalCase")]
+    struct StrictEmbyMediaSource {
+        media_streams: Vec<StrictEmbyMediaStream>,
+    }
+
+    #[derive(Debug, Deserialize)]
+    #[serde(rename_all = "PascalCase")]
+    struct StrictEmbyBaseItem {
+        location_type: Option<StrictEmbyLocationType>,
+        people: Vec<StrictEmbyPerson>,
+        media_streams: Vec<StrictEmbyMediaStream>,
+        media_sources: Vec<StrictEmbyMediaSource>,
     }
 
     #[test]
@@ -4043,6 +4202,25 @@ mod tests {
                     "dddddddddddddddddddddddddddddddd"
                 );
                 assert_eq!(value["Id"], "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+
+                let decoded: StrictEmbyBaseItem = serde_json::from_value(value).unwrap();
+                assert_eq!(decoded.location_type, None);
+                assert_eq!(decoded.people[0].person_type, None);
+                assert_eq!(decoded.people[1].person_type, None);
+                assert_eq!(
+                    decoded.people[2].person_type,
+                    Some(StrictEmbyPersonType::Actor)
+                );
+                assert_eq!(decoded.media_streams.len(), 1);
+                assert_eq!(
+                    decoded.media_streams[0].stream_type,
+                    StrictEmbyMediaStreamType::Audio
+                );
+                assert_eq!(decoded.media_sources[0].media_streams.len(), 1);
+                assert_eq!(
+                    decoded.media_sources[0].media_streams[0].stream_type,
+                    StrictEmbyMediaStreamType::Audio
+                );
             }
         }
     }
@@ -4063,6 +4241,79 @@ mod tests {
                 value["GenreItems"][0]["Id"], "cccccccccccccccccccccccccccccccc",
                 "{path}"
             );
+            assert_eq!(value["People"][0]["Type"], "Unknown", "{path}");
+            assert_eq!(value["People"][1]["Type"], "Narrator", "{path}");
+            assert_eq!(value["LocationType"], "Remote", "{path}");
+            assert_eq!(value["MediaStreams"][0]["Type"], "Lyric", "{path}");
+            assert_eq!(
+                value["MediaSources"][0]["MediaStreams"][1]["Type"], "Lyric",
+                "{path}"
+            );
+        }
+    }
+
+    #[test]
+    fn strict_emby_enum_models_reject_jellyfin_only_values() {
+        assert!(serde_json::from_value::<StrictEmbyPerson>(json!({ "Type": "Unknown" })).is_err());
+        assert!(
+            serde_json::from_value::<StrictEmbyMediaStream>(json!({ "Type": "Lyric" })).is_err()
+        );
+        assert!(
+            serde_json::from_value::<StrictEmbyBaseItem>(json!({
+                "LocationType": "Remote",
+                "People": [],
+                "MediaStreams": [],
+                "MediaSources": []
+            }))
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn emby_base_item_keeps_only_generated_client_person_and_location_enums() {
+        for kind in [
+            PersonKind::Actor,
+            PersonKind::Director,
+            PersonKind::Writer,
+            PersonKind::Producer,
+            PersonKind::GuestStar,
+            PersonKind::Composer,
+            PersonKind::Conductor,
+            PersonKind::Lyricist,
+        ] {
+            assert!(is_emby_person_kind(kind), "{kind:?}");
+        }
+        for kind in [
+            PersonKind::Unknown,
+            PersonKind::Arranger,
+            PersonKind::Engineer,
+            PersonKind::Mixer,
+            PersonKind::Remixer,
+            PersonKind::Creator,
+            PersonKind::Artist,
+            PersonKind::AlbumArtist,
+            PersonKind::Author,
+            PersonKind::Illustrator,
+            PersonKind::Penciller,
+            PersonKind::Inker,
+            PersonKind::Colorist,
+            PersonKind::Letterer,
+            PersonKind::CoverArtist,
+            PersonKind::Editor,
+            PersonKind::Translator,
+            PersonKind::Narrator,
+        ] {
+            assert!(!is_emby_person_kind(kind), "{kind:?}");
+        }
+
+        for location_type in [LocationType::Remote, LocationType::Offline] {
+            let uri = "/emby/Items".parse().unwrap();
+            let mut item = BaseItemDto {
+                location_type: Some(location_type),
+                ..BaseItemDto::default()
+            };
+            omit_incompatible_emby_relations(&uri, std::slice::from_mut(&mut item));
+            assert_eq!(item.location_type, None, "{location_type:?}");
         }
     }
 
@@ -4166,7 +4417,7 @@ mod tests {
             name: "Actor".to_owned(),
             id: "person-id".to_owned(),
             role: "Lead".to_owned(),
-            person_type: PersonKind::Actor,
+            person_type: Some(PersonKind::Actor),
             primary_image_tag: Some("image-tag".to_owned()),
             image_blur_hashes: Some(HashMap::from([(
                 ImageType::Primary,
@@ -4197,7 +4448,7 @@ mod tests {
             name: "Actor".to_owned(),
             id: "person-id".to_owned(),
             role: "Lead".to_owned(),
-            person_type: PersonKind::Actor,
+            person_type: Some(PersonKind::Actor),
             primary_image_tag: Some("image-tag".to_owned()),
             image_blur_hashes: None,
         };
