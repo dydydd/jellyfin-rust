@@ -38,6 +38,12 @@
   `Width` and return an empty 404 without advertising byte ranges. Capability-discovery endpoints
   must return SDK-decodable empty collections when no corresponding provider exists rather than
   inventing unavailable features.
+- Keep Emby HomeSections protocol-local and persist their ordered `ContentSection` objects in the
+  target user's PostgreSQL-backed display preferences. Bind top-level section and mutation fields
+  case-insensitively with last-duplicate-wins semantics, ignore unknown properties, preserve stable
+  order for add/update/delete/move operations, and reject an invalid move before changing the
+  stored sequence. Resolve and authorize the target user before binding mutation bodies; ordinary
+  users may manage only themselves, while administrators and valid API keys may target any user.
 
 ## Working practices
 

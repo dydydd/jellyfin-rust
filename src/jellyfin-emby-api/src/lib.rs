@@ -21,6 +21,7 @@ mod backup;
 mod bif;
 mod encoding;
 mod environment;
+mod home_sections;
 mod library;
 mod notifications;
 mod packages;
@@ -103,6 +104,9 @@ const DEDICATED_ROUTE_TEMPLATES: &[&str] = &[
     "/Tags",
     "/UserSettings/{user_id}/Partial",
     "/UserSettings/{user_id}",
+    "/Users/{user_id}/HomeSections/Delete",
+    "/Users/{user_id}/HomeSections/Move",
+    "/Users/{user_id}/HomeSections",
     "/Users/ItemAccess",
     "/Users/CopyDataOptions",
     "/Users/Prefixes",
@@ -183,6 +187,7 @@ fn dedicated_routes() -> Router<Arc<AppState>> {
         .merge(bif::routes())
         .merge(encoding::routes())
         .merge(environment::routes())
+        .merge(home_sections::routes())
         .merge(library::routes())
         .merge(notifications::routes())
         .merge(packages::routes())

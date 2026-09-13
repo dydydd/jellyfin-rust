@@ -17,6 +17,8 @@ tower-http = { version = "0.6", features = ["fs"] }
 uuid.workspace = true
 
 [dev-dependencies]
+jellyfin-controller = { path = "../jellyfin-controller" }
+jellyfin-data = { path = "../jellyfin-data" }
 sea-orm.workspace = true
 tokio.workspace = true
 

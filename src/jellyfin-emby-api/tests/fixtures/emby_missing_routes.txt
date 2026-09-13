@@ -69,8 +69,6 @@ GET /Sync/Items/Ready
 DELETE /Sync/JobItems/{Id}
 DELETE /Users/{Id}/RecentlySearched
 POST /Users/{UserId}/CopyData
-GET /Users/{UserId}/HomeSections
-POST /Users/{UserId}/HomeSections
 POST /Users/{UserId}/SearchedItems/
 GET /Dlna/{UuId}/contentdirectory/contentdirectory.xml
 HEAD /Dlna/{UuId}/contentdirectory/contentdirectory.xml
@@ -99,8 +97,6 @@ DELETE /Users/{Id}/TrackSelections/{TrackType}
 POST /Users/{Id}/RecentlySearched/Delete
 GET /Users/{UserId}/TypedSettings/{Key}
 POST /Users/{UserId}/TypedSettings/{Key}
-POST /Users/{UserId}/HomeSections/Delete
-POST /Users/{UserId}/HomeSections/Move
 POST /Users/{Id}/Connect/Link
 DELETE /Users/{Id}/Connect/Link
 POST /Videos/{Id}/AlternateSources/Delete

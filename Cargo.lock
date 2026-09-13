@@ -1685,6 +1685,8 @@ dependencies = [
  "axum",
  "chrono",
  "jellyfin-api",
+ "jellyfin-controller",
+ "jellyfin-data",
  "jellyfin-model",
  "sea-orm",
  "serde",
