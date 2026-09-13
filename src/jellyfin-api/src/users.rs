@@ -311,12 +311,10 @@ pub(crate) async fn post_user_image(
     Query(query): Query<UpdateUserQuery>,
     request: Request<axum::body::Body>,
 ) -> Result<StatusCode, ApiError> {
-    let authenticated = authentication::authenticated_session(&state, &headers).await?;
-    let target_id = query
-        .user_id
-        .filter(|user_id| !user_id.is_nil())
-        .unwrap_or(authenticated.user.id);
-    post_user_image_for(&state, &headers, authenticated.user, target_id, request).await
+    let identity = authentication::authenticated_identity(&state, &headers, None).await?;
+    let target_id =
+        management_target_id(&identity, query.user_id.filter(|user_id| !user_id.is_nil()));
+    post_user_image_for(&state, &headers, &identity, target_id, request).await
 }
 
 pub(crate) async fn post_user_image_legacy(
@@ -325,9 +323,9 @@ pub(crate) async fn post_user_image_legacy(
     Path((target_id, image_type)): Path<(Uuid, String)>,
     request: Request<axum::body::Body>,
 ) -> Result<StatusCode, ApiError> {
-    let authenticated = authentication::authenticated_session(&state, &headers).await?;
+    let identity = authentication::authenticated_identity(&state, &headers, None).await?;
     parse_image_type(&image_type)?;
-    post_user_image_for(&state, &headers, authenticated.user, target_id, request).await
+    post_user_image_for(&state, &headers, &identity, target_id, request).await
 }
 
 pub(crate) async fn post_user_image_index_legacy(
@@ -336,20 +334,20 @@ pub(crate) async fn post_user_image_index_legacy(
     Path((target_id, image_type, _index)): Path<(Uuid, String, u32)>,
     request: Request<axum::body::Body>,
 ) -> Result<StatusCode, ApiError> {
-    let authenticated = authentication::authenticated_session(&state, &headers).await?;
+    let identity = authentication::authenticated_identity(&state, &headers, None).await?;
     parse_image_type(&image_type)?;
-    post_user_image_for(&state, &headers, authenticated.user, target_id, request).await
+    post_user_image_for(&state, &headers, &identity, target_id, request).await
 }
 
 async fn post_user_image_for(
     state: &AppState,
     headers: &HeaderMap,
-    authenticated_user: user::Model,
+    identity: &authentication::AuthenticatedIdentity,
     target_id: Uuid,
     request: Request<axum::body::Body>,
 ) -> Result<StatusCode, ApiError> {
     let target = state.users.get(target_id).await?;
-    assert_can_update_user(&authenticated_user, &target)?;
+    assert_identity_can_update_user(identity, &target)?;
     let extension = MimeTypes::try_get_image_extension(
         headers
             .get(header::CONTENT_TYPE)
@@ -406,12 +404,10 @@ pub(crate) async fn delete_user_image(
     headers: HeaderMap,
     Query(query): Query<UpdateUserQuery>,
 ) -> Result<StatusCode, ApiError> {
-    let authenticated = authentication::authenticated_session(&state, &headers).await?;
-    let target_id = query
-        .user_id
-        .filter(|user_id| !user_id.is_nil())
-        .unwrap_or(authenticated.user.id);
-    delete_user_image_for(&state, authenticated.user, target_id).await
+    let identity = authentication::authenticated_identity(&state, &headers, None).await?;
+    let target_id =
+        management_target_id(&identity, query.user_id.filter(|user_id| !user_id.is_nil()));
+    delete_user_image_for(&state, &identity, target_id).await
 }
 
 pub(crate) async fn delete_user_image_legacy(
@@ -419,9 +415,9 @@ pub(crate) async fn delete_user_image_legacy(
     headers: HeaderMap,
     Path((target_id, image_type)): Path<(Uuid, String)>,
 ) -> Result<StatusCode, ApiError> {
-    let authenticated = authentication::authenticated_session(&state, &headers).await?;
+    let identity = authentication::authenticated_identity(&state, &headers, None).await?;
     parse_image_type(&image_type)?;
-    delete_user_image_for(&state, authenticated.user, target_id).await
+    delete_user_image_for(&state, &identity, target_id).await
 }
 
 pub(crate) async fn delete_user_image_index_legacy(
@@ -429,18 +425,18 @@ pub(crate) async fn delete_user_image_index_legacy(
     headers: HeaderMap,
     Path((target_id, image_type, _index)): Path<(Uuid, String, u32)>,
 ) -> Result<StatusCode, ApiError> {
-    let authenticated = authentication::authenticated_session(&state, &headers).await?;
+    let identity = authentication::authenticated_identity(&state, &headers, None).await?;
     parse_image_type(&image_type)?;
-    delete_user_image_for(&state, authenticated.user, target_id).await
+    delete_user_image_for(&state, &identity, target_id).await
 }
 
 async fn delete_user_image_for(
     state: &AppState,
-    authenticated_user: user::Model,
+    identity: &authentication::AuthenticatedIdentity,
     target_id: Uuid,
 ) -> Result<StatusCode, ApiError> {
     let target = state.users.get(target_id).await?;
-    assert_can_update_user(&authenticated_user, &target)?;
+    assert_identity_can_update_user(identity, &target)?;
     let removed = state
         .users
         .clear_profile_image(target.id)

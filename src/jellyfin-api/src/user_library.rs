@@ -868,14 +868,21 @@ pub(crate) async fn delete_lyrics(
     headers: HeaderMap,
     Path(item_id): Path<Uuid>,
 ) -> Result<StatusCode, ApiError> {
-    let authenticated = authentication::authenticated_session(&state, &headers).await?;
-    if !authenticated.can_manage_lyrics() {
-        return Err(ApiError::Forbidden);
+    let identity = authentication::authenticated_identity(&state, &headers, None).await?;
+    match &identity {
+        authentication::AuthenticatedIdentity::Device(authenticated) => {
+            if !authenticated.can_manage_lyrics() {
+                return Err(ApiError::Forbidden);
+            }
+            state
+                .user_library
+                .delete_lyrics(&authenticated.user, authenticated.user.id, item_id)
+                .await?;
+        }
+        authentication::AuthenticatedIdentity::ApiKey(_) => {
+            state.user_library.delete_lyrics_by_id(item_id).await?;
+        }
     }
-    state
-        .user_library
-        .delete_lyrics(&authenticated.user, authenticated.user.id, item_id)
-        .await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -886,20 +893,30 @@ pub(crate) async fn upload_lyrics(
     Query(query): Query<UploadLyricsQuery>,
     body: Bytes,
 ) -> Result<Json<Value>, ApiError> {
-    let authenticated = authentication::authenticated_session(&state, &headers).await?;
-    if !authenticated.can_manage_lyrics() {
-        return Err(ApiError::Forbidden);
-    }
-    let lyrics = state
-        .user_library
-        .save_lyrics(
-            &authenticated.user,
-            authenticated.user.id,
-            item_id,
-            query.file_name.as_deref(),
-            body.as_ref(),
-        )
-        .await?;
+    let identity = authentication::authenticated_identity(&state, &headers, None).await?;
+    let lyrics = match &identity {
+        authentication::AuthenticatedIdentity::Device(authenticated) => {
+            if !authenticated.can_manage_lyrics() {
+                return Err(ApiError::Forbidden);
+            }
+            state
+                .user_library
+                .save_lyrics(
+                    &authenticated.user,
+                    authenticated.user.id,
+                    item_id,
+                    query.file_name.as_deref(),
+                    body.as_ref(),
+                )
+                .await?
+        }
+        authentication::AuthenticatedIdentity::ApiKey(_) => {
+            state
+                .user_library
+                .save_lyrics_by_id(item_id, query.file_name.as_deref(), body.as_ref())
+                .await?
+        }
+    };
     Ok(Json(lyrics))
 }
 
@@ -908,14 +925,19 @@ pub(crate) async fn search_remote_lyrics(
     headers: HeaderMap,
     Path(item_id): Path<Uuid>,
 ) -> Result<Json<Vec<Value>>, ApiError> {
-    let authenticated = authentication::authenticated_session(&state, &headers).await?;
-    if !authenticated.can_manage_lyrics() {
-        return Err(ApiError::Forbidden);
-    }
-    let lyrics = state
-        .user_library
-        .remote_lyrics(&authenticated.user, authenticated.user.id, item_id)
-        .await?;
+    let identity = authentication::authenticated_identity(&state, &headers, None).await?;
+    ensure_can_manage_lyrics(&identity)?;
+    let lyrics = match &identity {
+        authentication::AuthenticatedIdentity::Device(authenticated) => {
+            state
+                .user_library
+                .remote_lyrics(&authenticated.user, authenticated.user.id, item_id)
+                .await?
+        }
+        authentication::AuthenticatedIdentity::ApiKey(_) => {
+            state.user_library.remote_lyrics_by_id(item_id).await?
+        }
+    };
     Ok(Json(lyrics))
 }
 
@@ -924,19 +946,29 @@ pub(crate) async fn download_remote_lyrics(
     headers: HeaderMap,
     Path((item_id, lyric_id)): Path<(Uuid, String)>,
 ) -> Result<Json<Value>, ApiError> {
-    let authenticated = authentication::authenticated_session(&state, &headers).await?;
-    if !authenticated.can_manage_lyrics() {
-        return Err(ApiError::Forbidden);
-    }
-    let lyrics = state
-        .user_library
-        .download_remote_lyrics(
-            &authenticated.user,
-            authenticated.user.id,
-            item_id,
-            &lyric_id,
-        )
-        .await?;
+    let identity = authentication::authenticated_identity(&state, &headers, None).await?;
+    let lyrics = match &identity {
+        authentication::AuthenticatedIdentity::Device(authenticated) => {
+            if !authenticated.can_manage_lyrics() {
+                return Err(ApiError::Forbidden);
+            }
+            state
+                .user_library
+                .download_remote_lyrics(
+                    &authenticated.user,
+                    authenticated.user.id,
+                    item_id,
+                    &lyric_id,
+                )
+                .await?
+        }
+        authentication::AuthenticatedIdentity::ApiKey(_) => {
+            state
+                .user_library
+                .download_remote_lyrics_by_id(item_id, &lyric_id)
+                .await?
+        }
+    };
     Ok(Json(lyrics))
 }
 
@@ -945,12 +977,22 @@ pub(crate) async fn get_remote_lyrics(
     headers: HeaderMap,
     Path(lyric_id): Path<String>,
 ) -> Result<Json<Value>, ApiError> {
-    let authenticated = authentication::authenticated_session(&state, &headers).await?;
-    if !authenticated.can_manage_lyrics() {
-        return Err(ApiError::Forbidden);
-    }
+    let identity = authentication::authenticated_identity(&state, &headers, None).await?;
+    ensure_can_manage_lyrics(&identity)?;
     let lyrics = state.user_library.get_remote_lyrics(&lyric_id).await?;
     Ok(Json(lyrics))
+}
+
+fn ensure_can_manage_lyrics(
+    identity: &authentication::AuthenticatedIdentity,
+) -> Result<(), ApiError> {
+    match identity {
+        authentication::AuthenticatedIdentity::Device(session) if !session.can_manage_lyrics() => {
+            Err(ApiError::Forbidden)
+        }
+        authentication::AuthenticatedIdentity::Device(_)
+        | authentication::AuthenticatedIdentity::ApiKey(_) => Ok(()),
+    }
 }
 
 async fn get_root_for(

@@ -185,11 +185,8 @@ pub(crate) async fn upload_subtitle(
     AxumPath(item_id): AxumPath<Uuid>,
     request: Result<Json<UploadSubtitleDto>, JsonRejection>,
 ) -> Result<StatusCode, ApiError> {
-    let authenticated = authentication::authenticated_session(&state, &headers).await?;
-    if !authenticated.can_manage_subtitles() {
-        return Err(ApiError::Forbidden);
-    }
-    ensure_video_item(&state, &authenticated.user, item_id).await?;
+    let identity = authentication::authenticated_identity(&state, &headers, None).await?;
+    ensure_managed_video_item(&state, &identity, item_id).await?;
 
     let Json(request) = request.map_err(|_| ApiError::InvalidRequest)?;
     let language = subtitle_token(request.language.as_deref()).ok_or(ApiError::InvalidRequest)?;
@@ -282,11 +279,8 @@ pub(crate) async fn search_remote_subtitles(
     AxumPath((item_id, language)): AxumPath<(Uuid, String)>,
     Query(query): Query<RemoteSubtitleSearchQuery>,
 ) -> Result<Json<Vec<RemoteSubtitleInfo>>, ApiError> {
-    let authenticated = authentication::authenticated_session(&state, &headers).await?;
-    if !authenticated.can_manage_subtitles() {
-        return Err(ApiError::Forbidden);
-    }
-    let item = ensure_video_item(&state, &authenticated.user, item_id).await?;
+    let identity = authentication::authenticated_identity(&state, &headers, None).await?;
+    let item = ensure_managed_video_item(&state, &identity, item_id).await?;
     let series_name = subtitle_search_series_name(&state, &item).await?;
     let request = SubtitleSearchRequest {
         language,
@@ -345,11 +339,8 @@ pub(crate) async fn download_remote_subtitles(
     headers: HeaderMap,
     AxumPath((item_id, subtitle_id)): AxumPath<(Uuid, String)>,
 ) -> Result<StatusCode, ApiError> {
-    let authenticated = authentication::authenticated_session(&state, &headers).await?;
-    if !authenticated.can_manage_subtitles() {
-        return Err(ApiError::Forbidden);
-    }
-    ensure_video_item(&state, &authenticated.user, item_id).await?;
+    let identity = authentication::authenticated_identity(&state, &headers, None).await?;
+    ensure_managed_video_item(&state, &identity, item_id).await?;
 
     if let Some(subtitle) = state.subtitles.get_subtitles(&subtitle_id)
         && let Err(error) = persist_external_subtitle(&state, item_id, subtitle).await
@@ -366,10 +357,8 @@ pub(crate) async fn get_remote_subtitles(
     headers: HeaderMap,
     AxumPath(subtitle_id): AxumPath<String>,
 ) -> Result<Response, ApiError> {
-    let authenticated = authentication::authenticated_session(&state, &headers).await?;
-    if !authenticated.can_manage_subtitles() {
-        return Err(ApiError::Forbidden);
-    }
+    let identity = authentication::authenticated_identity(&state, &headers, None).await?;
+    ensure_can_manage_subtitles(&identity)?;
 
     let Some(subtitle) = state.subtitles.get_subtitles(&subtitle_id) else {
         return Ok(StatusCode::NOT_FOUND.into_response());
@@ -559,6 +548,36 @@ async fn ensure_video_item_by_id(
         Ok(item)
     } else {
         Err(BaseItemError::NotFound.into())
+    }
+}
+
+async fn ensure_managed_video_item(
+    state: &AppState,
+    identity: &authentication::AuthenticatedIdentity,
+    item_id: Uuid,
+) -> Result<jellyfin_data::entities::base_item::Model, ApiError> {
+    ensure_can_manage_subtitles(identity)?;
+    match identity {
+        authentication::AuthenticatedIdentity::Device(session) => {
+            ensure_video_item(state, &session.user, item_id).await
+        }
+        authentication::AuthenticatedIdentity::ApiKey(_) => {
+            ensure_video_item_by_id(state, item_id).await
+        }
+    }
+}
+
+fn ensure_can_manage_subtitles(
+    identity: &authentication::AuthenticatedIdentity,
+) -> Result<(), ApiError> {
+    match identity {
+        authentication::AuthenticatedIdentity::Device(session)
+            if !session.can_manage_subtitles() =>
+        {
+            Err(ApiError::Forbidden)
+        }
+        authentication::AuthenticatedIdentity::Device(_)
+        | authentication::AuthenticatedIdentity::ApiKey(_) => Ok(()),
     }
 }
 

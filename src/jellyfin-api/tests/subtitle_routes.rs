@@ -212,6 +212,11 @@ async fn exercise_remote_subtitle_routes(database_name: &str) {
         .await;
     assert_eq!(search.status(), StatusCode::OK);
     assert_eq!(body_json(search).await, Value::Array(Vec::new()));
+    let api_key_search = fixture
+        .send(Method::GET, &search_route, Some(&fixture.api_key_token))
+        .await;
+    assert_eq!(api_key_search.status(), StatusCode::OK);
+    assert_eq!(body_json(api_key_search).await, Value::Array(Vec::new()));
 
     let missing_search = fixture
         .send(
@@ -230,6 +235,28 @@ async fn exercise_remote_subtitle_routes(database_name: &str) {
         )
         .await;
     assert_eq!(non_video_search.status(), StatusCode::NOT_FOUND);
+    assert_eq!(
+        fixture
+            .send(
+                Method::GET,
+                &Fixture::search_route(Uuid::new_v4(), "eng"),
+                Some(&fixture.api_key_token),
+            )
+            .await
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        fixture
+            .send(
+                Method::GET,
+                &Fixture::search_route(fixture.folder_id, "eng"),
+                Some(&fixture.api_key_token),
+            )
+            .await
+            .status(),
+        StatusCode::NOT_FOUND
+    );
 
     let download_route = Fixture::download_route(fixture.item_id, "provider-subtitle-id");
     assert_eq!(
@@ -255,10 +282,17 @@ async fn exercise_remote_subtitle_routes(database_name: &str) {
     );
     assert_eq!(
         fixture
+            .send(Method::POST, &download_route, Some(&fixture.api_key_token))
+            .await
+            .status(),
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        fixture
             .send(
                 Method::POST,
                 &Fixture::download_route(Uuid::new_v4(), "provider-subtitle-id"),
-                Some(&fixture.manager_token),
+                Some(&fixture.api_key_token),
             )
             .await
             .status(),
@@ -276,6 +310,13 @@ async fn exercise_remote_subtitle_routes(database_name: &str) {
     assert_eq!(
         fixture
             .send(Method::GET, provider_route, Some(&fixture.manager_token))
+            .await
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        fixture
+            .send(Method::GET, provider_route, Some(&fixture.api_key_token))
             .await
             .status(),
         StatusCode::NOT_FOUND
@@ -398,6 +439,26 @@ async fn exercise_upload_subtitle_route(database_name: &str) {
     assert_eq!(
         body_bytes(direct).await,
         Bytes::from_static(b"1\n00:00:01,000 --> 00:00:02,000\nHello from upload\n")
+    );
+    assert_eq!(
+        fixture
+            .send_json(
+                Method::POST,
+                &Fixture::upload_route(Uuid::new_v4()),
+                Some(&fixture.api_key_token),
+                &json!({ "Data": "not-base64" }),
+            )
+            .await
+            .status(),
+        StatusCode::NOT_FOUND,
+        "API-key item lookup must precede malformed upload validation"
+    );
+    assert_eq!(
+        fixture
+            .send_json(Method::POST, &route, Some(&fixture.api_key_token), &body,)
+            .await
+            .status(),
+        StatusCode::NO_CONTENT
     );
     let alternate_source = fixture
         .alternate_id

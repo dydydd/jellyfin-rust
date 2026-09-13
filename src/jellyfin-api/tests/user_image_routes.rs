@@ -14,7 +14,7 @@ use image::{DynamicImage, ImageFormat, Rgba, RgbaImage};
 use jellyfin_api::AppState;
 use jellyfin_controller::UserService;
 use jellyfin_data::{
-    DatabaseConfig, DeviceRepository, NewDevice,
+    ApiKeyRepository, DatabaseConfig, DeviceRepository, NewDevice,
     entities::{user, user_profile_image},
 };
 use sea_orm::{ConnectionTrait, EntityTrait};
@@ -105,6 +105,11 @@ async fn exercise_user_image_routes(database_name: &str) {
     let admin_token = session(&devices, administrator.id, &format!("admin-{suffix}")).await;
     let user_token = session(&devices, user.id, &format!("user-{suffix}")).await;
     let other_token = session(&devices, other.id, &format!("other-{suffix}")).await;
+    let api_key_token = ApiKeyRepository::new(database.clone())
+        .create(&format!("user-image-key-{suffix}"))
+        .await
+        .expect("user image API key creation")
+        .access_token;
     let png = png_fixture();
     let encoded_png = BASE64_STANDARD.encode(&png);
 
@@ -125,6 +130,54 @@ async fn exercise_user_image_routes(database_name: &str) {
         .await
         .status(),
         StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        post_image(
+            &app,
+            &format!("/UserImage?userId={}", Uuid::new_v4()),
+            Some(&api_key_token),
+            "text/plain",
+            "not-base64",
+        )
+        .await
+        .status(),
+        StatusCode::NOT_FOUND,
+        "API-key target lookup must precede content validation"
+    );
+    assert_eq!(
+        post_image(
+            &app,
+            "/UserImage",
+            Some(&api_key_token),
+            "image/png",
+            &encoded_png,
+        )
+        .await
+        .status(),
+        StatusCode::NOT_FOUND,
+        "an API key without an explicit target resolves Guid.Empty"
+    );
+    assert_eq!(
+        post_image(
+            &app,
+            &format!("/UserImage?userId={}", other.id),
+            Some(&api_key_token),
+            "image/png",
+            &encoded_png,
+        )
+        .await
+        .status(),
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        delete(
+            &app,
+            &format!("/UserImage?userId={}", other.id),
+            Some(&api_key_token),
+        )
+        .await
+        .status(),
+        StatusCode::NO_CONTENT
     );
     users
         .update_policy(user.id, &valid_policy())

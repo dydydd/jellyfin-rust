@@ -775,7 +775,20 @@ impl UserLibraryService {
         let item = self
             .audio_item(authenticated_user, target_user_id, item_id)
             .await?;
-        let request = lyric_search_request(&item);
+        self.remote_lyrics_for_item(&item).await
+    }
+
+    /// Searches configured remote lyric providers for an administrator-equivalent API key.
+    pub async fn remote_lyrics_by_id(&self, item_id: Uuid) -> Result<Vec<Value>, UserLibraryError> {
+        let item = self.audio_item_by_id(item_id).await?;
+        self.remote_lyrics_for_item(&item).await
+    }
+
+    async fn remote_lyrics_for_item(
+        &self,
+        item: &base_item::Model,
+    ) -> Result<Vec<Value>, UserLibraryError> {
+        let request = lyric_search_request(item);
         Ok(self
             .lyrics
             .search(&request)
@@ -801,6 +814,27 @@ impl UserLibraryService {
         let item = self
             .audio_item(authenticated_user, target_user_id, item_id)
             .await?;
+        self.download_remote_lyrics_for_item(item, lyric_id).await
+    }
+
+    /// Downloads and stores remote lyrics for an administrator-equivalent API key.
+    ///
+    /// The item lookup remains typed and precedes provider resolution, matching the
+    /// official controller's `GetItemById<Audio>` error ordering.
+    pub async fn download_remote_lyrics_by_id(
+        &self,
+        item_id: Uuid,
+        lyric_id: &str,
+    ) -> Result<Value, UserLibraryError> {
+        let item = self.audio_item_by_id(item_id).await?;
+        self.download_remote_lyrics_for_item(item, lyric_id).await
+    }
+
+    async fn download_remote_lyrics_for_item(
+        &self,
+        item: base_item::Model,
+        lyric_id: &str,
+    ) -> Result<Value, UserLibraryError> {
         let Some(response) = self.lyrics.get_lyrics(lyric_id).await? else {
             return Err(UserLibraryError::LyricsNotFound);
         };
@@ -844,6 +878,26 @@ impl UserLibraryService {
         let item = self
             .audio_item(authenticated_user, target_user_id, item_id)
             .await?;
+        self.save_lyrics_for_item(item, file_name, content).await
+    }
+
+    /// Validates and stores uploaded lyrics for an administrator-equivalent API key.
+    pub async fn save_lyrics_by_id(
+        &self,
+        item_id: Uuid,
+        file_name: Option<&str>,
+        content: &[u8],
+    ) -> Result<Value, UserLibraryError> {
+        let item = self.audio_item_by_id(item_id).await?;
+        self.save_lyrics_for_item(item, file_name, content).await
+    }
+
+    async fn save_lyrics_for_item(
+        &self,
+        item: base_item::Model,
+        file_name: Option<&str>,
+        content: &[u8],
+    ) -> Result<Value, UserLibraryError> {
         if content.is_empty() {
             return Err(UserLibraryError::InvalidLyricFile);
         }
@@ -866,9 +920,23 @@ impl UserLibraryService {
         target_user_id: Uuid,
         item_id: Uuid,
     ) -> Result<(), UserLibraryError> {
-        let mut item = self
+        let item = self
             .audio_item(authenticated_user, target_user_id, item_id)
             .await?;
+        self.delete_lyrics_for_item(item).await
+    }
+
+    /// Deletes lyrics for an administrator-equivalent API key after typed lookup.
+    pub async fn delete_lyrics_by_id(&self, item_id: Uuid) -> Result<(), UserLibraryError> {
+        let item = self.audio_item_by_id(item_id).await?;
+        self.delete_lyrics_for_item(item).await
+    }
+
+    async fn delete_lyrics_for_item(
+        &self,
+        mut item: base_item::Model,
+    ) -> Result<(), UserLibraryError> {
+        let item_id = item.id;
         let original_streams = self
             .media_streams
             .get_media_streams(MediaStreamFilter::for_item(item_id))
@@ -1064,6 +1132,18 @@ impl UserLibraryService {
         let item = self
             .item(authenticated_user, target_user_id, item_id)
             .await?;
+        if !item.item_type.eq_ignore_ascii_case("Audio") {
+            return Err(UserLibraryError::ItemNotFound);
+        }
+        Ok(item)
+    }
+
+    async fn audio_item_by_id(&self, item_id: Uuid) -> Result<base_item::Model, UserLibraryError> {
+        let item = self
+            .items
+            .get(item_id)
+            .await?
+            .ok_or(UserLibraryError::ItemNotFound)?;
         if !item.item_type.eq_ignore_ascii_case("Audio") {
             return Err(UserLibraryError::ItemNotFound);
         }
