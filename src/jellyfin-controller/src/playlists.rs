@@ -256,7 +256,7 @@ impl PlaylistService {
         playlist_id: Uuid,
         user_id: Uuid,
         entry_id: Uuid,
-        new_index: usize,
+        new_index: i32,
     ) -> Result<(), PlaylistError> {
         let playlist = self.get_for_user(playlist_id, user_id).await?;
         if !can_edit(&playlist, user_id) {

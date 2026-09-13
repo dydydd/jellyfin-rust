@@ -55,6 +55,116 @@ async fn playlist_item_user_id_casings_select_the_requested_user() {
 }
 
 #[tokio::test]
+async fn playlist_move_uses_official_signed_index_behavior() {
+    with_temporary_database(|database_name| async move {
+        let fixture = Fixture::new(&database_name).await;
+        let playlist_id = assert_creation(&fixture).await;
+        let links = LinkedChildRepository::new(fixture.database.clone());
+
+        // PlaylistManager treats a normal negative index as targeting the
+        // first accessible entry's successor. When the moved item is itself
+        // first, it therefore becomes the second item rather than being
+        // rejected or clamped to index zero.
+        let route = format!(
+            "/Playlists/{playlist_id}/Items/{}/Move/-1",
+            fixture.second_id
+        );
+        assert_eq!(
+            fixture
+                .request(Method::POST, &route, Some(&fixture.owner_token), None)
+                .await
+                .status(),
+            StatusCode::NO_CONTENT
+        );
+        assert_eq!(
+            links
+                .list(playlist_id)
+                .await
+                .unwrap()
+                .into_iter()
+                .map(|link| link.child_id)
+                .collect::<Vec<_>>(),
+            [fixture.first_id, fixture.second_id]
+        );
+
+        let lowercase_route = format!(
+            "/playlists/{playlist_id}/items/{}/move/-10",
+            fixture.first_id
+        );
+        assert_eq!(
+            fixture
+                .request(
+                    Method::POST,
+                    &lowercase_route,
+                    Some(&fixture.owner_token),
+                    None,
+                )
+                .await
+                .status(),
+            StatusCode::NO_CONTENT
+        );
+        let expected = [fixture.second_id, fixture.first_id];
+        assert_eq!(
+            links
+                .list(playlist_id)
+                .await
+                .unwrap()
+                .into_iter()
+                .map(|link| link.child_id)
+                .collect::<Vec<_>>(),
+            expected
+        );
+
+        // The official manager indexes accessibleChildren before its append
+        // branch, so an index beyond Count and Int32.MinValue are unhandled
+        // server errors and leave the playlist unchanged.
+        for new_index in ["3", "-2147483648"] {
+            let route = format!(
+                "/Playlists/{playlist_id}/Items/{}/Move/{new_index}",
+                fixture.second_id
+            );
+            assert_eq!(
+                fixture
+                    .request(Method::POST, &route, Some(&fixture.owner_token), None)
+                    .await
+                    .status(),
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "{route}"
+            );
+            assert_eq!(
+                links
+                    .list(playlist_id)
+                    .await
+                    .unwrap()
+                    .into_iter()
+                    .map(|link| link.child_id)
+                    .collect::<Vec<_>>(),
+                expected,
+                "{route}"
+            );
+        }
+
+        for new_index in ["2147483648", "-2147483649"] {
+            let route = format!(
+                "/Playlists/{playlist_id}/Items/{}/Move/{new_index}",
+                fixture.second_id
+            );
+            assert_eq!(
+                fixture
+                    .request(Method::POST, &route, Some(&fixture.owner_token), None)
+                    .await
+                    .status(),
+                StatusCode::BAD_REQUEST,
+                "{route}"
+            );
+        }
+
+        fixture.database.close().await.unwrap();
+    })
+    .await;
+}
+
+#[tokio::test]
 async fn lowercase_playlist_sdk_routes_reuse_canonical_handlers_and_binding() {
     with_temporary_database(|database_name| async move {
         let fixture = Fixture::new(&database_name).await;

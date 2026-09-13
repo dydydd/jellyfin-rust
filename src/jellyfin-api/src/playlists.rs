@@ -398,7 +398,7 @@ pub(crate) async fn move_item(
     State(state): State<Arc<AppState>>,
     OriginalUri(uri): OriginalUri,
     headers: HeaderMap,
-    Path((playlist_id, item_id, new_index)): Path<(Uuid, Uuid, usize)>,
+    Path((playlist_id, item_id, new_index)): Path<(Uuid, Uuid, i32)>,
 ) -> Result<StatusCode, ApiError> {
     let identity = authorization::require_default(&state, &headers, &uri).await?;
     let user_id = identity.target_user_id(None)?;

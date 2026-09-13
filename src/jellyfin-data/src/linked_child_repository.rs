@@ -38,6 +38,8 @@ pub enum LinkedChildStoreError {
     SelfLink,
     #[error("linked-child sort order overflowed PostgreSQL integer range")]
     SortOrderOverflow,
+    #[error("move index {new_index} is outside linked-child length {playlist_len}")]
+    MoveIndexOutOfBounds { new_index: i32, playlist_len: usize },
     #[error("stored linked-child type {0} is invalid")]
     CorruptChildType(i16),
     #[error(transparent)]
@@ -160,7 +162,7 @@ impl LinkedChildRepository {
         Ok(links)
     }
 
-    /// Moves one linked child to a clamped zero-based position.
+    /// Moves one linked child using Jellyfin's playlist-manager index rules.
     ///
     /// # Errors
     ///
@@ -169,12 +171,49 @@ impl LinkedChildRepository {
         &self,
         parent_id: Uuid,
         child_id: Uuid,
-        new_index: usize,
+        new_index: i32,
     ) -> Result<Vec<LinkedChild>, LinkedChildStoreError> {
         let transaction = self.database.begin().await?;
         lock_parent(&transaction, parent_id).await?;
         let mut ordered = list_models_with(&transaction, parent_id).await?;
-        let Some(old_index) = ordered.iter().position(|link| link.child_id == child_id) else {
+        let old_index = ordered.iter().position(|link| link.child_id == child_id);
+        let old_index_accessible = old_index.map_or(Ok(-1), |index| {
+            i32::try_from(index).map_err(|_| LinkedChildStoreError::SortOrderOverflow)
+        })?;
+        if old_index_accessible == new_index {
+            let links = ordered
+                .into_iter()
+                .map(LinkedChild::try_from)
+                .collect::<Result<Vec<_>, _>>()?;
+            transaction.commit().await?;
+            return Ok(links);
+        }
+
+        // PlaylistManager selects the preceding accessible entry before it
+        // checks whether the requested entry exists. Negative indices other
+        // than Int32.MinValue therefore select the first entry and insert
+        // after it; an excessive positive index fails instead of clamping.
+        let new_prior_index = new_index.checked_sub(1).unwrap_or(i32::MAX).max(0);
+        let new_prior_index = usize::try_from(new_prior_index).map_err(|_| {
+            LinkedChildStoreError::MoveIndexOutOfBounds {
+                new_index,
+                playlist_len: ordered.len(),
+            }
+        })?;
+        let _new_prior_item =
+            ordered
+                .get(new_prior_index)
+                .ok_or(LinkedChildStoreError::MoveIndexOutOfBounds {
+                    new_index,
+                    playlist_len: ordered.len(),
+                })?;
+        let adjusted_new_index = if new_index == 0 {
+            new_prior_index.saturating_sub(1)
+        } else {
+            new_prior_index + 1
+        };
+
+        let Some(old_index) = old_index else {
             let links = ordered
                 .into_iter()
                 .map(LinkedChild::try_from)
@@ -182,23 +221,31 @@ impl LinkedChildRepository {
             transaction.commit().await?;
             return Ok(links);
         };
-        if old_index != new_index {
-            let item = ordered.remove(old_index);
-            let insert_at = new_index.min(ordered.len());
-            ordered.insert(insert_at, item);
-            let rows = ordered_rows(parent_id, ordered)?;
-            linked_child::Entity::insert_many(rows)
-                .on_conflict(
-                    OnConflict::columns([
-                        linked_child::Column::ParentId,
-                        linked_child::Column::ChildId,
-                    ])
-                    .update_column(linked_child::Column::SortOrder)
-                    .to_owned(),
-                )
-                .exec_without_returning(&transaction)
-                .await?;
+        let item = ordered.remove(old_index);
+        let append = usize::try_from(new_index).is_ok_and(|index| index >= ordered.len());
+        if append {
+            ordered.push(item);
+        } else {
+            if adjusted_new_index > ordered.len() {
+                return Err(LinkedChildStoreError::MoveIndexOutOfBounds {
+                    new_index,
+                    playlist_len: ordered.len() + 1,
+                });
+            }
+            ordered.insert(adjusted_new_index, item);
         }
+        let rows = ordered_rows(parent_id, ordered)?;
+        linked_child::Entity::insert_many(rows)
+            .on_conflict(
+                OnConflict::columns([
+                    linked_child::Column::ParentId,
+                    linked_child::Column::ChildId,
+                ])
+                .update_column(linked_child::Column::SortOrder)
+                .to_owned(),
+            )
+            .exec_without_returning(&transaction)
+            .await?;
         let links = list_with(&transaction, parent_id).await?;
         transaction.commit().await?;
         Ok(links)
