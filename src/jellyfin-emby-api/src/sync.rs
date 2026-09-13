@@ -23,6 +23,8 @@ pub(crate) fn routes() -> Router<Arc<AppState>> {
         .route("/sync/jobitems", get(job_items))
         .route("/Sync/Items/Ready", get(ready_items))
         .route("/sync/items/ready", get(ready_items))
+        .route("/Sync/Options", get(options))
+        .route("/sync/options", get(options))
 }
 
 #[derive(Debug)]
@@ -33,6 +35,45 @@ struct UserIdQuery {
 #[derive(Debug)]
 struct TargetIdQuery {
     _target_id: String,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct SyncOptionsQuery {
+    user_id: String,
+    item_ids: Option<String>,
+    parent_id: Option<String>,
+    target_id: Option<String>,
+    category: Option<SyncCategory>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SyncCategory {
+    Latest,
+    NextUp,
+    Resume,
+}
+
+impl SyncCategory {
+    fn parse(value: &str) -> Option<Self> {
+        if value.eq_ignore_ascii_case("Latest") || value == "1" {
+            Some(Self::Latest)
+        } else if value.eq_ignore_ascii_case("NextUp") || value == "2" {
+            Some(Self::NextUp)
+        } else if value.eq_ignore_ascii_case("Resume") || value == "3" {
+            Some(Self::Resume)
+        } else {
+            None
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for SyncCategory {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = String::deserialize(deserializer)?;
+        Self::parse(&value).ok_or_else(|| {
+            de::Error::unknown_variant(&value, &["Latest", "NextUp", "Resume", "1", "2", "3"])
+        })
+    }
 }
 
 impl<'de> Deserialize<'de> for UserIdQuery {
@@ -48,6 +89,64 @@ impl<'de> Deserialize<'de> for TargetIdQuery {
         Ok(Self {
             _target_id: required_string(deserializer, "TargetId")?,
         })
+    }
+}
+
+impl<'de> Deserialize<'de> for SyncOptionsQuery {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Visitor;
+
+        impl<'de> de::Visitor<'de> for Visitor {
+            type Value = SyncOptionsQuery;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("an Emby Sync/Options query")
+            }
+
+            fn visit_map<M: de::MapAccess<'de>>(self, mut map: M) -> Result<Self::Value, M::Error> {
+                let mut user_id = None;
+                let mut item_ids = None;
+                let mut parent_id = None;
+                let mut target_id = None;
+                let mut category = None;
+                while let Some(name) = map.next_key::<String>()? {
+                    if name.eq_ignore_ascii_case("UserId") {
+                        user_id = Some(map.next_value::<String>()?);
+                    } else if name.eq_ignore_ascii_case("ItemIds") {
+                        item_ids = Some(map.next_value::<String>()?);
+                    } else if name.eq_ignore_ascii_case("ParentId") {
+                        parent_id = Some(map.next_value::<String>()?);
+                    } else if name.eq_ignore_ascii_case("TargetId") {
+                        target_id = Some(map.next_value::<String>()?);
+                    } else if name.eq_ignore_ascii_case("Category") {
+                        // Retain the raw final duplicate before parsing so an
+                        // earlier invalid value cannot defeat ASP.NET's
+                        // last-assignment-wins property binding.
+                        category = Some(map.next_value::<String>()?);
+                    } else {
+                        map.next_value::<de::IgnoredAny>()?;
+                    }
+                }
+                Ok(SyncOptionsQuery {
+                    user_id: user_id.ok_or_else(|| de::Error::missing_field("UserId"))?,
+                    item_ids,
+                    parent_id,
+                    target_id,
+                    category: category
+                        .map(|value| {
+                            SyncCategory::parse(&value).ok_or_else(|| {
+                                de::Error::unknown_variant(
+                                    &value,
+                                    &["Latest", "NextUp", "Resume", "1", "2", "3"],
+                                )
+                            })
+                        })
+                        .transpose()?,
+                })
+            }
+        }
+
+        deserializer.deserialize_map(Visitor)
     }
 }
 
@@ -91,6 +190,15 @@ struct QueryResult {
     total_record_count: i32,
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "PascalCase")]
+struct SyncDialogOptions {
+    targets: Vec<Value>,
+    options: Vec<Value>,
+    quality_options: Vec<Value>,
+    profile_options: Vec<Value>,
+}
+
 async fn targets(Query(_query): Query<UserIdQuery>) -> Json<Vec<Value>> {
     Json(Vec::new())
 }
@@ -105,6 +213,19 @@ async fn job_items(Query(_query): Query<TargetIdQuery>) -> Json<QueryResult> {
 
 async fn ready_items(Query(_query): Query<TargetIdQuery>) -> Json<Vec<Value>> {
     Json(Vec::new())
+}
+
+// With no registered legacy sync provider there are no honest targets,
+// profiles, quality choices, or job options to advertise. Explicit empty
+// arrays retain the generated clients' collection shape without claiming an
+// unavailable offline-sync capability.
+async fn options(Query(_query): Query<SyncOptionsQuery>) -> Json<SyncDialogOptions> {
+    Json(SyncDialogOptions {
+        targets: Vec::new(),
+        options: Vec::new(),
+        quality_options: Vec::new(),
+        profile_options: Vec::new(),
+    })
 }
 
 fn empty_query_result() -> Json<QueryResult> {
@@ -188,5 +309,51 @@ mod tests {
                 serde_json::json!({"Items": [], "TotalRecordCount": 0})
             );
         }
+
+        let response = app()
+            .oneshot(
+                Request::get("/Sync/Options?UserId=user")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), 1024).await.unwrap();
+        assert_eq!(
+            serde_json::from_slice::<Value>(&body).unwrap(),
+            serde_json::json!({
+                "Targets": [],
+                "Options": [],
+                "QualityOptions": [],
+                "ProfileOptions": []
+            })
+        );
+    }
+
+    #[test]
+    fn sync_options_query_binds_all_fields_case_insensitively_and_last_wins() {
+        let query: SyncOptionsQuery = serde_json::from_str(
+            r#"{"UserId":"first","userid":"second","ItemIds":"1,2","itemids":"3","ParentId":"parent","parentid":"other-parent","TargetId":"target","targetid":"other-target","Category":"Latest","category":"resume","Ignored":"value"}"#,
+        )
+        .expect("Sync/Options fields");
+        assert_eq!(
+            query,
+            SyncOptionsQuery {
+                user_id: "second".to_owned(),
+                item_ids: Some("3".to_owned()),
+                parent_id: Some("other-parent".to_owned()),
+                target_id: Some("other-target".to_owned()),
+                category: Some(SyncCategory::Resume),
+            }
+        );
+        assert!(
+            serde_json::from_str::<SyncOptionsQuery>(r#"{"UserId":"user","Category":"2"}"#).is_ok()
+        );
+        assert!(
+            serde_json::from_str::<SyncOptionsQuery>(r#"{"UserId":"user","Category":"unknown"}"#)
+                .is_err()
+        );
+        assert!(serde_json::from_str::<SyncOptionsQuery>(r#"{"Category":"Latest"}"#).is_err());
     }
 }

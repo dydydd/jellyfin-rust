@@ -13,7 +13,6 @@ GET /Parties/Messages
 POST /Parties/Messages
 POST /Parties/Leave
 POST /Sync/Jobs
-GET /Sync/Options
 POST /Sync/OfflineActions
 POST /Sync/Data
 GET /UI/View

@@ -148,6 +148,7 @@ const DEDICATED_ROUTE_TEMPLATES: &[&str] = &[
     "/Sync/JobItems",
     "/Sync/Items/Ready",
     "/Sync/Jobs",
+    "/Sync/Options",
     "/Sync/Targets",
     "/System/Info/Public",
     "/System/Info",
