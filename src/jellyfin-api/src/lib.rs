@@ -1108,6 +1108,21 @@ pub fn unprefixed_router(state: AppState) -> Router {
     base.with_state(state)
 }
 
+/// Builds the legacy Emby audio HLS route without adding it to Jellyfin's
+/// unprefixed API. Emby's generated clients still call this endpoint, while
+/// current Jellyfin exposes audio HLS through master/main playlists.
+pub fn emby_legacy_audio_hls_routes() -> Router<Arc<AppState>> {
+    Router::new()
+        .route(
+            "/Audio/{item_id}/live.m3u8",
+            get(hls_segment::emby_audio_live_playlist),
+        )
+        .route(
+            "/audio/{item_id}/live.m3u8",
+            get(hls_segment::emby_audio_live_playlist),
+        )
+}
+
 #[allow(clippy::too_many_lines)]
 fn base_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
     let index_path = state.web_directory.join("index.html");

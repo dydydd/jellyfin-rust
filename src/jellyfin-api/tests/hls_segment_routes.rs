@@ -3,9 +3,11 @@ use std::{
     fs,
     os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
+    sync::Arc,
 };
 
 use axum::{
+    Router,
     body::{Body, to_bytes},
     http::{HeaderMap, HeaderValue, Request, StatusCode, header},
 };
@@ -478,6 +480,65 @@ async fn dynamic_hls_routes_require_auth_and_stream_generated_files() {
 }
 
 #[tokio::test]
+async fn emby_legacy_audio_live_route_uses_the_authenticated_hls_pipeline() {
+    let fixture = Fixture::new().await;
+    let item_id = Uuid::new_v4();
+    let items = BaseItemRepository::new(fixture.database.clone());
+    let mut item = NewBaseItem::new(item_id, "Audio");
+    item.path = Some("/media/emby-audio-live.mp3".to_owned());
+    items
+        .create(item)
+        .await
+        .expect("legacy Emby HLS audio item");
+
+    let canonical = format!("/emby/Audio/{item_id}/live.m3u8");
+    assert_eq!(
+        fixture.get(&canonical, HeaderMap::new()).await.status(),
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        fixture
+            .get(&canonical, fixture.device_headers())
+            .await
+            .status(),
+        StatusCode::BAD_REQUEST,
+        "the generated Emby client declares Container as required"
+    );
+
+    for uri in [
+        format!("{canonical}?Container=ts&AudioCodec=aac"),
+        format!("/emby/audio/{item_id}/live.m3u8?container=ts&audiocodec=aac"),
+    ] {
+        let response = fixture.get(&uri, fixture.device_headers()).await;
+        assert_eq!(response.status(), StatusCode::OK, "{uri}");
+        let playlist = String::from_utf8(body(response).await).expect("UTF-8 HLS playlist");
+        assert!(playlist.contains("#EXTM3U"), "{uri}");
+        assert!(playlist.contains("#EXT-X-PLAYLIST-TYPE:EVENT"), "{uri}");
+        assert!(
+            playlist.lines().any(|line| line.starts_with("hls/")),
+            "the legacy endpoint must return a real generated HLS segment URL: {uri}"
+        );
+    }
+
+    assert_eq!(
+        fixture
+            .get(
+                &format!("{canonical}?Container=audio%2Faac&AudioCodec=aac"),
+                fixture.device_headers(),
+            )
+            .await
+            .status(),
+        StatusCode::BAD_REQUEST
+    );
+
+    items
+        .delete(item_id)
+        .await
+        .expect("legacy Emby HLS audio item cleanup");
+    fixture.cleanup().await;
+}
+
+#[tokio::test]
 async fn unknown_alternate_runtime_uses_event_hls_while_known_runtimes_remain_vod() {
     let fixture = Fixture::new().await;
     let items = BaseItemRepository::new(fixture.database.clone());
@@ -837,15 +898,16 @@ impl Fixture {
         .expect("fake ffmpeg");
         fs::set_permissions(&fake_ffmpeg, fs::Permissions::from_mode(0o700))
             .expect("fake ffmpeg permissions");
-        let app = jellyfin_api::router(
-            AppState::new(
-                database.clone(),
-                "HLS Test Server".to_owned(),
-                "http://127.0.0.1:8096".to_owned(),
-            )
-            .with_transcode_directory(transcode_path)
-            .with_ffmpeg_path(fake_ffmpeg),
-        );
+        let state = AppState::new(
+            database.clone(),
+            "HLS Test Server".to_owned(),
+            "http://127.0.0.1:8096".to_owned(),
+        )
+        .with_transcode_directory(transcode_path)
+        .with_ffmpeg_path(fake_ffmpeg);
+        let emby_audio_hls =
+            jellyfin_api::emby_legacy_audio_hls_routes().with_state(Arc::new(state.clone()));
+        let app = jellyfin_api::router(state).merge(Router::new().nest("/emby", emby_audio_hls));
         Self {
             database,
             app,

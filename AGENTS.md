@@ -19,6 +19,15 @@
   numeric-id mapping exists, `/emby` BaseItem responses must omit incompatible `Studios`,
   `GenreItems`, `TagItems`, and `Collections` relations; keep the names/ids unchanged on every
   unprefixed Jellyfin response and avoid whole-response buffering to adapt these fields.
+- Keep Emby BaseItem enum adaptation protocol-local as well: omit unsupported Person `Type` values,
+  filter Jellyfin-only `Lyric` media streams, and omit `Remote`/`Offline` `LocationType` values from
+  `/emby` responses. Preserve the person and every supported stream, and keep unprefixed Jellyfin
+  DTOs byte-shape compatible with the Jellyfin contract.
+- Register generated-client literal routes ahead of shared dynamic fallbacks and dispatch every
+  static segment case-insensitively without normalizing dynamic values or query strings. Mount
+  Emby's legacy `/Audio/{Id}/live.m3u8` only under `/emby`; validate its required `Container` with
+  the official encoding-container regex and reuse the authenticated HLS pipeline without changing
+  Jellyfin's unprefixed Audio or existing Video live behavior.
 
 ## Working practices
 

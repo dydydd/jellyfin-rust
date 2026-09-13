@@ -19,6 +19,8 @@ pub(crate) fn routes() -> Router<Arc<AppState>> {
         .route("/users/query", get(query_users))
         .route("/Users/ItemAccess", get(item_access))
         .route("/users/itemaccess", get(item_access))
+        .route("/Users/CopyDataOptions", get(copy_data_options))
+        .route("/users/copydataoptions", get(copy_data_options))
         .route("/Users/Prefixes", get(prefixes))
         .route("/users/prefixes", get(prefixes))
 }
@@ -52,6 +54,12 @@ struct UserQueryResult {
     start_index: i32,
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "PascalCase")]
+struct FullUserCopyDataOptions {
+    data_options: Vec<NameIdPair>,
+}
+
 async fn query_users(
     State(state): State<Arc<AppState>>,
     OriginalUri(uri): OriginalUri,
@@ -75,6 +83,20 @@ async fn item_access(
         state.emby_users(query.is_hidden, query.is_disabled).await?,
         query,
     )))
+}
+
+async fn copy_data_options(
+    State(state): State<Arc<AppState>>,
+    OriginalUri(uri): OriginalUri,
+    headers: HeaderMap,
+) -> Result<Json<FullUserCopyDataOptions>, Response> {
+    state.require_emby_administrator(&headers, &uri).await?;
+    // The companion CopyData operation is not implemented, so advertising no
+    // available options is more accurate than exposing actions that cannot be
+    // completed by this server.
+    Ok(Json(FullUserCopyDataOptions {
+        data_options: Vec::new(),
+    }))
 }
 
 async fn prefixes(
@@ -164,6 +186,12 @@ fn page(mut users: Vec<UserDto>, query: UserQuery) -> UserQueryResult {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::{
+        body::Body,
+        http::{Request, StatusCode},
+    };
+    use sea_orm::DatabaseConnection;
+    use tower::ServiceExt;
 
     #[test]
     fn signed_paging_matches_emby_contract() {
@@ -184,5 +212,31 @@ mod tests {
         assert_eq!(result.start_index, -2);
         assert_eq!(result.total_record_count, 3);
         assert_eq!(result.items.len(), 1);
+    }
+
+    #[test]
+    fn copy_data_options_keep_swift_decodable_shape() {
+        let value = serde_json::to_value(FullUserCopyDataOptions {
+            data_options: Vec::new(),
+        })
+        .unwrap();
+        assert_eq!(value, serde_json::json!({ "DataOptions": [] }));
+    }
+
+    #[tokio::test]
+    async fn copy_data_options_routes_require_administrator() {
+        let app = routes().with_state(Arc::new(AppState::new(
+            DatabaseConnection::Disconnected,
+            "test".to_owned(),
+            "http://127.0.0.1:8096".to_owned(),
+        )));
+        for path in ["/Users/CopyDataOptions", "/users/copydataoptions"] {
+            let response = app
+                .clone()
+                .oneshot(Request::get(path).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "{path}");
+        }
     }
 }

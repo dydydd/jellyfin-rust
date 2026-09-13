@@ -59,6 +59,7 @@ const DEDICATED_ROUTE_TEMPLATES: &[&str] = &[
     "/AudioBooks/NextUp",
     "/AudioCodecs",
     "/AudioLayouts",
+    "/Audio/{item_id}/live.m3u8",
     "/Artists/Prefixes",
     "/BackupRestore/BackupInfo",
     "/Branding/Configuration",
@@ -76,6 +77,8 @@ const DEDICATED_ROUTE_TEMPLATES: &[&str] = &[
     "/Environment/ValidatePath",
     "/ExtendedVideoTypes",
     "/Features",
+    "/Items/Access",
+    "/Items/Intros",
     "/Items/Prefixes",
     "/ItemTypes",
     // Keep the literal route before the dynamic package-name route. This is
@@ -98,6 +101,7 @@ const DEDICATED_ROUTE_TEMPLATES: &[&str] = &[
     "/UserSettings/{user_id}/Partial",
     "/UserSettings/{user_id}",
     "/Users/ItemAccess",
+    "/Users/CopyDataOptions",
     "/Users/Prefixes",
     "/Users/Query",
     "/VideoCodecs",
@@ -166,6 +170,7 @@ fn normalized_dedicated_path(path: &str) -> Option<String> {
 
 fn dedicated_routes() -> Router<Arc<AppState>> {
     Router::new()
+        .merge(jellyfin_api::emby_legacy_audio_hls_routes())
         .merge(auth_user::routes())
         .merge(backup::routes())
         .merge(encoding::routes())
@@ -436,9 +441,15 @@ mod tests {
             ("/pAcKaGeS/uPdAtEs", "/Packages/Updates"),
             ("/uSeRs/qUeRy", "/Users/Query"),
             ("/UsErS/iTeMaCcEsS", "/Users/ItemAccess"),
+            ("/uSeRs/cOpYdAtAoPtIoNs", "/Users/CopyDataOptions"),
             ("/uSeRs/pReFiXeS", "/Users/Prefixes"),
+            ("/iTeMs/iNtRoS", "/Items/Intros"),
             ("/iTeMs/pReFiXeS", "/Items/Prefixes"),
             ("/aRtIsTs/pReFiXeS", "/Artists/Prefixes"),
+            (
+                "/aUdIo/00000000-0000-0000-0000-000000000000/lIvE.m3U8",
+                "/Audio/{item_id}/live.m3u8",
+            ),
             (
                 "/sYsTeM/rElEaSeNoTeS/vErSiOnS",
                 "/System/ReleaseNotes/Versions",
@@ -456,6 +467,24 @@ mod tests {
                 "{path} must reach the literal dedicated route"
             );
         }
+
+        let path = "/iTeMs/aCcEsS";
+        let response = case_insensitive_dedicated_routes(dedicated_routes().with_state(Arc::new(
+            AppState::new(
+                DatabaseConnection::Disconnected,
+                "API Test Server".to_owned(),
+                "http://127.0.0.1:8096".to_owned(),
+            ),
+        )))
+        .oneshot(
+            Request::post(path)
+                .header("content-type", "application/json")
+                .body(Body::from("{}"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_IMPLEMENTED, "{path}");
 
         for method in [Method::GET, Method::POST] {
             let path = "/dIsPlAyPrEfErEnCeS/MiXeD%2BId?Client=Emby";

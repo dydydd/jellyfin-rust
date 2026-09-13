@@ -29,6 +29,8 @@ use crate::{
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 pub(crate) struct TranscodeQuery {
+    #[serde(rename = "container", alias = "Container")]
+    container: Option<String>,
     #[serde(rename = "jobId", alias = "JobId", alias = "jobid")]
     job_id: Option<String>,
     #[serde(rename = "deviceId", alias = "DeviceId", alias = "deviceid")]
@@ -364,6 +366,24 @@ pub(crate) async fn audio_main_playlist(
     ensure_main_playlist(&state, headers, &uri, query, &identity).await
 }
 
+pub(crate) async fn emby_audio_live_playlist(
+    State(state): State<Arc<AppState>>,
+    OriginalUri(uri): OriginalUri,
+    Path(item_id): Path<Uuid>,
+    Query(query): Query<TranscodeQuery>,
+    headers: HeaderMap,
+) -> Result<Response, ApiError> {
+    let identity = authorization::require_default(&state, &headers, &uri).await?;
+    let container = query.container.as_deref().ok_or(ApiError::InvalidRequest)?;
+    if !is_streaming_parameter(container) {
+        return Err(ApiError::InvalidRequest);
+    }
+    ensure_live_playlist(
+        &state, headers, &uri, query, &identity, item_id, "Audio", true,
+    )
+    .await
+}
+
 pub(crate) async fn audio_hls1_segment(
     State(state): State<Arc<AppState>>,
     OriginalUri(uri): OriginalUri,
@@ -407,7 +427,23 @@ pub(crate) async fn video_live_playlist(
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
     let identity = authorization::require_default(&state, &headers, &uri).await?;
-    if query.job_id.is_none() && !query.has_transcode_parameters() {
+    ensure_live_playlist(
+        &state, headers, &uri, query, &identity, item_id, "Videos", false,
+    )
+    .await
+}
+
+async fn ensure_live_playlist(
+    state: &AppState,
+    headers: HeaderMap,
+    uri: &Uri,
+    query: TranscodeQuery,
+    identity: &crate::authentication::AuthenticatedIdentity,
+    item_id: Uuid,
+    media_type: &'static str,
+    force_transcode: bool,
+) -> Result<Response, ApiError> {
+    if !force_transcode && query.job_id.is_none() && !query.has_transcode_parameters() {
         let path = resolve_transcode_file(&state.transcode_directory, "live.m3u8")?;
         return serve_file(path, headers).await;
     }
@@ -415,13 +451,13 @@ pub(crate) async fn video_live_playlist(
     let segment_length_ms = segment_length_ms(query.segment_length)?;
     let job_id = existing_or_computed_job_id(&query, &uri, item_id, segment_length_ms);
     start_hls_job(
-        &state,
+        state,
         &query,
-        &uri,
+        uri,
         item_id,
         &job_id,
-        &identity,
-        "Videos",
+        identity,
+        media_type,
         segment_length_ms,
     )
     .await?;
@@ -1337,6 +1373,14 @@ fn is_hls_container(container: &str) -> bool {
     !container.is_empty() && container.bytes().all(|byte| byte.is_ascii_alphanumeric())
 }
 
+fn is_streaming_parameter(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 40
+        && value.bytes().all(|byte| {
+            byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b',' | b'|')
+        })
+}
+
 async fn find_playlist(
     root: &FilePath,
     playlist_id: &str,
@@ -1451,7 +1495,10 @@ mod tests {
     use axum_extra::extract::Query;
     use uuid::Uuid;
 
-    use super::{TranscodeQuery, cleanup_transcode_job, media_type_item_id, segment_length_ms};
+    use super::{
+        TranscodeQuery, cleanup_transcode_job, is_streaming_parameter, media_type_item_id,
+        segment_length_ms,
+    };
 
     #[test]
     fn generated_lowercase_transcode_paths_resolve_their_media_type() {
@@ -1480,6 +1527,28 @@ mod tests {
             .unwrap();
         let query = Query::<TranscodeQuery>::try_from_uri(&uri).unwrap().0;
         assert_eq!(query.audio_bitrate, Some(128_000));
+    }
+
+    #[test]
+    fn emby_audio_hls_binds_required_container_case_insensitively() {
+        for name in ["Container", "container"] {
+            let uri: Uri = format!("/emby/Audio/item/live.m3u8?{name}=ts")
+                .parse()
+                .unwrap();
+            let query = Query::<TranscodeQuery>::try_from_uri(&uri).unwrap().0;
+            assert_eq!(query.container.as_deref(), Some("ts"), "{name}");
+        }
+    }
+
+    #[test]
+    fn emby_audio_hls_container_matches_the_official_validation_surface() {
+        for valid in ["ts", "audio,aac", "mpeg-ts_1.0|aac"] {
+            assert!(is_streaming_parameter(valid), "{valid}");
+        }
+        for invalid in ["", "audio/aac", "../ts", "contains space"] {
+            assert!(!is_streaming_parameter(invalid), "{invalid}");
+        }
+        assert!(!is_streaming_parameter(&"a".repeat(41)));
     }
 
     #[test]
