@@ -99,6 +99,12 @@ async fn exercise_delete_subtitle_route(database_name: &str) {
             .status(),
         StatusCode::NO_CONTENT
     );
+    assert!(
+        !tokio::fs::try_exists(fixture.primary_subtitle_path(2))
+            .await
+            .expect("deleted English subtitle existence check"),
+        "deleting a subtitle stream must also remove its external file",
+    );
     assert_eq!(
         fixture
             .send(
@@ -109,6 +115,12 @@ async fn exercise_delete_subtitle_route(database_name: &str) {
             .await
             .status(),
         StatusCode::NO_CONTENT
+    );
+    assert!(
+        !tokio::fs::try_exists(fixture.primary_subtitle_path(3))
+            .await
+            .expect("deleted Japanese subtitle existence check"),
+        "the lowercase/API-key route must remove its external file",
     );
 
     let streams = MediaStreamService::new(fixture.database.clone())
@@ -909,6 +921,20 @@ impl Fixture {
 
         let suffix = Uuid::new_v4().simple().to_string();
         let storage_root = std::env::temp_dir().join(format!("jellyfin-subtitle-routes-{suffix}"));
+        tokio::fs::create_dir_all(&storage_root)
+            .await
+            .expect("subtitle fixture directory");
+        let primary_english_subtitle_path = storage_root.join("primary.eng.srt");
+        let primary_japanese_subtitle_path = storage_root.join("primary.jpn.ass");
+        tokio::fs::write(&primary_english_subtitle_path, b"English subtitle bytes\n")
+            .await
+            .expect("English subtitle fixture file");
+        tokio::fs::write(
+            &primary_japanese_subtitle_path,
+            b"Japanese subtitle bytes\n",
+        )
+        .await
+        .expect("Japanese subtitle fixture file");
         let users = UserService::new(database.clone());
         let admin = users
             .create_initial_administrator(&format!("subtitle-admin-{suffix}"))
@@ -1035,7 +1061,7 @@ impl Fixture {
                         codec: Some("srt".to_owned()),
                         language: Some("eng".to_owned()),
                         is_external: true,
-                        path: Some(format!("/media/Subtitle Movie {suffix}.eng.srt")),
+                        path: Some(primary_english_subtitle_path.to_string_lossy().into_owned()),
                         ..MediaStream::default()
                     },
                     MediaStream {
@@ -1045,7 +1071,11 @@ impl Fixture {
                         language: Some("jpn".to_owned()),
                         is_default: true,
                         is_external: true,
-                        path: Some(format!("/media/Subtitle Movie {suffix}.jpn.ass")),
+                        path: Some(
+                            primary_japanese_subtitle_path
+                                .to_string_lossy()
+                                .into_owned(),
+                        ),
                         ..MediaStream::default()
                     },
                 ],
@@ -1053,9 +1083,6 @@ impl Fixture {
             .await
             .expect("media stream creation");
         let alternate_subtitle_path = storage_root.join("alternate.srt");
-        tokio::fs::create_dir_all(&storage_root)
-            .await
-            .expect("subtitle fixture directory");
         tokio::fs::write(&alternate_subtitle_path, b"alternate subtitle bytes\n")
             .await
             .expect("alternate subtitle fixture file");
@@ -1124,6 +1151,14 @@ impl Fixture {
 
     fn lowercase_subtitle_route(item_id: Uuid, index: i32) -> String {
         format!("/videos/{item_id}/subtitles/{index}")
+    }
+
+    fn primary_subtitle_path(&self, index: i32) -> PathBuf {
+        match index {
+            2 => self.storage_root.join("primary.eng.srt"),
+            3 => self.storage_root.join("primary.jpn.ass"),
+            _ => panic!("no primary subtitle fixture for index {index}"),
+        }
     }
 
     fn search_route(item_id: Uuid, language: &str) -> String {

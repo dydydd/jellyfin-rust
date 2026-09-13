@@ -132,6 +132,7 @@ mod years;
 
 pub use backup::restore_backup_at_startup;
 pub use branding::BrandingOptions;
+pub use subtitles::emby_legacy_subtitle_delete_routes;
 pub use system::emby_log_file_lines;
 
 /// Host lifecycle commands exposed by the system API.

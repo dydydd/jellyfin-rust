@@ -120,6 +120,8 @@ const DEDICATED_ROUTE_TEMPLATES: &[&str] = &[
     "/Users/Public",
     "/Users/Query",
     "/Videos/{item_id}/index.bif",
+    "/Videos/{item_id}/Subtitles/{index}",
+    "/Videos/{item_id}/Subtitles/{index}/Delete",
     "/VideoCodecs",
     "/Videos/{item_id}/live_subtitles.m3u8",
     "/Videos/{item_id}/subtitles.m3u8",
@@ -189,6 +191,7 @@ fn normalized_dedicated_path(path: &str) -> Option<String> {
 fn dedicated_routes() -> Router<Arc<AppState>> {
     Router::new()
         .merge(jellyfin_api::emby_legacy_audio_hls_routes())
+        .merge(jellyfin_api::emby_legacy_subtitle_delete_routes())
         .merge(jellyfin_api::emby_legacy_subtitle_hls_routes())
         .merge(auth_user::routes())
         .merge(backup::routes())

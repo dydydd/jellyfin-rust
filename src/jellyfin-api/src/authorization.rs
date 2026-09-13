@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use axum::{
     body::Body,
-    extract::{ConnectInfo, State},
+    extract::{ConnectInfo, OriginalUri, State},
     http::{HeaderMap, Method, Request, Uri},
     middleware::Next,
     response::Response,
@@ -155,7 +155,15 @@ pub(crate) async fn require_route_auth(
     next: Next,
 ) -> Result<Response, ApiError> {
     let remote_ip = remote_ip(request.extensions().get::<ConnectInfo<SocketAddr>>());
-    let policy = route_policy(request.method(), request.uri().path());
+    // `Router::nest` strips `/emby` from the request URI before this shared
+    // middleware runs. Axum retains the client-facing URI in `OriginalUri`;
+    // use it for protocol-aware route policy selection while continuing to
+    // pass the rewritten URI to authentication/query-token parsing below.
+    let policy_path = request
+        .extensions()
+        .get::<OriginalUri>()
+        .map_or_else(|| request.uri().path(), |uri| uri.0.path());
+    let policy = route_policy(request.method(), policy_path);
     match policy {
         RoutePolicy::Public => Ok(next.run(request).await),
         RoutePolicy::Optional => {
@@ -282,6 +290,7 @@ fn route_policy(method: &Method, path: &str) -> RoutePolicy {
     // Protocol routers (currently `/emby`) run this shared middleware before
     // Axum's nested service strips their prefix. Apply the same policy to the
     // protocol path so public/setup routes do not become authenticated-only.
+    let is_emby_protocol = path == "/emby" || path.starts_with("/emby/");
     let path = path
         .strip_prefix("/emby/")
         .or_else(|| (path == "/emby").then_some(""))
@@ -290,6 +299,18 @@ fn route_policy(method: &Method, path: &str) -> RoutePolicy {
         .split('/')
         .filter(|segment| !segment.is_empty())
         .collect::<Vec<_>>();
+    // Emby's generated Android/iOS contract exposes this legacy DELETE to any
+    // authenticated user. Keep Jellyfin's unprefixed endpoint on the current
+    // RequiresElevation policy.
+    if is_emby_protocol
+        && method == Method::DELETE
+        && matches!(
+            segments.as_slice(),
+            ["Videos", _, "Subtitles", _] | ["videos", _, "subtitles", _]
+        )
+    {
+        return RoutePolicy::Default;
+    }
     // Unknown paths still go through auth so the existence of a route is not
     // leaked through the response status code.
     if !is_known_api_path(&segments) {
@@ -933,6 +954,22 @@ mod tests {
         assert_eq!(
             route_policy(&Method::DELETE, "/Videos/item-id/Subtitles/0"),
             RoutePolicy::Elevated,
+        );
+        assert_eq!(
+            route_policy(&Method::POST, "/emby/Videos/item-id/Subtitles/-1/Delete"),
+            RoutePolicy::Default,
+        );
+        assert_eq!(
+            route_policy(&Method::POST, "/emby/videos/item-id/subtitles/-1/delete"),
+            RoutePolicy::Default,
+        );
+        assert_eq!(
+            route_policy(&Method::DELETE, "/emby/Videos/item-id/Subtitles/-1"),
+            RoutePolicy::Default,
+        );
+        assert_eq!(
+            route_policy(&Method::DELETE, "/emby/videos/item-id/subtitles/-1"),
+            RoutePolicy::Default,
         );
     }
 

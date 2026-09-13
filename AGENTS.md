@@ -33,6 +33,11 @@
   index, and expose only formats the shared subtitle pipeline can actually produce. Prefer a marked
   default Subtitle stream, then the smallest persisted stream index, and keep Jellyfin's modern
   item/media-source/index subtitle routes unchanged.
+- Keep Emby's generated subtitle-delete aliases protocol-local. Both its legacy POST `/Delete` and
+  canonical DELETE accept ordinary authenticated users, require a nonblank case-insensitive
+  `MediaSourceId`, and return HTTP 200; Jellyfin's unprefixed DELETE remains elevated and returns
+  204. Remove only explicitly external subtitle files before deleting their stream rows, and never
+  unlink an embedded stream's video-container path.
 - Do not serve Jellyfin trickplay sprite tiles as Emby BIF files. Until a real BIF timestamp index
   and individual-frame representation exists, validate the generated client's required signed
   `Width` and return an empty 404 without advertising byte ranges. Capability-discovery endpoints

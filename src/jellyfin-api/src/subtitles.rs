@@ -7,11 +7,12 @@ use std::{
 };
 
 use axum::{
-    Json,
+    Json, Router,
     body::Body,
     extract::{OriginalUri, Path as AxumPath, Query, State, rejection::JsonRejection},
     http::{HeaderMap, HeaderValue, Request, StatusCode, header},
     response::{IntoResponse, Response},
+    routing::{delete, post},
 };
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
 use chrono::{DateTime, Utc};
@@ -96,6 +97,35 @@ pub(crate) struct EmbyLegacySubtitlePlaylistQuery {
     manifest_subtitles: Option<String>,
 }
 
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub(crate) struct EmbyLegacySubtitleDeleteQuery {
+    #[serde(alias = "MediaSourceId", alias = "mediasourceid")]
+    media_source_id: Option<String>,
+}
+
+/// Builds Emby's generated-client subtitle-delete aliases without exposing
+/// them from Jellyfin's unprefixed route tree.
+pub fn emby_legacy_subtitle_delete_routes() -> Router<Arc<AppState>> {
+    Router::new()
+        .route(
+            "/Videos/{item_id}/Subtitles/{index}",
+            delete(emby_legacy_delete_subtitle),
+        )
+        .route(
+            "/videos/{item_id}/subtitles/{index}",
+            delete(emby_legacy_delete_subtitle),
+        )
+        .route(
+            "/Videos/{item_id}/Subtitles/{index}/Delete",
+            post(emby_legacy_delete_subtitle),
+        )
+        .route(
+            "/videos/{item_id}/subtitles/{index}/delete",
+            post(emby_legacy_delete_subtitle),
+        )
+}
+
 pub(crate) async fn delete_subtitle(
     State(state): State<Arc<AppState>>,
     AxumPath((item_id, index)): AxumPath<(Uuid, i32)>,
@@ -104,11 +134,77 @@ pub(crate) async fn delete_subtitle(
     // other subtitle mutations which use `SubtitleManagement`. Authorization
     // is enforced by the route middleware so elevated API keys work as well as
     // administrator sessions.
+    ensure_video_item_by_id(&state, item_id).await?;
+    delete_external_subtitle(&state, item_id, index).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn emby_legacy_delete_subtitle(
+    State(state): State<Arc<AppState>>,
+    OriginalUri(uri): OriginalUri,
+    headers: HeaderMap,
+    AxumPath((item_id, index)): AxumPath<(Uuid, i32)>,
+    Query(query): Query<EmbyLegacySubtitleDeleteQuery>,
+) -> Result<StatusCode, ApiError> {
+    // Resolve the target before validating the legacy-only query value so a
+    // missing or non-Video target retains the official typed-item 404.
+    let identity = authorization::require_default(&state, &headers, &uri).await?;
+    match &identity {
+        authentication::AuthenticatedIdentity::Device(session) => {
+            ensure_video_item(&state, &session.user, item_id).await?;
+        }
+        authentication::AuthenticatedIdentity::ApiKey(_) => {
+            ensure_video_item_by_id(&state, item_id).await?;
+        }
+    }
+    query
+        .media_source_id
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+        .ok_or(ApiError::InvalidRequest)?;
+    delete_external_subtitle(&state, item_id, index).await?;
+    // The generated Emby operation declares a void HTTP 200 response. Keep
+    // Jellyfin's current DELETE route on its separate 204 contract.
+    Ok(StatusCode::OK)
+}
+
+async fn delete_external_subtitle(
+    state: &AppState,
+    item_id: Uuid,
+    index: i32,
+) -> Result<(), ApiError> {
+    let stream = state
+        .media_streams
+        .get_media_streams(MediaStreamFilter {
+            item_id,
+            index: Some(index),
+            stream_type: Some(MediaStreamType::Subtitle),
+        })
+        .await?
+        .into_iter()
+        .next();
+
+    // Embedded subtitle rows can point at the owning video container. Only an
+    // explicitly external subtitle path is safe to unlink from the filesystem.
+    if let Some(path) = stream.as_ref().and_then(|stream| {
+        stream
+            .is_external
+            .then_some(stream.path.as_deref())
+            .flatten()
+            .filter(|path| !path.trim().is_empty())
+    }) {
+        match tokio::fs::remove_file(path).await {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(_) => return Err(ApiError::Internal),
+        }
+    }
+
     state
         .media_streams
         .delete_media_stream(item_id, index, MediaStreamType::Subtitle)
         .await?;
-    Ok(StatusCode::NO_CONTENT)
+    Ok(())
 }
 
 pub(crate) async fn get_subtitle(

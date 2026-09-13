@@ -104,4 +104,3 @@ POST /Users/{Id}/TrackSelections/{TrackType}/Delete
 GET /Users/{UserId}/Sections/{SectionId}/Items
 POST /Users/{UserId}/Items/{Id}/HideFromResume
 POST /Users/{Id}/Connect/Link/Delete
-POST /Videos/{Id}/Subtitles/{Index}/Delete
