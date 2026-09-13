@@ -233,22 +233,25 @@ pub(crate) struct ArtistByNameQuery {
 pub(crate) async fn list(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
+    OriginalUri(uri): OriginalUri,
     Query(query): Query<ArtistsQuery>,
 ) -> Result<Json<user_library::BaseItemQueryResult>, ApiError> {
-    list_kind(state, headers, query, ArtistValueKind::Artist).await
+    list_kind(state, headers, &uri, query, ArtistValueKind::Artist).await
 }
 
 pub(crate) async fn list_album_artists(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
+    OriginalUri(uri): OriginalUri,
     Query(query): Query<ArtistsQuery>,
 ) -> Result<Json<user_library::BaseItemQueryResult>, ApiError> {
-    list_kind(state, headers, query, ArtistValueKind::AlbumArtist).await
+    list_kind(state, headers, &uri, query, ArtistValueKind::AlbumArtist).await
 }
 
 async fn list_kind(
     state: Arc<AppState>,
     headers: HeaderMap,
+    uri: &axum::http::Uri,
     query: ArtistsQuery,
     kind: ArtistValueKind,
 ) -> Result<Json<user_library::BaseItemQueryResult>, ApiError> {
@@ -383,16 +386,19 @@ async fn list_kind(
     } else {
         user_library::checked_int32(items.len())?
     };
-    Ok(Json(user_library::BaseItemQueryResult {
+    let mut result = user_library::BaseItemQueryResult {
         items,
         total_record_count,
         start_index: requested_start_index,
-    }))
+    };
+    user_library::omit_incompatible_emby_relations(uri, &mut result.items);
+    Ok(Json(result))
 }
 
 pub(crate) async fn get(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
+    OriginalUri(uri): OriginalUri,
     Path(name): Path<String>,
     Query(query): Query<ArtistByNameQuery>,
 ) -> Result<Json<user_library::BaseItemDto>, ApiError> {
@@ -438,6 +444,7 @@ pub(crate) async fn get(
         dto.user_data = None;
     }
     apply_artist_counts(&mut dto, detail.item_count, detail.counts)?;
+    user_library::omit_incompatible_emby_relations(&uri, std::slice::from_mut(&mut dto));
     Ok(Json(dto))
 }
 

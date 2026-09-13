@@ -139,6 +139,7 @@ pub(crate) struct PersonsQueryResult {
 pub(crate) async fn list(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
+    OriginalUri(uri): OriginalUri,
     Query(query): Query<PersonsQueryParams>,
 ) -> Result<Json<PersonsQueryResult>, ApiError> {
     let authenticated = authentication::authenticated_session(&state, &headers).await?;
@@ -201,16 +202,19 @@ pub(crate) async fn list(
         &dto_options,
     )
     .await?;
-    Ok(Json(PersonsQueryResult {
+    let mut result = PersonsQueryResult {
         items: projected.items,
         total_record_count: projected.total_record_count,
         start_index: response_start_index,
-    }))
+    };
+    user_library::omit_incompatible_emby_relations(&uri, &mut result.items);
+    Ok(Json(result))
 }
 
 pub(crate) async fn get(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
+    OriginalUri(uri): OriginalUri,
     Path(name): Path<String>,
     Query(query): Query<PersonByNameQueryParams>,
 ) -> Result<Json<user_library::BaseItemDto>, ApiError> {
@@ -235,6 +239,7 @@ pub(crate) async fn get(
     .await?;
     let mut dto = result.items.pop().ok_or(ApiError::Internal)?;
     apply_person_counts(&mut dto, person.counts)?;
+    user_library::omit_incompatible_emby_relations(&uri, std::slice::from_mut(&mut dto));
     Ok(Json(dto))
 }
 

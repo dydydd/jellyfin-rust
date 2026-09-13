@@ -144,6 +144,7 @@ pub(crate) struct GenresResult {
 pub(crate) async fn list(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
+    OriginalUri(uri): OriginalUri,
     Query(query): Query<GenresQuery>,
 ) -> Result<Json<GenresResult>, ApiError> {
     let authenticated = authentication::authenticated_session(&state, &headers).await?;
@@ -233,16 +234,19 @@ pub(crate) async fn list(
     } else {
         0
     };
-    Ok(Json(GenresResult {
+    let mut result = GenresResult {
         items: projected.items,
         total_record_count,
         start_index: requested_start_index,
-    }))
+    };
+    user_library::omit_incompatible_emby_relations(&uri, &mut result.items);
+    Ok(Json(result))
 }
 
 pub(crate) async fn get(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
+    OriginalUri(uri): OriginalUri,
     Path(genre_name): Path<String>,
     Query(query): Query<GenreByNameQuery>,
 ) -> Result<Json<user_library::BaseItemDto>, ApiError> {
@@ -271,7 +275,9 @@ pub(crate) async fn get(
         .get(&authenticated.user, target_user_id, &genre_name, item_query)
         .await?
     else {
-        return Ok(Json(empty_genre_dto(state.server_id())));
+        let mut dto = empty_genre_dto(state.server_id());
+        user_library::omit_incompatible_emby_relations(&uri, std::slice::from_mut(&mut dto));
+        return Ok(Json(dto));
     };
     let mut dto = if target_user_exists {
         user_library::project_item_to_dto(
@@ -287,6 +293,7 @@ pub(crate) async fn get(
         project_genre_without_user(&state, genre.item).await?
     };
     apply_genre_counts(&mut dto, genre.item_count, genre.counts)?;
+    user_library::omit_incompatible_emby_relations(&uri, std::slice::from_mut(&mut dto));
     Ok(Json(dto))
 }
 

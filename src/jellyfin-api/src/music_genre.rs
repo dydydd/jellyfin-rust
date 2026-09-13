@@ -124,6 +124,7 @@ pub(crate) struct MusicGenresResult {
 pub(crate) async fn list(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
+    OriginalUri(uri): OriginalUri,
     Query(query): Query<MusicGenreQuery>,
 ) -> Result<Json<MusicGenresResult>, ApiError> {
     let authenticated = authentication::authenticated_session(&state, &headers).await?;
@@ -179,16 +180,19 @@ pub(crate) async fn list(
     } else {
         0
     };
-    Ok(Json(MusicGenresResult {
+    let mut result = MusicGenresResult {
         items,
         total_record_count,
         start_index: requested_start_index,
-    }))
+    };
+    user_library::omit_incompatible_emby_relations(&uri, &mut result.items);
+    Ok(Json(result))
 }
 
 pub(crate) async fn get(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
+    OriginalUri(uri): OriginalUri,
     Path(genre_name): Path<String>,
     Query(query): Query<MusicGenreByNameQuery>,
 ) -> Result<Json<user_library::BaseItemDto>, ApiError> {
@@ -230,6 +234,7 @@ pub(crate) async fn get(
         project_music_genre_without_user(&state, genre.item).await?
     };
     apply_music_genre_counts(&mut dto, genre.item_count, genre.counts)?;
+    user_library::omit_incompatible_emby_relations(&uri, std::slice::from_mut(&mut dto));
     Ok(Json(dto))
 }
 

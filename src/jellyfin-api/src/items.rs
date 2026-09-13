@@ -1000,52 +1000,70 @@ pub(crate) async fn query_items(
 pub(crate) async fn resume(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
+    OriginalUri(uri): OriginalUri,
     Query(query): Query<ItemsQuery>,
 ) -> Result<Json<user_library::BaseItemQueryResult>, ApiError> {
-    resume_for(state, headers, query.user_id, query).await
+    let mut result = resume_for(state, headers, query.user_id, query).await?;
+    user_library::omit_incompatible_emby_relations(&uri, &mut result.0.items);
+    Ok(result)
 }
 
 pub(crate) async fn resume_legacy(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
+    OriginalUri(uri): OriginalUri,
     Path(user_id): Path<Uuid>,
     Query(query): Query<ItemsQuery>,
 ) -> Result<Json<user_library::BaseItemQueryResult>, ApiError> {
-    resume_for(state, headers, Some(user_id), query).await
+    let mut result = resume_for(state, headers, Some(user_id), query).await?;
+    user_library::omit_incompatible_emby_relations(&uri, &mut result.0.items);
+    Ok(result)
 }
 
 pub(crate) async fn latest(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
+    OriginalUri(uri): OriginalUri,
     Query(query): Query<LatestItemsQuery>,
 ) -> Result<Json<Vec<user_library::BaseItemDto>>, ApiError> {
-    latest_for(state, headers, query.user_id, query).await
+    let mut result = latest_for(state, headers, query.user_id, query).await?;
+    user_library::omit_incompatible_emby_relations(&uri, &mut result.0);
+    Ok(result)
 }
 
 pub(crate) async fn latest_legacy(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
+    OriginalUri(uri): OriginalUri,
     Path(user_id): Path<Uuid>,
     Query(query): Query<LatestItemsQuery>,
 ) -> Result<Json<Vec<user_library::BaseItemDto>>, ApiError> {
-    latest_for(state, headers, Some(user_id), query).await
+    let mut result = latest_for(state, headers, Some(user_id), query).await?;
+    user_library::omit_incompatible_emby_relations(&uri, &mut result.0);
+    Ok(result)
 }
 
 pub(crate) async fn suggestions(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
+    OriginalUri(uri): OriginalUri,
     Query(query): Query<SuggestionsQuery>,
 ) -> Result<Json<SuggestionsResult>, ApiError> {
-    suggestions_for(state, headers, query.user_id, query).await
+    let mut result = suggestions_for(state, headers, query.user_id, query).await?;
+    user_library::omit_incompatible_emby_relations(&uri, &mut result.0.items);
+    Ok(result)
 }
 
 pub(crate) async fn suggestions_legacy(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
+    OriginalUri(uri): OriginalUri,
     Path(user_id): Path<Uuid>,
     Query(query): Query<SuggestionsQuery>,
 ) -> Result<Json<SuggestionsResult>, ApiError> {
-    suggestions_for(state, headers, Some(user_id), query).await
+    let mut result = suggestions_for(state, headers, Some(user_id), query).await?;
+    user_library::omit_incompatible_emby_relations(&uri, &mut result.0.items);
+    Ok(result)
 }
 
 async fn get_for(

@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use axum::{
     Json,
-    extract::{Path, Query, State},
+    extract::{OriginalUri, Path, Query, State},
     http::HeaderMap,
 };
 use jellyfin_controller::{UserError, YearItem};
@@ -125,6 +125,7 @@ pub(crate) struct YearsResult {
 pub(crate) async fn list(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
+    OriginalUri(uri): OriginalUri,
     Query(query): Query<YearsQuery>,
 ) -> Result<Json<YearsResult>, ApiError> {
     let authenticated = authentication::authenticated_session(&state, &headers).await?;
@@ -221,18 +222,21 @@ pub(crate) async fn list(
         &dto_options,
     )
     .await?;
-    Ok(Json(YearsResult {
+    let mut result = YearsResult {
         items: projected.items,
         total_record_count: user_library::checked_int32(
             recursive_item_total.unwrap_or(page.total_record_count),
         )?,
         start_index: requested_start_index,
-    }))
+    };
+    user_library::omit_incompatible_emby_relations(&uri, &mut result.items);
+    Ok(Json(result))
 }
 
 pub(crate) async fn get(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
+    OriginalUri(uri): OriginalUri,
     Path(year): Path<i32>,
     Query(query): Query<YearByNameQuery>,
 ) -> Result<Json<user_library::BaseItemDto>, ApiError> {
@@ -277,6 +281,7 @@ pub(crate) async fn get(
         project_year_without_user(&state, item).await?
     };
     apply_year_counts(&mut dto, state.base_items.item_counts(&count_query).await?)?;
+    user_library::omit_incompatible_emby_relations(&uri, std::slice::from_mut(&mut dto));
     Ok(Json(dto))
 }
 

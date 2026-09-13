@@ -366,6 +366,7 @@ pub(crate) async fn play_queue(
             );
         }
     }
+    user_library::omit_incompatible_emby_relations(&uri, &mut projected);
     Ok(Json(
         QueryResult::from_items(projected).map_err(|_| ApiError::Internal)?,
     ))

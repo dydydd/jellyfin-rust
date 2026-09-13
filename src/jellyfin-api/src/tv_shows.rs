@@ -2,7 +2,7 @@ use std::{cmp::Ordering, sync::Arc};
 
 use axum::{
     Json,
-    extract::{Path, State},
+    extract::{OriginalUri, Path, State},
     http::HeaderMap,
 };
 use axum_extra::extract::Query;
@@ -267,6 +267,7 @@ pub(crate) struct UpcomingQuery {
 pub(crate) async fn upcoming(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
+    OriginalUri(uri): OriginalUri,
     Query(mut query): Query<UpcomingQuery>,
 ) -> Result<Json<user_library::BaseItemQueryResult>, ApiError> {
     let authenticated = authentication::authenticated_session(&state, &headers).await?;
@@ -317,12 +318,14 @@ pub(crate) async fn upcoming(
     )
     .await?;
     result.start_index = requested_start_index;
+    user_library::omit_incompatible_emby_relations(&uri, &mut result.items);
     Ok(Json(result))
 }
 
 pub(crate) async fn next_up(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
+    OriginalUri(uri): OriginalUri,
     Query(mut query): Query<NextUpQuery>,
 ) -> Result<Json<NextUpResult>, ApiError> {
     let authenticated = authentication::authenticated_session(&state, &headers).await?;
@@ -393,11 +396,13 @@ pub(crate) async fn next_up(
         &dto_options,
     )
     .await?;
-    Ok(Json(NextUpResult {
+    let mut result = NextUpResult {
         items: projected.items,
         total_record_count: projected.total_record_count,
         start_index: query.start_index.unwrap_or_default(),
-    }))
+    };
+    user_library::omit_incompatible_emby_relations(&uri, &mut result.items);
+    Ok(Json(result))
 }
 
 fn is_series_item_type(item_type: &str) -> bool {
@@ -420,6 +425,7 @@ fn parse_next_up_date_cutoff(value: &str) -> Result<DateTime<Utc>, ApiError> {
 pub(crate) async fn episodes(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
+    OriginalUri(uri): OriginalUri,
     Path(series_id): Path<Uuid>,
     Query(mut query): Query<EpisodesQuery>,
 ) -> Result<Json<EpisodesResult>, ApiError> {
@@ -575,11 +581,13 @@ pub(crate) async fn episodes(
         &dto_options,
     )
     .await?;
-    Ok(Json(EpisodesResult {
+    let mut result = EpisodesResult {
         items: projected.items,
         total_record_count: user_library::checked_int32(total_record_count)?,
         start_index: query.start_index.unwrap_or_default(),
-    }))
+    };
+    user_library::omit_incompatible_emby_relations(&uri, &mut result.items);
+    Ok(Json(result))
 }
 
 fn episode_query_order(random: bool) -> BaseItemOrder {
@@ -718,6 +726,7 @@ fn episode_metadata_i32(item: &base_item::Model, key: &str) -> Option<i32> {
 pub(crate) async fn seasons(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
+    OriginalUri(uri): OriginalUri,
     Path(series_id): Path<Uuid>,
     Query(mut query): Query<SeasonsQuery>,
 ) -> Result<Json<user_library::BaseItemQueryResult>, ApiError> {
@@ -778,7 +787,7 @@ pub(crate) async fn seasons(
     }
 
     let total_record_count = seasons.len();
-    let projected = crate::items::page_to_dto_with_options(
+    let mut projected = crate::items::page_to_dto_with_options(
         state.as_ref(),
         BaseItemPage {
             items: seasons,
@@ -790,6 +799,7 @@ pub(crate) async fn seasons(
         &dto_options,
     )
     .await?;
+    user_library::omit_incompatible_emby_relations(&uri, &mut projected.items);
     Ok(Json(projected))
 }
 

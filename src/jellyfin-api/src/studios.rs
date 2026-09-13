@@ -134,6 +134,7 @@ pub(crate) struct StudiosResult {
 pub(crate) async fn list(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
+    OriginalUri(uri): OriginalUri,
     Query(query): Query<StudiosQuery>,
 ) -> Result<Json<StudiosResult>, ApiError> {
     let authenticated = authentication::authenticated_session(&state, &headers).await?;
@@ -228,16 +229,19 @@ pub(crate) async fn list(
     } else {
         0
     };
-    Ok(Json(StudiosResult {
+    let mut result = StudiosResult {
         items: projected.items,
         total_record_count,
         start_index: requested_start_index,
-    }))
+    };
+    user_library::omit_incompatible_emby_relations(&uri, &mut result.items);
+    Ok(Json(result))
 }
 
 pub(crate) async fn get(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
+    OriginalUri(uri): OriginalUri,
     Path(name): Path<String>,
     Query(query): Query<StudioByNameQuery>,
 ) -> Result<Json<user_library::BaseItemDto>, ApiError> {
@@ -279,6 +283,7 @@ pub(crate) async fn get(
         project_studio_without_user(&state, studio.item).await?
     };
     apply_studio_counts(&mut dto, studio.item_count, studio.counts)?;
+    user_library::omit_incompatible_emby_relations(&uri, std::slice::from_mut(&mut dto));
     Ok(Json(dto))
 }
 

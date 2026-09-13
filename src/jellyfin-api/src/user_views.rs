@@ -133,7 +133,9 @@ pub(crate) async fn get(
     let identity = authentication::authenticated_identity(&state, &headers, Some(&uri)).await?;
     let Query(query) = query.map_err(|_| ApiError::InvalidRequest)?;
     let target_user_id = identity.target_user_id(query.user_id)?;
-    user_views_for(state, target_user_id, query).await
+    let mut result = user_views_for(state, target_user_id, query).await?;
+    crate::user_library::omit_incompatible_emby_relations(&uri, &mut result.0.items);
+    Ok(result)
 }
 
 pub(crate) async fn get_legacy(
@@ -146,7 +148,9 @@ pub(crate) async fn get_legacy(
     let identity = authentication::authenticated_identity(&state, &headers, Some(&uri)).await?;
     let Query(query) = query.map_err(|_| ApiError::InvalidRequest)?;
     let target_user_id = identity.target_user_id(Some(user_id))?;
-    user_views_for(state, target_user_id, query).await
+    let mut result = user_views_for(state, target_user_id, query).await?;
+    crate::user_library::omit_incompatible_emby_relations(&uri, &mut result.0.items);
+    Ok(result)
 }
 
 pub(crate) async fn grouping_options(

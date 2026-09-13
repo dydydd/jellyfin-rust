@@ -794,7 +794,7 @@ pub(crate) async fn get_playback_info(
         allow_audio_stream_copy: query.allow_audio_stream_copy.unwrap_or(true),
         ..PlaybackOptions::default()
     };
-    playback_info(
+    let mut result = playback_info(
         &state,
         &identity.user,
         identity.target_user_id,
@@ -804,8 +804,9 @@ pub(crate) async fn get_playback_info(
         &identity.access_token,
         remote_ip,
     )
-    .await
-    .map(Json)
+    .await?;
+    user_library::omit_incompatible_emby_media_source_streams(&uri, &mut result.media_sources);
+    Ok(Json(result))
 }
 
 pub(crate) async fn post_playback_info(
@@ -872,7 +873,7 @@ pub(crate) async fn post_playback_info(
             .always_burn_in_subtitle_when_transcoding
             .unwrap_or_default(),
     };
-    playback_info(
+    let mut result = playback_info(
         &state,
         &identity.user,
         identity.target_user_id,
@@ -882,8 +883,9 @@ pub(crate) async fn post_playback_info(
         &identity.access_token,
         remote_ip,
     )
-    .await
-    .map(Json)
+    .await?;
+    user_library::omit_incompatible_emby_media_source_streams(&uri, &mut result.media_sources);
+    Ok(Json(result))
 }
 
 pub(crate) async fn open_live_stream(
@@ -1007,6 +1009,10 @@ pub(crate) async fn open_live_stream(
         );
         media_source = media_sources.pop().ok_or(ApiError::NotFound)?;
     }
+    user_library::omit_incompatible_emby_media_source_streams(
+        &uri,
+        std::slice::from_mut(&mut media_source),
+    );
     Ok(Json(LiveStreamResponse { media_source }))
 }
 

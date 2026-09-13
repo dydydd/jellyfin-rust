@@ -260,42 +260,45 @@ pub(crate) async fn download(
 pub(crate) async fn theme_songs(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
+    OriginalUri(uri): OriginalUri,
     Path(item_id): Path<Uuid>,
     Query(query): Query<ThemeMediaQuery>,
 ) -> Result<Json<ThemeMediaResult>, ApiError> {
-    Ok(Json(
-        theme_result(
-            &state,
-            &headers,
-            item_id,
-            &query,
-            RelatedItemKind::ThemeSong,
-        )
-        .await?,
-    ))
+    let mut result = theme_result(
+        &state,
+        &headers,
+        item_id,
+        &query,
+        RelatedItemKind::ThemeSong,
+    )
+    .await?;
+    user_library::omit_incompatible_emby_relations(&uri, &mut result.items);
+    Ok(Json(result))
 }
 
 pub(crate) async fn theme_videos(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
+    OriginalUri(uri): OriginalUri,
     Path(item_id): Path<Uuid>,
     Query(query): Query<ThemeMediaQuery>,
 ) -> Result<Json<ThemeMediaResult>, ApiError> {
-    Ok(Json(
-        theme_result(
-            &state,
-            &headers,
-            item_id,
-            &query,
-            RelatedItemKind::ThemeVideo,
-        )
-        .await?,
-    ))
+    let mut result = theme_result(
+        &state,
+        &headers,
+        item_id,
+        &query,
+        RelatedItemKind::ThemeVideo,
+    )
+    .await?;
+    user_library::omit_incompatible_emby_relations(&uri, &mut result.items);
+    Ok(Json(result))
 }
 
 pub(crate) async fn theme_media(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
+    OriginalUri(uri): OriginalUri,
     Path(item_id): Path<Uuid>,
     Query(query): Query<ThemeMediaQuery>,
 ) -> Result<Json<AllThemeMediaResult>, ApiError> {
@@ -315,7 +318,7 @@ pub(crate) async fn theme_media(
         RelatedItemKind::ThemeVideo,
     )
     .await?;
-    Ok(Json(AllThemeMediaResult {
+    let mut result = AllThemeMediaResult {
         theme_songs,
         theme_videos,
         soundtrack_songs: ThemeMediaResult {
@@ -324,12 +327,16 @@ pub(crate) async fn theme_media(
             start_index: 0,
             owner_id: Uuid::nil(),
         },
-    }))
+    };
+    user_library::omit_incompatible_emby_relations(&uri, &mut result.theme_songs.items);
+    user_library::omit_incompatible_emby_relations(&uri, &mut result.theme_videos.items);
+    Ok(Json(result))
 }
 
 pub(crate) async fn ancestors(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
+    OriginalUri(uri): OriginalUri,
     Path(item_id): Path<Uuid>,
     Query(query): Query<LibraryQuery>,
 ) -> Result<Json<Vec<user_library::BaseItemDto>>, ApiError> {
@@ -343,7 +350,7 @@ pub(crate) async fn ancestors(
         .ancestors(&authenticated.user, target_user_id, item_id)
         .await?;
     let total_record_count = u64::try_from(items.len()).unwrap_or(u64::MAX);
-    let projected = crate::items::page_to_dto_all_fields(
+    let mut projected = crate::items::page_to_dto_all_fields(
         state.as_ref(),
         BaseItemPage {
             items,
@@ -353,12 +360,14 @@ pub(crate) async fn ancestors(
         target_user_id,
     )
     .await?;
+    user_library::omit_incompatible_emby_relations(&uri, &mut projected.items);
     Ok(Json(projected.items))
 }
 
 pub(crate) async fn collections(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
+    OriginalUri(uri): OriginalUri,
     Path(item_id): Path<Uuid>,
     RepeatedQuery(query): RepeatedQuery<CollectionsQuery>,
 ) -> Result<Json<user_library::BaseItemQueryResult>, ApiError> {
@@ -387,12 +396,14 @@ pub(crate) async fn collections(
     let mut result =
         crate::items::page_to_dto(state.as_ref(), page, query.fields, target_user_id).await?;
     result.start_index = requested_start_index;
+    user_library::omit_incompatible_emby_relations(&uri, &mut result.items);
     Ok(Json(result))
 }
 
 pub(crate) async fn similar(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
+    OriginalUri(uri): OriginalUri,
     Path(item_id): Path<Uuid>,
     RepeatedQuery(query): RepeatedQuery<SimilarQuery>,
 ) -> Result<Json<user_library::BaseItemQueryResult>, ApiError> {
@@ -418,54 +429,74 @@ pub(crate) async fn similar(
     {
         fields.push("ProviderIds".to_owned());
     }
-    Ok(Json(
-        crate::items::page_to_dto(state.as_ref(), page, fields, target_user_id).await?,
-    ))
+    let mut result =
+        crate::items::page_to_dto(state.as_ref(), page, fields, target_user_id).await?;
+    user_library::omit_incompatible_emby_relations(&uri, &mut result.items);
+    Ok(Json(result))
 }
 
 pub(crate) async fn instant_mix(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
+    OriginalUri(uri): OriginalUri,
     Path(item_id): Path<Uuid>,
     RepeatedQuery(query): RepeatedQuery<InstantMixQuery>,
 ) -> Result<Json<user_library::BaseItemQueryResult>, ApiError> {
-    instant_mix_for(state, headers, query, InstantMixSeed::Item(item_id)).await
+    instant_mix_for(state, headers, &uri, query, InstantMixSeed::Item(item_id)).await
 }
 
 pub(crate) async fn instant_mix_playlist(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
+    OriginalUri(uri): OriginalUri,
     Path(item_id): Path<Uuid>,
     RepeatedQuery(query): RepeatedQuery<InstantMixQuery>,
 ) -> Result<Json<user_library::BaseItemQueryResult>, ApiError> {
-    instant_mix_for(state, headers, query, InstantMixSeed::Playlist(item_id)).await
+    instant_mix_for(
+        state,
+        headers,
+        &uri,
+        query,
+        InstantMixSeed::Playlist(item_id),
+    )
+    .await
 }
 
 pub(crate) async fn instant_mix_genre_by_id(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
+    OriginalUri(uri): OriginalUri,
     RepeatedQuery(query): RepeatedQuery<InstantMixQuery>,
 ) -> Result<Json<user_library::BaseItemQueryResult>, ApiError> {
     let genre_id = query.id.ok_or(ApiError::InvalidRequest)?;
-    instant_mix_for(state, headers, query, InstantMixSeed::GenreId(genre_id)).await
+    instant_mix_for(
+        state,
+        headers,
+        &uri,
+        query,
+        InstantMixSeed::GenreId(genre_id),
+    )
+    .await
 }
 
 pub(crate) async fn instant_mix_by_id(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
+    OriginalUri(uri): OriginalUri,
     RepeatedQuery(query): RepeatedQuery<InstantMixQuery>,
 ) -> Result<Json<user_library::BaseItemQueryResult>, ApiError> {
     let item_id = query.id.ok_or(ApiError::InvalidRequest)?;
-    instant_mix_for(state, headers, query, InstantMixSeed::Item(item_id)).await
+    instant_mix_for(state, headers, &uri, query, InstantMixSeed::Item(item_id)).await
 }
 
 pub(crate) async fn instant_mix_genre_by_name(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
+    OriginalUri(uri): OriginalUri,
     Path(name): Path<String>,
     RepeatedQuery(query): RepeatedQuery<InstantMixQuery>,
 ) -> Result<Json<user_library::BaseItemQueryResult>, ApiError> {
-    instant_mix_for(state, headers, query, InstantMixSeed::GenreName(name)).await
+    instant_mix_for(state, headers, &uri, query, InstantMixSeed::GenreName(name)).await
 }
 
 enum InstantMixSeed {
@@ -478,6 +509,7 @@ enum InstantMixSeed {
 async fn instant_mix_for(
     state: Arc<AppState>,
     headers: HeaderMap,
+    uri: &axum::http::Uri,
     query: InstantMixQuery,
     seed: InstantMixSeed,
 ) -> Result<Json<user_library::BaseItemQueryResult>, ApiError> {
@@ -520,16 +552,16 @@ async fn instant_mix_for(
         enable_image_types: crate::items::parse_image_type_selectors(&query.enable_image_types),
         enable_user_data: query.enable_user_data.unwrap_or(true),
     };
-    Ok(Json(
-        crate::items::page_to_dto_with_options(
-            state.as_ref(),
-            page,
-            query.fields,
-            target_user_id,
-            &dto_options,
-        )
-        .await?,
-    ))
+    let mut result = crate::items::page_to_dto_with_options(
+        state.as_ref(),
+        page,
+        query.fields,
+        target_user_id,
+        &dto_options,
+    )
+    .await?;
+    user_library::omit_incompatible_emby_relations(uri, &mut result.items);
+    Ok(Json(result))
 }
 
 pub(crate) async fn item_counts(
@@ -587,11 +619,13 @@ pub(crate) async fn media_folders(
         })
         .map(|folder| crate::user_views::view_to_dto(folder, state.server_id()))
         .collect::<Vec<_>>();
-    Ok(Json(user_library::BaseItemQueryResult {
+    let mut result = user_library::BaseItemQueryResult {
         total_record_count: user_library::checked_int32(items.len())?,
         start_index: 0,
         items,
-    }))
+    };
+    user_library::omit_incompatible_emby_relations(&uri, &mut result.items);
+    Ok(Json(result))
 }
 
 pub(crate) async fn physical_paths(

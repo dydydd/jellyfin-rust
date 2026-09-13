@@ -454,6 +454,7 @@ pub(crate) async fn get_items(
     for (dto, entry_id) in result.items.iter_mut().zip(entry_ids) {
         dto.playlist_item_id = Some(entry_id.simple().to_string());
     }
+    crate::user_library::omit_incompatible_emby_relations(&uri, &mut result.items);
     Ok(Json(result))
 }
 

@@ -705,18 +705,24 @@ pub(crate) async fn media_stream_defaults_for_user(
 pub(crate) async fn get_root_legacy(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
+    OriginalUri(uri): OriginalUri,
     Path(user_id): Path<Uuid>,
     Query(_query): Query<UserIdQuery>,
 ) -> Result<Json<BaseItemDto>, ApiError> {
-    get_root_for(state, headers, Some(user_id), BaseItemDtoFields::all()).await
+    let mut result = get_root_for(state, headers, Some(user_id), BaseItemDtoFields::all()).await?;
+    omit_incompatible_emby_relations(&uri, std::slice::from_mut(&mut result.0));
+    Ok(result)
 }
 
 pub(crate) async fn get_root(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
+    OriginalUri(uri): OriginalUri,
     Query(query): Query<UserIdQuery>,
 ) -> Result<Json<BaseItemDto>, ApiError> {
-    get_root_for(state, headers, query.user_id, BaseItemDtoFields::all()).await
+    let mut result = get_root_for(state, headers, query.user_id, BaseItemDtoFields::all()).await?;
+    omit_incompatible_emby_relations(&uri, std::slice::from_mut(&mut result.0));
+    Ok(result)
 }
 
 pub(crate) async fn get_item_legacy(
@@ -761,94 +767,112 @@ pub(crate) async fn get_item(
 pub(crate) async fn get_intros_legacy(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
+    OriginalUri(uri): OriginalUri,
     Path((user_id, item_id)): Path<(Uuid, Uuid)>,
 ) -> Result<Json<BaseItemQueryResult>, ApiError> {
-    get_related_query_for(
+    let mut result = get_related_query_for(
         state,
         headers,
         Some(user_id),
         item_id,
         RelatedItemKind::Intro,
     )
-    .await
+    .await?;
+    omit_incompatible_emby_relations(&uri, &mut result.0.items);
+    Ok(result)
 }
 
 pub(crate) async fn get_intros(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
+    OriginalUri(uri): OriginalUri,
     Path(item_id): Path<Uuid>,
     Query(query): Query<UserIdQuery>,
 ) -> Result<Json<BaseItemQueryResult>, ApiError> {
-    get_related_query_for(
+    let mut result = get_related_query_for(
         state,
         headers,
         query.user_id,
         item_id,
         RelatedItemKind::Intro,
     )
-    .await
+    .await?;
+    omit_incompatible_emby_relations(&uri, &mut result.0.items);
+    Ok(result)
 }
 
 pub(crate) async fn get_local_trailers_legacy(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
+    OriginalUri(uri): OriginalUri,
     Path((user_id, item_id)): Path<(Uuid, Uuid)>,
 ) -> Result<Json<Vec<BaseItemDto>>, ApiError> {
-    get_related_for(
+    let mut result = get_related_for(
         state,
         headers,
         Some(user_id),
         item_id,
         RelatedItemKind::LocalTrailer,
     )
-    .await
+    .await?;
+    omit_incompatible_emby_relations(&uri, &mut result.0);
+    Ok(result)
 }
 
 pub(crate) async fn get_local_trailers(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
+    OriginalUri(uri): OriginalUri,
     Path(item_id): Path<Uuid>,
     Query(query): Query<UserIdQuery>,
 ) -> Result<Json<Vec<BaseItemDto>>, ApiError> {
-    get_related_for(
+    let mut result = get_related_for(
         state,
         headers,
         query.user_id,
         item_id,
         RelatedItemKind::LocalTrailer,
     )
-    .await
+    .await?;
+    omit_incompatible_emby_relations(&uri, &mut result.0);
+    Ok(result)
 }
 
 pub(crate) async fn get_special_features_legacy(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
+    OriginalUri(uri): OriginalUri,
     Path((user_id, item_id)): Path<(Uuid, Uuid)>,
 ) -> Result<Json<Vec<BaseItemDto>>, ApiError> {
-    get_related_for(
+    let mut result = get_related_for(
         state,
         headers,
         Some(user_id),
         item_id,
         RelatedItemKind::SpecialFeature,
     )
-    .await
+    .await?;
+    omit_incompatible_emby_relations(&uri, &mut result.0);
+    Ok(result)
 }
 
 pub(crate) async fn get_special_features(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
+    OriginalUri(uri): OriginalUri,
     Path(item_id): Path<Uuid>,
     Query(query): Query<UserIdQuery>,
 ) -> Result<Json<Vec<BaseItemDto>>, ApiError> {
-    get_related_for(
+    let mut result = get_related_for(
         state,
         headers,
         query.user_id,
         item_id,
         RelatedItemKind::SpecialFeature,
     )
-    .await
+    .await?;
+    omit_incompatible_emby_relations(&uri, &mut result.0);
+    Ok(result)
 }
 
 pub(crate) async fn get_lyrics_legacy(
@@ -3986,12 +4010,7 @@ fn metadata_remote_trailers(data: Option<&Value>) -> Vec<MediaUrl> {
 /// unprefixed Jellyfin response unchanged and avoids treating a later dynamic
 /// segment containing `emby` as a protocol marker.
 pub(crate) fn omit_incompatible_emby_relations(uri: &axum::http::Uri, items: &mut [BaseItemDto]) {
-    let is_emby = uri
-        .path()
-        .split('/')
-        .nth(1)
-        .is_some_and(|segment| segment.eq_ignore_ascii_case("emby"));
-    if !is_emby {
+    if !is_emby_request(uri) {
         return;
     }
 
@@ -4015,13 +4034,11 @@ pub(crate) fn omit_incompatible_emby_relations(uri: &axum::http::Uri, items: &mu
         // Emby does not define Jellyfin's Lyric stream kind. Filtering the
         // typed DTO before serialization avoids buffering or rewriting JSON.
         if let Some(streams) = &mut item.media_streams {
-            streams.retain(|stream| stream.stream_type != MediaStreamType::Lyric);
+            retain_emby_media_streams(streams);
         }
         if let Some(sources) = &mut item.media_sources {
             for source in sources {
-                source
-                    .media_streams
-                    .retain(|stream| stream.stream_type != MediaStreamType::Lyric);
+                retain_emby_media_streams(&mut source.media_streams);
             }
         }
 
@@ -4035,6 +4052,31 @@ pub(crate) fn omit_incompatible_emby_relations(uri: &axum::http::Uri, items: &mu
             item.location_type = None;
         }
     }
+}
+
+/// Applies the same generated-Emby-client stream enum boundary to playback
+/// responses, whose media sources are projected outside `BaseItemDto`.
+pub(crate) fn omit_incompatible_emby_media_source_streams(
+    uri: &axum::http::Uri,
+    sources: &mut [MediaSourceInfo],
+) {
+    if !is_emby_request(uri) {
+        return;
+    }
+    for source in sources {
+        retain_emby_media_streams(&mut source.media_streams);
+    }
+}
+
+fn is_emby_request(uri: &axum::http::Uri) -> bool {
+    uri.path()
+        .split('/')
+        .nth(1)
+        .is_some_and(|segment| segment.eq_ignore_ascii_case("emby"))
+}
+
+fn retain_emby_media_streams(streams: &mut Vec<MediaStream>) {
+    streams.retain(|stream| stream.stream_type != MediaStreamType::Lyric);
 }
 
 const fn is_emby_person_kind(kind: PersonKind) -> bool {
@@ -4270,6 +4312,45 @@ mod tests {
     }
 
     #[test]
+    fn playback_media_source_adapter_is_protocol_local() {
+        let source = || MediaSourceInfo {
+            media_streams: vec![
+                MediaStream {
+                    stream_type: MediaStreamType::Audio,
+                    ..MediaStream::default()
+                },
+                MediaStream {
+                    stream_type: MediaStreamType::Lyric,
+                    ..MediaStream::default()
+                },
+            ],
+            ..MediaSourceInfo::default()
+        };
+
+        let mut emby_sources = vec![source()];
+        omit_incompatible_emby_media_source_streams(
+            &"/emby/Items/id/PlaybackInfo".parse().unwrap(),
+            &mut emby_sources,
+        );
+        assert_eq!(emby_sources[0].media_streams.len(), 1);
+        assert_eq!(
+            emby_sources[0].media_streams[0].stream_type,
+            MediaStreamType::Audio
+        );
+
+        let mut jellyfin_sources = vec![source()];
+        omit_incompatible_emby_media_source_streams(
+            &"/Items/id/PlaybackInfo".parse().unwrap(),
+            &mut jellyfin_sources,
+        );
+        assert_eq!(jellyfin_sources[0].media_streams.len(), 2);
+        assert_eq!(
+            jellyfin_sources[0].media_streams[1].stream_type,
+            MediaStreamType::Lyric
+        );
+    }
+
+    #[test]
     fn emby_base_item_keeps_only_generated_client_person_and_location_enums() {
         for kind in [
             PersonKind::Actor,
@@ -4315,6 +4396,101 @@ mod tests {
             omit_incompatible_emby_relations(&uri, std::slice::from_mut(&mut item));
             assert_eq!(item.location_type, None, "{location_type:?}");
         }
+    }
+
+    fn async_function_source<'a>(source: &'a str, name: &str) -> &'a str {
+        let public_signature = format!("pub(crate) async fn {name}(");
+        let private_signature = format!("async fn {name}(");
+        let start = source
+            .find(&public_signature)
+            .or_else(|| source.find(&private_signature))
+            .unwrap_or_else(|| panic!("missing handler {name}"));
+        let body = &source[start + 1..];
+        let end = ["\npub(crate) async fn ", "\nasync fn "]
+            .into_iter()
+            .filter_map(|next| body.find(next))
+            .min()
+            .unwrap_or(body.len());
+        &source[start..start + 1 + end]
+    }
+
+    #[test]
+    fn mobile_base_item_handlers_apply_the_emby_wire_adapter() {
+        let items = include_str!("items.rs");
+        for handler in [
+            "resume",
+            "resume_legacy",
+            "latest",
+            "latest_legacy",
+            "suggestions",
+            "suggestions_legacy",
+        ] {
+            assert!(
+                async_function_source(items, handler).contains("omit_incompatible_emby_relations"),
+                "items::{handler} bypasses the Emby BaseItem adapter"
+            );
+        }
+
+        let library = include_str!("library.rs");
+        for handler in [
+            "theme_songs",
+            "theme_videos",
+            "theme_media",
+            "ancestors",
+            "collections",
+            "similar",
+        ] {
+            assert!(
+                async_function_source(library, handler)
+                    .contains("omit_incompatible_emby_relations"),
+                "library::{handler} bypasses the Emby BaseItem adapter"
+            );
+        }
+        for handler in [
+            "instant_mix",
+            "instant_mix_playlist",
+            "instant_mix_genre_by_id",
+            "instant_mix_by_id",
+            "instant_mix_genre_by_name",
+        ] {
+            assert!(
+                async_function_source(library, handler).contains("&uri"),
+                "library::{handler} does not pass its protocol URI to instant_mix_for"
+            );
+        }
+        assert!(
+            async_function_source(library, "instant_mix_for")
+                .contains("omit_incompatible_emby_relations"),
+            "library::instant_mix_for bypasses the Emby BaseItem adapter"
+        );
+
+        let channels = include_str!("channels.rs");
+        for handler in ["list", "channel_items", "latest_channel_items"] {
+            assert!(
+                async_function_source(channels, handler)
+                    .contains("omit_incompatible_emby_relations"),
+                "channels::{handler} bypasses the Emby BaseItem adapter"
+            );
+        }
+
+        let media_info = include_str!("media_info.rs");
+        for handler in [
+            "get_playback_info",
+            "post_playback_info",
+            "open_live_stream",
+        ] {
+            assert!(
+                async_function_source(media_info, handler)
+                    .contains("omit_incompatible_emby_media_source_streams"),
+                "media_info::{handler} bypasses the Emby MediaSource adapter"
+            );
+        }
+
+        assert!(
+            async_function_source(include_str!("movies.rs"), "recommendations")
+                .contains("omit_incompatible_emby_relations"),
+            "movies::recommendations bypasses the Emby BaseItem adapter"
+        );
     }
 
     #[test]

@@ -3,7 +3,11 @@ use std::{
     sync::Arc,
 };
 
-use axum::{Json, extract::State, http::HeaderMap};
+use axum::{
+    Json,
+    extract::{OriginalUri, State},
+    http::HeaderMap,
+};
 use axum_extra::extract::Query;
 use jellyfin_data::{
     BaseItemOrder, BaseItemPage, BaseItemQuery, PersonMovieRecommendationRequest,
@@ -72,6 +76,7 @@ struct ItemRecommendation {
 pub(crate) async fn recommendations(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
+    OriginalUri(uri): OriginalUri,
     Query(query): Query<MovieRecommendationsQuery>,
 ) -> Result<Json<Vec<RecommendationDto>>, ApiError> {
     let authenticated = authentication::authenticated_session(&state, &headers).await?;
@@ -332,21 +337,23 @@ pub(crate) async fn recommendations(
     .map(|item| (item.id.clone(), item))
     .collect::<HashMap<_, _>>();
 
-    Ok(Json(
-        categories
-            .into_iter()
-            .map(|category| RecommendationDto {
-                items: category
-                    .items
-                    .into_iter()
-                    .filter_map(|item| projected.get(&item.id.simple().to_string()).cloned())
-                    .collect(),
-                recommendation_type: category.recommendation_type,
-                baseline_item_name: category.baseline_item_name,
-                category_id: category.category_id,
-            })
-            .collect(),
-    ))
+    let mut result = categories
+        .into_iter()
+        .map(|category| RecommendationDto {
+            items: category
+                .items
+                .into_iter()
+                .filter_map(|item| projected.get(&item.id.simple().to_string()).cloned())
+                .collect(),
+            recommendation_type: category.recommendation_type,
+            baseline_item_name: category.baseline_item_name,
+            category_id: category.category_id,
+        })
+        .collect::<Vec<_>>();
+    for category in &mut result {
+        user_library::omit_incompatible_emby_relations(&uri, &mut category.items);
+    }
+    Ok(Json(result))
 }
 
 fn recommendation_categories(

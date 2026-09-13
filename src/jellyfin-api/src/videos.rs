@@ -1775,6 +1775,7 @@ pub(crate) async fn merge_versions(
 pub(crate) async fn additional_parts(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
+    OriginalUri(uri): OriginalUri,
     Path(item_id): Path<Uuid>,
     Query(query): Query<user_library::UserIdQuery>,
 ) -> Result<Json<user_library::BaseItemQueryResult>, ApiError> {
@@ -1788,18 +1789,18 @@ pub(crate) async fn additional_parts(
         .additional_parts(&authenticated.user, target_user_id, item_id)
         .await?;
     let total_record_count = u64::try_from(items.len()).unwrap_or(u64::MAX);
-    Ok(Json(
-        crate::items::page_to_dto_all_fields(
-            state.as_ref(),
-            BaseItemPage {
-                items,
-                total_record_count,
-                start_index: 0,
-            },
-            target_user_id,
-        )
-        .await?,
-    ))
+    let mut result = crate::items::page_to_dto_all_fields(
+        state.as_ref(),
+        BaseItemPage {
+            items,
+            total_record_count,
+            start_index: 0,
+        },
+        target_user_id,
+    )
+    .await?;
+    user_library::omit_incompatible_emby_relations(&uri, &mut result.items);
+    Ok(Json(result))
 }
 
 #[cfg(test)]

@@ -2,7 +2,7 @@ use std::{collections::HashSet, str::FromStr, sync::Arc};
 
 use axum::{
     Json,
-    extract::{Path, State},
+    extract::{OriginalUri, Path, State},
     http::HeaderMap,
 };
 use axum_extra::extract::Query;
@@ -171,6 +171,7 @@ impl FromStr for ChannelItemFilter {
 pub(crate) async fn list(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
+    OriginalUri(uri): OriginalUri,
     Query(query): Query<ChannelsQuery>,
 ) -> Result<Json<user_library::BaseItemQueryResult>, ApiError> {
     let authenticated = authentication::authenticated_session(&state, &headers).await?;
@@ -249,11 +250,13 @@ pub(crate) async fn list(
         .into_iter()
         .map(|item| user_library::item_to_dto(item, state.server_id()))
         .collect::<Vec<_>>();
-    Ok(Json(user_library::BaseItemQueryResult {
+    let mut result = user_library::BaseItemQueryResult {
         total_record_count: user_library::checked_int32(page.total_record_count)?,
         start_index: requested_start_index,
         items,
-    }))
+    };
+    user_library::omit_incompatible_emby_relations(&uri, &mut result.items);
+    Ok(Json(result))
 }
 
 pub(crate) async fn all_features(
@@ -293,6 +296,7 @@ pub(crate) async fn features(
 pub(crate) async fn channel_items(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
+    OriginalUri(uri): OriginalUri,
     Path(channel_id): Path<Uuid>,
     Query(query): Query<ChannelItemsQuery>,
 ) -> Result<Json<user_library::BaseItemQueryResult>, ApiError> {
@@ -348,12 +352,14 @@ pub(crate) async fn channel_items(
         .await?;
     let mut result = items::page_to_dto(state.as_ref(), page, query.fields, target_user_id).await?;
     result.start_index = requested_start_index;
+    user_library::omit_incompatible_emby_relations(&uri, &mut result.items);
     Ok(Json(result))
 }
 
 pub(crate) async fn latest_channel_items(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
+    OriginalUri(uri): OriginalUri,
     Query(query): Query<LatestChannelItemsQuery>,
 ) -> Result<Json<user_library::BaseItemQueryResult>, ApiError> {
     let authenticated = authentication::authenticated_session(&state, &headers).await?;
@@ -401,6 +407,7 @@ pub(crate) async fn latest_channel_items(
         .await?;
     let mut result = items::page_to_dto(state.as_ref(), page, query.fields, target_user_id).await?;
     result.start_index = requested_start_index;
+    user_library::omit_incompatible_emby_relations(&uri, &mut result.items);
     Ok(Json(result))
 }
 
