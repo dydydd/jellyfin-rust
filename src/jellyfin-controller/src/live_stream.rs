@@ -111,6 +111,29 @@ impl LiveStreamRegistry {
         Some(open.media_source.clone())
     }
 
+    /// Touches the current media information for an opened stream id.
+    ///
+    /// Emby's legacy `GetLiveStreamMediaInfo` operation looks up the global
+    /// `OrdinalIgnoreCase` open-stream dictionary by id. It does not receive
+    /// an item, user, device, or play-session discriminator, so any
+    /// authenticated caller that knows the id observes the same opened
+    /// source. The generated Java and Swift operations declare an empty
+    /// response, so avoid cloning the potentially wide media-source document
+    /// while the registry mutex is held.
+    #[must_use]
+    pub fn touch_media_info(&self, live_stream_id: &str) -> bool {
+        let mut streams = self
+            .streams
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        prune_expired(&mut streams, self.idle_timeout);
+        let Some(open) = streams.get_mut(&live_stream_id.to_ascii_lowercase()) else {
+            return false;
+        };
+        open.last_access = Instant::now();
+        true
+    }
+
     /// Releases one consumer and removes the source after its final close.
     ///
     /// The official close endpoint is idempotent for unknown stream ids, so a
@@ -236,5 +259,36 @@ mod tests {
             .unwrap();
 
         assert!(registry.get(item_id, "expired").is_none());
+    }
+
+    #[test]
+    fn media_info_is_global_case_insensitive_and_refreshes_only_live_entries() {
+        let live_streams = registry(2, Duration::from_secs(60));
+        let item_id = Uuid::new_v4();
+        live_streams
+            .open(
+                item_id,
+                MediaSourceInfo {
+                    live_stream_id: Some("Provider_Stream-1".to_owned()),
+                    path: Some("/media/open.ts".to_owned()),
+                    ..MediaSourceInfo::default()
+                },
+            )
+            .unwrap();
+
+        assert!(live_streams.touch_media_info("pRoViDeR_sTrEaM-1"));
+        assert!(!live_streams.touch_media_info("unknown"));
+
+        let expired = registry(1, Duration::ZERO);
+        expired
+            .open(
+                item_id,
+                MediaSourceInfo {
+                    live_stream_id: Some("expired".to_owned()),
+                    ..MediaSourceInfo::default()
+                },
+            )
+            .unwrap();
+        assert!(!expired.touch_media_info("expired"));
     }
 }

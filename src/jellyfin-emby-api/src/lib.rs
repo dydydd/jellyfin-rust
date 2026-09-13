@@ -26,9 +26,12 @@ mod hide_from_resume;
 mod home_sections;
 mod legacy_item_metadata;
 mod library;
+mod live_stream_media_info;
+mod metadata_reset;
 mod notifications;
 mod packages;
 mod plugins;
+mod recent_searches;
 mod section_items;
 mod system_misc;
 mod track_selections;
@@ -50,6 +53,10 @@ pub fn router(state: AppState) -> Router {
         .layer(axum::middleware::from_fn_with_state(
             Arc::clone(&state),
             jellyfin_api::protocol_route_auth,
+        ))
+        .layer(axum::middleware::from_fn_with_state(
+            Arc::clone(&state),
+            users::adapt_user_responses,
         ))
         .with_state(state);
 
@@ -77,7 +84,12 @@ const DEDICATED_ROUTE_TEMPLATES: &[&str] = &[
     "/Containers",
     "/DisplayPreferences/{display_preferences_id}",
     "/Encoding/CodecConfiguration/Defaults",
+    "/Encoding/CodecParameters",
     "/Encoding/CodecInformation/Video",
+    "/Encoding/FfmpegOptions",
+    "/Encoding/FullToneMapOptions",
+    "/Encoding/PublicToneMapOptions",
+    "/Encoding/SubtitleOptions",
     "/Encoding/ToneMapOptions",
     "/Environment/DefaultDirectoryBrowser",
     "/Environment/DirectoryContents",
@@ -88,12 +100,18 @@ const DEDICATED_ROUTE_TEMPLATES: &[&str] = &[
     "/Environment/ValidatePath",
     "/ExtendedVideoTypes",
     "/Features",
+    "/GameGenres",
+    "/GameGenres/{name}",
+    "/GameGenres/{name}/Images/{image_type}",
+    "/GameGenres/{name}/Images/{image_type}/{image_index}",
     "/Items/Access",
+    "/Items/Metadata/Reset",
     "/Items/{item_id}/CriticReviews",
     "/Items/{item_id}/ThumbnailSet",
     "/Items/Intros",
     "/Items/Prefixes",
     "/ItemTypes",
+    "/LiveStreams/MediaInfo",
     "/Notifications/Types",
     // Keep the literal route before the dynamic package-name route. This is
     // the same precedence ASP.NET gives literal segments.
@@ -118,18 +136,31 @@ const DEDICATED_ROUTE_TEMPLATES: &[&str] = &[
     "/Users/{user_id}/HomeSections/Delete",
     "/Users/{user_id}/HomeSections/Move",
     "/Users/{user_id}/HomeSections",
+    "/Users/{user_id}/Configuration",
+    "/Users/{user_id}/Authenticate",
+    "/Users/{user_id}/CopyData",
+    "/Users/{user_id}/Policy",
+    "/Users/{user_id}/RecentlySearched",
+    "/Users/{user_id}/RecentlySearched/Delete",
+    "/Users/{user_id}/SearchedItems",
+    "/Users/{user_id}/SearchedItems/",
     "/Users/{user_id}/Sections/{section_id}/Items",
     "/Users/{user_id}/TrackSelections/{track_type}/Delete",
     "/Users/{user_id}/TrackSelections/{track_type}",
     "/Users/{user_id}/TypedSettings/{key}",
     "/Users/ItemAccess",
     "/Users/CopyDataOptions",
+    "/Users/AuthenticateByName",
+    "/Users/Me",
+    "/Users/New",
     "/Users/Prefixes",
     // The shared handler is intentionally reused, but mixed-case Emby login
     // bootstrap requests must be normalized before the shared fallback and
     // route-policy matcher run.
     "/Users/Public",
     "/Users/Query",
+    "/Users/{user_id}",
+    "/Users",
     "/Videos/{item_id}/index.bif",
     "/Videos/{item_id}/Subtitles/{index}",
     "/Videos/{item_id}/Subtitles/{index}/Delete",
@@ -205,6 +236,7 @@ fn dedicated_routes() -> Router<Arc<AppState>> {
         .merge(jellyfin_api::emby_legacy_audio_hls_routes())
         .merge(jellyfin_api::emby_legacy_subtitle_delete_routes())
         .merge(jellyfin_api::emby_legacy_subtitle_hls_routes())
+        .merge(jellyfin_api::emby_game_genre_routes())
         .merge(auth_user::routes())
         .merge(alternate_sources::routes())
         .merge(backup::routes())
@@ -215,9 +247,12 @@ fn dedicated_routes() -> Router<Arc<AppState>> {
         .merge(home_sections::routes())
         .merge(library::routes())
         .merge(legacy_item_metadata::routes())
+        .merge(live_stream_media_info::routes())
+        .merge(metadata_reset::routes())
         .merge(notifications::routes())
         .merge(packages::routes())
         .merge(plugins::routes())
+        .merge(recent_searches::routes())
         .merge(section_items::routes())
         .merge(system_misc::routes())
         .merge(track_selections::routes())

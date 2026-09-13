@@ -19,6 +19,7 @@ const RECONCILIATION_BATCH_SIZE: usize = 256;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ItemByNameKind {
+    GameGenre,
     Genre,
     MusicGenre,
     MusicArtist,
@@ -31,6 +32,7 @@ impl ItemByNameKind {
     #[must_use]
     pub const fn item_type(self) -> &'static str {
         match self {
+            Self::GameGenre => "GameGenre",
             Self::Genre => "Genre",
             Self::MusicGenre => "MusicGenre",
             Self::MusicArtist => "MusicArtist",
@@ -42,6 +44,7 @@ impl ItemByNameKind {
 
     const fn clr_type(self) -> &'static str {
         match self {
+            Self::GameGenre => "MediaBrowser.Controller.Entities.GameGenre",
             Self::Genre => "MediaBrowser.Controller.Entities.Genre",
             Self::MusicGenre => "MediaBrowser.Controller.Entities.Audio.MusicGenre",
             Self::MusicArtist => "MediaBrowser.Controller.Entities.Audio.MusicArtist",
@@ -99,6 +102,7 @@ pub struct ItemByNameService {
     directories: Arc<RwLock<ItemByNameDirectories>>,
     reconciled: Arc<OnceCell<()>>,
     studio_year_reconciled: Arc<OnceCell<()>>,
+    game_genre_reconciled: Arc<OnceCell<()>>,
 }
 
 #[derive(Debug)]
@@ -122,6 +126,7 @@ impl ItemByNameService {
             })),
             reconciled: Arc::new(OnceCell::new()),
             studio_year_reconciled: Arc::new(OnceCell::new()),
+            game_genre_reconciled: Arc::new(OnceCell::new()),
         }
     }
 
@@ -162,7 +167,13 @@ impl ItemByNameService {
                     return Ok(Some(hydrate_item_type(item, kind)));
                 }
             }
-            return Ok(None);
+            // The removed GameGenres service used the common slug lookup but,
+            // unlike the later Jellyfin Genre controllers, fell back to
+            // LibraryManager.GetGameGenre(name) when none of the three legacy
+            // substitutions matched. That call creates the literal name.
+            if kind != ItemByNameKind::GameGenre {
+                return Ok(None);
+            }
         }
 
         self.get_or_create(kind, name).await.map(Some)
@@ -364,6 +375,51 @@ impl ItemByNameService {
         self.studio_year_reconciled
             .get_or_try_init(|| async { self.reconcile_studios_and_years().await })
             .await?;
+        Ok(())
+    }
+
+    /// Backfills Emby's legacy `GameGenre` entities once for this process.
+    ///
+    /// This is deliberately separate from Jellyfin's Genre reconciliation so
+    /// enabling the `/emby` compatibility surface cannot alter unprefixed
+    /// Jellyfin item-by-name results.
+    ///
+    /// # Errors
+    ///
+    /// Returns configuration, filesystem, or persistence errors.
+    pub async fn reconcile_game_genres_once(&self) -> Result<(), ItemByNameError> {
+        self.game_genre_reconciled
+            .get_or_try_init(|| async { self.reconcile_game_genres().await })
+            .await?;
+        Ok(())
+    }
+
+    async fn reconcile_game_genres(&self) -> Result<(), ItemByNameError> {
+        let configuration = self.configuration.load().await?;
+        let (program_data, internal_metadata) = self.directories();
+        let mut after = None;
+        loop {
+            let required = self
+                .values
+                .required_game_genre_entities_page(after.as_ref(), RECONCILIATION_BATCH_SIZE)
+                .await?;
+            let Some(next_after) = required.last().cloned() else {
+                break;
+            };
+            let entities = self
+                .entities_for_names(
+                    ItemByNameKind::GameGenre,
+                    required.into_iter().map(|value| value.name),
+                    &program_data,
+                    &internal_metadata,
+                    &configuration,
+                )
+                .await?;
+            self.base_items
+                .create_missing_item_by_name_entities(&entities)
+                .await?;
+            after = Some(next_after);
+        }
         Ok(())
     }
 
@@ -592,7 +648,7 @@ fn hydrate_item_type(mut item: base_item::Model, kind: ItemByNameKind) -> base_i
     item.item_type = kind.item_type().to_owned();
     match kind {
         ItemByNameKind::MusicArtist => item.is_folder = item.parent_id.is_some(),
-        ItemByNameKind::Person => {
+        ItemByNameKind::GameGenre | ItemByNameKind::Person => {
             item.is_folder = false;
             item.is_virtual_item = false;
         }

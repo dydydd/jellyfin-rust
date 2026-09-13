@@ -1,4 +1,4 @@
-use std::{fmt, net::IpAddr, path::PathBuf, sync::Arc};
+use std::{collections::HashMap, fmt, net::IpAddr, path::PathBuf, sync::Arc};
 
 use axum::{
     Json,
@@ -9,7 +9,7 @@ use axum::{
         rejection::QueryRejection,
     },
     http::{HeaderMap, Request, StatusCode, header},
-    response::Response,
+    response::{IntoResponse, Response},
 };
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
 use chrono::Utc;
@@ -802,6 +802,136 @@ fn assert_identity_can_update_user(
             assert_can_update_user(&session.user, target)
         }
         authentication::AuthenticatedIdentity::ApiKey(_) => Ok(()),
+    }
+}
+
+impl AppState {
+    /// Resolves and authorizes an Emby configuration target before the
+    /// protocol adapter parses its request body, preserving official lookup
+    /// and authorization precedence.
+    pub async fn emby_configuration_update_target(
+        &self,
+        headers: &HeaderMap,
+        uri: &axum::http::Uri,
+        target_id: Uuid,
+    ) -> Result<UserConfiguration, Response> {
+        let identity = authentication::authenticated_identity(self, headers, Some(uri))
+            .await
+            .map_err(IntoResponse::into_response)?;
+        let target = self
+            .users
+            .get(target_id)
+            .await
+            .map_err(ApiError::from)
+            .map_err(IntoResponse::into_response)?;
+        assert_identity_can_update_user(&identity, &target).map_err(IntoResponse::into_response)?;
+        let mut configuration =
+            UserConfiguration::deserialize(&target.preferences).unwrap_or_default();
+        configuration.enable_local_password = target.enable_local_password;
+        Ok(configuration)
+    }
+
+    /// Resolves an Emby policy target under the shared elevated boundary
+    /// before the adapter parses its protocol-local body.
+    pub async fn emby_policy_update_target(
+        &self,
+        headers: &HeaderMap,
+        uri: &axum::http::Uri,
+        target_id: Uuid,
+    ) -> Result<(UserPolicy, String), Response> {
+        let identity = authentication::authenticated_identity(self, headers, Some(uri))
+            .await
+            .map_err(IntoResponse::into_response)?;
+        identity
+            .require_administrator()
+            .map_err(IntoResponse::into_response)?;
+        let target = self
+            .users
+            .get(target_id)
+            .await
+            .map_err(ApiError::from)
+            .map_err(IntoResponse::into_response)?;
+        let policy =
+            authentication::stored_user_policy(&target).map_err(IntoResponse::into_response)?;
+        Ok((policy, identity.access_token().to_owned()))
+    }
+
+    /// Persists a validated Emby configuration and its shared Jellyfin view.
+    pub async fn persist_emby_configuration(
+        &self,
+        target_id: Uuid,
+        configuration: &UserConfiguration,
+        emby_configuration: serde_json::Value,
+    ) -> Result<StatusCode, Response> {
+        self.users
+            .update_emby_configuration(target_id, configuration, emby_configuration)
+            .await
+            .map_err(ApiError::from)
+            .map_err(IntoResponse::into_response)?;
+        Ok(StatusCode::OK)
+    }
+
+    /// Persists a validated Emby policy, revokes sessions when disabling the
+    /// target, and emits the same user-updated event as Jellyfin's mutation.
+    pub async fn persist_emby_policy(
+        &self,
+        target_id: Uuid,
+        policy: &UserPolicy,
+        emby_policy: serde_json::Value,
+        current_token: &str,
+    ) -> Result<StatusCode, Response> {
+        let (_, became_disabled) = self
+            .users
+            .update_emby_policy(target_id, policy, emby_policy)
+            .await
+            .map_err(ApiError::from)
+            .map_err(IntoResponse::into_response)?;
+        if became_disabled {
+            self.devices
+                .revoke_user_tokens(target_id, Some(current_token))
+                .await
+                .map_err(ApiError::from)
+                .map_err(IntoResponse::into_response)?;
+        }
+        let dto = user_to_dto_with_server_id(
+            self,
+            self.users
+                .get(target_id)
+                .await
+                .map_err(ApiError::from)
+                .map_err(IntoResponse::into_response)?,
+        )
+        .await
+        .map_err(IntoResponse::into_response)?;
+        crate::websocket::broadcast_user_updated(
+            self,
+            &serde_json::to_value(&dto).unwrap_or_default(),
+        )
+        .await;
+        Ok(StatusCode::OK)
+    }
+
+    /// Batch-loads the PostgreSQL documents used to adapt Jellyfin UserDto
+    /// values into the Emby wire contract without one query per user.
+    pub async fn emby_user_contract_storage(
+        &self,
+        ids: &[Uuid],
+    ) -> Result<HashMap<Uuid, (Value, Value, bool)>, Response> {
+        let users = self
+            .users
+            .get_many(ids)
+            .await
+            .map_err(ApiError::from)
+            .map_err(IntoResponse::into_response)?;
+        Ok(users
+            .into_iter()
+            .map(|user| {
+                (
+                    user.id,
+                    (user.preferences, user.policy, user.enable_local_password),
+                )
+            })
+            .collect())
     }
 }
 

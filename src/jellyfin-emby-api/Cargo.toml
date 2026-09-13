@@ -9,6 +9,7 @@ rust-version.workspace = true
 axum.workspace = true
 base64 = "0.22"
 chrono.workspace = true
+form_urlencoded = "1.2"
 jellyfin-api = { path = "../jellyfin-api" }
 jellyfin-model = { path = "../jellyfin-model" }
 serde.workspace = true
@@ -20,6 +21,7 @@ uuid.workspace = true
 [dev-dependencies]
 jellyfin-controller = { path = "../jellyfin-controller" }
 jellyfin-data = { path = "../jellyfin-data" }
+jellyfin-server-implementations = { path = "../jellyfin-server-implementations" }
 sea-orm.workspace = true
 tokio.workspace = true
 

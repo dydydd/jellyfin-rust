@@ -1,5 +1,5 @@
 use std::{
-    collections::HashSet,
+    collections::{BTreeMap, HashSet},
     fmt::Display,
     future::Future,
     path::{Path, PathBuf},
@@ -9,8 +9,9 @@ use std::{
 use chrono::Weekday;
 use futures_util::{StreamExt, stream};
 use jellyfin_data::{
-    BaseItemError, BaseItemRepository, ItemUpdateRepository, ItemValueRepository,
-    MetadataRefreshCandidate, PersonError, PersonRepository, entities::base_item,
+    BaseItemError, BaseItemRepository, ItemUpdateRepository, ItemUpdateStoreError,
+    ItemValueRepository, MetadataRefreshCandidate, PersonError, PersonRepository,
+    entities::base_item,
 };
 use jellyfin_providers::manager::provider_manager::{
     ManagedMetadataProvider, MetadataProviderKind, MetadataService as ManagedMetadataService,
@@ -58,6 +59,8 @@ pub enum MetadataRefreshError {
     VirtualFolder(#[from] VirtualFolderServiceError),
     #[error(transparent)]
     Person(#[from] PersonError),
+    #[error(transparent)]
+    ItemUpdate(#[from] ItemUpdateStoreError),
     #[error("NFO write failed: {0}")]
     Nfo(#[source] std::io::Error),
 }
@@ -349,6 +352,7 @@ impl MetadataRefreshService {
             .get(item_id)
             .await?
             .ok_or(BaseItemError::NotFound)?;
+        let original_provider_ids = item_provider_ids(item.data.as_ref());
         let library_options = self.library_options_for_item(&item).await?;
         let full_metadata_refresh =
             options.metadata_refresh_mode == MetadataRefreshMode::FullRefresh;
@@ -414,10 +418,16 @@ impl MetadataRefreshService {
                 !tmdb_api_key.trim().is_empty(),
                 !omdb_api_key.trim().is_empty(),
             );
+            // Official MetadataService replaces current fields during the
+            // normal Default scan, or when an explicit full replacement was
+            // requested. A FullRefresh without ReplaceAllMetadata reruns all
+            // providers but only fills missing fields.
+            let replace_existing_metadata = should_replace_existing_metadata(options);
             let summary = execute_metadata_provider_sequence(
                 item_id,
                 &providers,
-                |provider, replace_data| async move {
+                |provider, preferred_provider| async move {
+                    let replace_data = replace_existing_metadata && preferred_provider;
                     match provider {
                         MetadataProviderDispatch::Tmdb => self
                             .tmdb_provider(tmdb_api_key)
@@ -461,6 +471,11 @@ impl MetadataRefreshService {
                     providers = providers.len(),
                     "metadata provider sequence completed with failures"
                 );
+            }
+            if !original_provider_ids.is_empty() {
+                self.updates
+                    .merge_provider_ids_if_missing(item_id, &original_provider_ids)
+                    .await?;
             }
             if repair_episode_titles {
                 refreshed |= self
@@ -724,6 +739,41 @@ impl MetadataRefreshService {
             .collect();
         Ok(metadata)
     }
+}
+
+fn should_replace_existing_metadata(options: MetadataRefreshOptions) -> bool {
+    options.replace_all_metadata || options.metadata_refresh_mode == MetadataRefreshMode::Default
+}
+
+fn item_provider_ids(data: Option<&Value>) -> BTreeMap<String, String> {
+    let Some(object) = data.and_then(Value::as_object) else {
+        return BTreeMap::new();
+    };
+    let mut provider_ids = BTreeMap::new();
+    for provider_map in object
+        .get("ProviderIds")
+        .into_iter()
+        .chain(
+            object
+                .iter()
+                .filter(|(key, _)| {
+                    key.as_str() != "ProviderIds" && key.eq_ignore_ascii_case("ProviderIds")
+                })
+                .map(|(_, value)| value),
+        )
+        .filter_map(Value::as_object)
+    {
+        for (key, value) in provider_map {
+            if let Some(value) = value.as_str()
+                && !provider_ids
+                    .keys()
+                    .any(|existing: &String| existing.eq_ignore_ascii_case(key))
+            {
+                provider_ids.insert(key.to_owned(), value.to_owned());
+            }
+        }
+    }
+    provider_ids
 }
 
 fn metadata_provider_dispatch_plan(
@@ -1195,6 +1245,59 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+
+    #[test]
+    fn replacement_decision_matches_official_refresh_modes() {
+        let options = |metadata_refresh_mode, replace_all_metadata| MetadataRefreshOptions {
+            metadata_refresh_mode,
+            replace_all_metadata,
+            ..MetadataRefreshOptions::default()
+        };
+
+        assert!(should_replace_existing_metadata(options(
+            MetadataRefreshMode::Default,
+            false,
+        )));
+        assert!(!should_replace_existing_metadata(options(
+            MetadataRefreshMode::FullRefresh,
+            false,
+        )));
+        assert!(should_replace_existing_metadata(options(
+            MetadataRefreshMode::FullRefresh,
+            true,
+        )));
+    }
+
+    #[test]
+    fn refresh_provider_id_snapshot_keeps_custom_ids_case_insensitively() {
+        let provider_ids = item_provider_ids(Some(&json!({
+            "ProviderIds": {
+                "Tmdb": "fresh-canonical",
+                "Custom": "opaque-id"
+            },
+            "providerids": {
+                "TMDB": "stale-historical",
+                "Tvdb": "tv-id"
+            }
+        })));
+
+        assert_eq!(
+            provider_ids.get("Tmdb").map(String::as_str),
+            Some("fresh-canonical")
+        );
+        assert_eq!(
+            provider_ids.get("Custom").map(String::as_str),
+            Some("opaque-id")
+        );
+        assert_eq!(provider_ids.get("Tvdb").map(String::as_str), Some("tv-id"));
+        assert_eq!(
+            provider_ids
+                .keys()
+                .filter(|key| key.eq_ignore_ascii_case("Tmdb"))
+                .count(),
+            1
+        );
+    }
 
     #[test]
     fn cloned_services_share_provider_client_pools() {

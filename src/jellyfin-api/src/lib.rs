@@ -1,4 +1,8 @@
-use std::{collections::HashMap, path::PathBuf, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    path::PathBuf,
+    sync::Arc,
+};
 
 use axum::{
     Json, Router,
@@ -8,33 +12,35 @@ use axum::{
     response::{IntoResponse, Response},
     routing::{delete, get, post},
 };
+use futures_util::{StreamExt, stream};
 use jellyfin_controller::{
     ArtistError, ArtistService, ChapterImageService, CollectionError, CollectionService,
     DashboardError, DashboardPage, DashboardService, EnvironmentError, EnvironmentService,
-    GenreError, GenreService, InstalledPlugin, ItemByNameService, ItemImageError, ItemImageService,
-    ItemLookupError, ItemLookupService, ItemUpdateError, ItemUpdateService, LibraryControllerError,
-    LibraryControllerService, LibraryScanError, LibraryScanService, LiveStreamRegistry,
-    LocalizationService, MediaAttachmentService, MediaAttachmentServiceError, MediaSegmentError,
-    MediaSegmentManagerService, MediaStreamService, MediaStreamServiceError, MetadataEditorError,
-    MetadataEditorService, MetadataRefreshService, MusicGenreError, MusicGenreService,
+    GameGenreError, GameGenreService, GenreError, GenreService, InstalledPlugin, ItemByNameService,
+    ItemImageError, ItemImageService, ItemLookupError, ItemLookupService, ItemUpdateError,
+    ItemUpdateService, LibraryControllerError, LibraryControllerService, LibraryScanError,
+    LibraryScanService, LiveStreamRegistry, LocalizationService, MediaAttachmentService,
+    MediaAttachmentServiceError, MediaSegmentError, MediaSegmentManagerService, MediaStreamService,
+    MediaStreamServiceError, MetadataEditorError, MetadataEditorService, MetadataRefreshMode,
+    MetadataRefreshOptions, MetadataRefreshService, MusicGenreError, MusicGenreService,
     PackageError, PackageService, PersonError, PersonService, PlaylistError, PlaylistService,
     PlaystateError, PlaystateService, PluginRegistry, PostgresSessionStore, ScheduledTaskError,
     ScheduledTaskService, SearchManager, SearchProvider, StudioError, StudioService,
     SubtitleManager, SubtitleProvider, SystemLogError, SystemLogService, SystemStorageService,
-    TranscodeJobRegistry, TrickplayError, TrickplayService, UserDataService, UserDataServiceError,
-    UserError, UserLibraryError, UserLibraryService, UserService, UserViewManagerError,
-    UserViewManagerService, VideoError, VideoService, VirtualFolderService,
+    TranscodeJobRegistry, TrickplayError, TrickplayService, UserCopyOptions, UserDataService,
+    UserDataServiceError, UserError, UserLibraryError, UserLibraryService, UserService,
+    UserViewManagerError, UserViewManagerService, VideoError, VideoService, VirtualFolderService,
     VirtualFolderServiceError, YearError, YearService, client_event::ClientEventLogger,
 };
 use jellyfin_data::{
     ActivityLogError, ActivityLogRepository, ApiKeyRepository, AuthenticationStoreError,
     BaseItemError, BaseItemImageRepository, BaseItemRepository, ChapterRepository,
     DeviceOptionsRepository, DeviceRepository, DisplayPreferenceRepository,
-    DisplayPreferenceStoreError, ItemUpdateStoreError, ItemValueRepository, KeyframeDataRepository,
-    NamedConfigurationRepository, NamedConfigurationStoreError, PersonRepository,
-    QuickConnectRepository, RememberedTrackSelection, ServerConfigurationRepository,
-    ServerConfigurationStoreError, SessionCommandRepository, SessionCommandStoreError,
-    UserDataRepository,
+    DisplayPreferenceStoreError, ItemUpdateRepository, ItemUpdateStoreError, ItemValueRepository,
+    KeyframeDataRepository, NamedConfigurationRepository, NamedConfigurationStoreError,
+    PersonRepository, QuickConnectRepository, RememberedTrackSelection,
+    ServerConfigurationRepository, ServerConfigurationStoreError, SessionCommandRepository,
+    SessionCommandStoreError, UserDataRepository, UserSearchStateRepository,
     entities::{user, user_profile_image},
 };
 use jellyfin_drawing::{ImageProcessingError, ImageProcessor};
@@ -83,6 +89,7 @@ mod display_preferences;
 mod encoding_runtime;
 mod environment;
 mod filters;
+mod game_genre;
 mod genres;
 mod hls_segment;
 mod item_images;
@@ -136,6 +143,12 @@ pub use branding::BrandingOptions;
 pub use subtitles::emby_legacy_subtitle_delete_routes;
 pub use system::emby_log_file_lines;
 
+/// Emby-only legacy GameGenre routes. These are deliberately not merged into
+/// [`unprefixed_router`].
+pub fn emby_game_genre_routes() -> Router<Arc<AppState>> {
+    game_genre::routes()
+}
+
 /// Host lifecycle commands exposed by the system API.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum SystemCommand {
@@ -143,6 +156,59 @@ pub enum SystemCommand {
     Shutdown,
     /// Restart the server and restore the validated archive before serving requests.
     Restore(PathBuf),
+}
+
+const EMBY_METADATA_REFRESH_QUEUE_CAPACITY: usize = 64;
+const EMBY_METADATA_REFRESH_CONCURRENCY: usize = 4;
+const EMBY_METADATA_REFRESH_CHUNK_SIZE: usize = 128;
+
+struct QueuedEmbyMetadataRefresh {
+    item_ids: Vec<Uuid>,
+    tmdb_api_key: Arc<str>,
+    omdb_api_key: Arc<str>,
+}
+
+fn start_emby_metadata_refresh_worker(
+    service: MetadataRefreshService,
+) -> tokio::sync::mpsc::Sender<QueuedEmbyMetadataRefresh> {
+    let (sender, mut receiver) = tokio::sync::mpsc::channel::<QueuedEmbyMetadataRefresh>(
+        EMBY_METADATA_REFRESH_QUEUE_CAPACITY,
+    );
+    tokio::spawn(async move {
+        // `recv` continues yielding already-buffered chunks after the final
+        // AppState sender is dropped, so normal server teardown drains all
+        // accepted work before this worker exits. An externally forced Tokio
+        // runtime stop, like process termination, cannot provide that grace.
+        while let Some(batch) = receiver.recv().await {
+            debug_assert!(batch.item_ids.len() <= EMBY_METADATA_REFRESH_CHUNK_SIZE);
+            stream::iter(batch.item_ids)
+                .for_each_concurrent(EMBY_METADATA_REFRESH_CONCURRENCY, |item_id| {
+                    let service = service.clone();
+                    let tmdb_api_key = Arc::clone(&batch.tmdb_api_key);
+                    let omdb_api_key = Arc::clone(&batch.omdb_api_key);
+                    async move {
+                        if let Err(error) = service
+                            .refresh(
+                                item_id,
+                                &tmdb_api_key,
+                                &omdb_api_key,
+                                MetadataRefreshOptions {
+                                    metadata_refresh_mode: MetadataRefreshMode::FullRefresh,
+                                    image_refresh_mode: MetadataRefreshMode::None,
+                                    replace_all_metadata: true,
+                                    replace_all_images: false,
+                                },
+                            )
+                            .await
+                        {
+                            tracing::warn!(%error, %item_id, "queued Emby metadata reset refresh failed");
+                        }
+                    }
+                })
+                .await;
+        }
+    });
+    sender
 }
 
 /// Applies the shared route authorization policy to another protocol's route
@@ -179,11 +245,13 @@ pub struct AppState {
     pub(crate) user_data: UserDataService,
     pub(crate) artists: ArtistService,
     pub(crate) genres: GenreService,
+    pub(crate) game_genres: GameGenreService,
     pub(crate) studios: StudioService,
     pub(crate) music_genres: MusicGenreService,
     pub(crate) persons: PersonService,
     pub(crate) item_images: Arc<ItemImageService>,
     pub(crate) metadata_refresh: MetadataRefreshService,
+    emby_metadata_refresh_sender: tokio::sync::mpsc::Sender<QueuedEmbyMetadataRefresh>,
     pub(crate) base_items: Arc<BaseItemRepository>,
     pub(crate) chapters: ChapterRepository,
     pub(crate) item_values: ItemValueRepository,
@@ -242,6 +310,24 @@ pub struct AppState {
     pub(crate) omdb_api_key: Arc<tokio::sync::RwLock<Arc<str>>>,
     pub(crate) system_command: Arc<dyn Fn(SystemCommand) + Send + Sync>,
     pub(crate) metrics_enabled: Arc<std::sync::atomic::AtomicBool>,
+}
+
+/// Protocol adapter selection for Emby's independently copyable user state.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct EmbyUserCopyOptions {
+    pub policy: bool,
+    pub configuration: bool,
+    pub user_data: bool,
+}
+
+impl From<EmbyUserCopyOptions> for UserCopyOptions {
+    fn from(value: EmbyUserCopyOptions) -> Self {
+        Self {
+            policy: value.policy,
+            configuration: value.configuration,
+            user_data: value.user_data,
+        }
+    }
 }
 
 impl AppState {
@@ -317,6 +403,8 @@ impl AppState {
         let item_images = Arc::new(ItemImageService::new(Arc::clone(&database)));
         let metadata_refresh =
             MetadataRefreshService::new(Arc::clone(&database), Some(Arc::clone(&item_images)));
+        let emby_metadata_refresh_sender =
+            start_emby_metadata_refresh_worker(metadata_refresh.clone());
         let base_items = Arc::new(BaseItemRepository::new(Arc::clone(&database)));
         let item_values = ItemValueRepository::new(Arc::clone(&database));
         let people = PersonRepository::new(Arc::clone(&database));
@@ -355,6 +443,10 @@ impl AppState {
                 Arc::clone(&database),
                 item_by_name.clone(),
             ),
+            game_genres: GameGenreService::with_item_by_name_service(
+                Arc::clone(&database),
+                item_by_name.clone(),
+            ),
             studios: StudioService::with_item_by_name_service(
                 Arc::clone(&database),
                 item_by_name.clone(),
@@ -374,6 +466,7 @@ impl AppState {
             ),
             item_images,
             metadata_refresh,
+            emby_metadata_refresh_sender,
             base_items,
             chapters: ChapterRepository::new(Arc::clone(&database)),
             item_values,
@@ -732,6 +825,10 @@ impl AppState {
             self.program_data_directory.as_path(),
             self.internal_metadata_directory.as_path(),
         );
+        self.game_genres.set_item_by_name_directories(
+            self.program_data_directory.as_path(),
+            self.internal_metadata_directory.as_path(),
+        );
         self.artists.set_item_by_name_directories(
             self.program_data_directory.as_path(),
             self.internal_metadata_directory.as_path(),
@@ -1042,6 +1139,215 @@ impl AppState {
             .map_err(IntoResponse::into_response)
     }
 
+    /// Resets Emby's administrator-owned metadata settings and performs a
+    /// real full metadata replacement for every requested item.
+    ///
+    /// Authentication intentionally precedes query validation. The generated
+    /// Emby clients send one comma-separated `ItemIds` string, and malformed
+    /// inputs from unauthenticated or ordinary users must not leak binder
+    /// behavior ahead of the administrator policy.
+    #[allow(clippy::result_large_err)]
+    pub async fn reset_emby_metadata_for_request(
+        &self,
+        headers: &HeaderMap,
+        uri: &Uri,
+        item_ids: Option<&str>,
+    ) -> Result<StatusCode, Response> {
+        self.require_emby_administrator(headers, uri).await?;
+        let item_ids = parse_emby_metadata_reset_ids(item_ids)?;
+        self.enqueue_emby_metadata_reset(item_ids).await
+    }
+
+    #[allow(clippy::result_large_err)]
+    async fn enqueue_emby_metadata_reset(
+        &self,
+        item_ids: Vec<Uuid>,
+    ) -> Result<StatusCode, Response> {
+        let chunk_count = item_ids.len().div_ceil(EMBY_METADATA_REFRESH_CHUNK_SIZE);
+        if chunk_count > EMBY_METADATA_REFRESH_QUEUE_CAPACITY {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                "Too many item ids for one metadata reset request",
+            )
+                .into_response());
+        }
+        // Reserve every chunk slot before changing persistent state, so queue
+        // saturation cannot leave an accepted reset only partly enqueued.
+        let refresh_sender = self.emby_metadata_refresh_sender.clone();
+        let refresh_permits = refresh_sender.try_reserve_many(chunk_count).map_err(|_| {
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "Metadata refresh queue is full",
+            )
+                .into_response()
+        })?;
+        ItemUpdateRepository::new(Arc::clone(&self.database))
+            .reset_metadata_settings(&item_ids)
+            .await
+            .map_err(|error| match error {
+                ItemUpdateStoreError::NotFound => ApiError::NotFound.into_response(),
+                ItemUpdateStoreError::InvalidValue => ApiError::InvalidRequest.into_response(),
+                ItemUpdateStoreError::InvalidMetadata | ItemUpdateStoreError::Database(_) => {
+                    ApiError::Internal.into_response()
+                }
+            })?;
+
+        let tmdb_api_key = Arc::clone(&*self.tmdb_api_key.read().await);
+        let omdb_api_key = Arc::clone(&*self.omdb_api_key.read().await);
+        for (permit, item_ids) in
+            refresh_permits.zip(item_ids.chunks(EMBY_METADATA_REFRESH_CHUNK_SIZE))
+        {
+            permit.send(QueuedEmbyMetadataRefresh {
+                item_ids: item_ids.to_vec(),
+                tmdb_api_key: Arc::clone(&tmdb_api_key),
+                omdb_api_key: Arc::clone(&omdb_api_key),
+            });
+        }
+        Ok(StatusCode::OK)
+    }
+
+    /// Resolves the source of an Emby administrator-only user-data copy before
+    /// the adapter binds its body, preserving authorization and source 404
+    /// precedence over malformed copy options.
+    pub async fn resolve_emby_copy_data_source(
+        &self,
+        headers: &HeaderMap,
+        uri: &Uri,
+        source_user_id: &str,
+    ) -> Result<(Uuid, String), Response> {
+        let identity = authentication::authenticated_identity(self, headers, Some(uri))
+            .await
+            .map_err(ApiError::from)
+            .map_err(IntoResponse::into_response)?;
+        identity
+            .require_administrator()
+            .map_err(ApiError::from)
+            .map_err(IntoResponse::into_response)?;
+        let current_token = identity.access_token().to_owned();
+        let source_user_id = Uuid::parse_str(source_user_id)
+            .map_err(|_| ApiError::InvalidRequest.into_response())?;
+        self.users
+            .get(source_user_id)
+            .await
+            .map_err(ApiError::from)
+            .map_err(IntoResponse::into_response)?;
+        Ok((source_user_id, current_token))
+    }
+
+    /// Copies selected Emby user state to all requested users in one
+    /// transaction while preserving the shared user invariants.
+    pub async fn copy_emby_user_state(
+        &self,
+        source_user_id: Uuid,
+        target_user_ids: &[Uuid],
+        options: EmbyUserCopyOptions,
+        current_token: &str,
+    ) -> Result<(), Response> {
+        if target_user_ids.is_empty() {
+            return Err(ApiError::InvalidRequest.into_response());
+        }
+        let has_changes = options.policy || options.configuration || options.user_data;
+        let became_disabled = self
+            .users
+            .copy_to_users(source_user_id, target_user_ids, options.into())
+            .await
+            .map_err(ApiError::from)
+            .map_err(IntoResponse::into_response)?;
+        self.devices
+            .revoke_users_tokens(&became_disabled, Some(current_token))
+            .await
+            .map_err(ApiError::from)
+            .map_err(IntoResponse::into_response)?;
+        if !has_changes {
+            return Ok(());
+        }
+        let mut ids = target_user_ids.to_vec();
+        ids.sort_unstable();
+        ids.dedup();
+        let users = self
+            .users
+            .get_many(&ids)
+            .await
+            .map_err(ApiError::from)
+            .map_err(IntoResponse::into_response)?;
+        let dtos = users_to_dtos_with_server_id(self, users)
+            .await
+            .map_err(IntoResponse::into_response)?;
+        for dto in dtos {
+            crate::websocket::broadcast_user_updated(
+                self,
+                &serde_json::to_value(dto).unwrap_or_default(),
+            )
+            .await;
+        }
+        Ok(())
+    }
+
+    /// Creates an Emby user and applies the selected copy categories in the
+    /// same PostgreSQL transaction.
+    pub async fn create_emby_user_with_copy(
+        &self,
+        name: &str,
+        source_user_id: Option<Uuid>,
+        options: EmbyUserCopyOptions,
+    ) -> Result<UserDto, Response> {
+        let user = match source_user_id {
+            Some(source_user_id) => {
+                self.users
+                    .create_with_copy(name, source_user_id, options.into())
+                    .await
+            }
+            None => self.users.create(name).await,
+        }
+        .map_err(ApiError::from)
+        .map_err(IntoResponse::into_response)?;
+        let dto = user_to_dto_with_server_id(self, user)
+            .await
+            .map_err(IntoResponse::into_response)?;
+        crate::websocket::broadcast_user_updated(
+            self,
+            &serde_json::to_value(&dto).unwrap_or_default(),
+        )
+        .await;
+        Ok(dto)
+    }
+
+    /// Loads one protocol-owned Emby encoding editor object without exposing
+    /// it through Jellyfin's `/System/Configuration/{key}` namespace.
+    pub async fn emby_encoding_configuration(
+        &self,
+        key: &str,
+    ) -> Result<Option<serde_json::Value>, Response> {
+        let repository = self
+            .named_configurations
+            .as_ref()
+            .ok_or_else(|| ApiError::Internal.into_response())?;
+        match repository.load(&format!("emby-encoding-{key}")).await {
+            Ok(configuration) => Ok(Some(configuration.configuration)),
+            Err(NamedConfigurationStoreError::NotFound(_)) => Ok(None),
+            Err(error) => Err(ApiError::from(error).into_response()),
+        }
+    }
+
+    /// Atomically persists one protocol-owned Emby encoding editor object.
+    pub async fn save_emby_encoding_configuration(
+        &self,
+        key: &str,
+        configuration: serde_json::Value,
+    ) -> Result<(), Response> {
+        if !configuration.is_object() {
+            return Err(ApiError::InvalidRequest.into_response());
+        }
+        self.named_configurations
+            .as_ref()
+            .ok_or_else(|| ApiError::Internal.into_response())?
+            .save(&format!("emby-encoding-{key}"), configuration)
+            .await
+            .map(|_| ())
+            .map_err(ApiError::from)
+            .map_err(IntoResponse::into_response)
+    }
+
     /// Clears a video's real alternate-source relationships for an Emby
     /// protocol adapter while retaining the shared elevated authorization and
     /// typed-video not-found semantics.
@@ -1143,6 +1449,102 @@ impl AppState {
         Ok(StatusCode::OK)
     }
 
+    /// Persists Emby's per-user item-search report using the generated
+    /// contract's sole nullable `WasSearched` field.
+    ///
+    /// `reported` distinguishes a valid body whose field was omitted/null
+    /// from a body extraction failure. Authentication and target-user
+    /// authorization deliberately precede body validation so malformed input
+    /// cannot reveal details about another user's route.
+    #[allow(clippy::result_large_err)]
+    pub async fn report_emby_items_searched_for_request(
+        &self,
+        headers: &HeaderMap,
+        uri: &Uri,
+        requested_user_id: &str,
+        reported: Option<Option<bool>>,
+    ) -> Result<StatusCode, Response> {
+        let target_user_id = self
+            .resolve_emby_search_state_user(headers, uri, requested_user_id)
+            .await?;
+        let Some(was_searched) = reported else {
+            return Err(ApiError::InvalidRequest.into_response());
+        };
+        UserSearchStateRepository::new(Arc::clone(&self.database))
+            .set(target_user_id, was_searched.unwrap_or(false))
+            .await
+            .map_err(|_| ApiError::Internal.into_response())?;
+        Ok(StatusCode::OK)
+    }
+
+    /// Clears Emby's per-user recently-searched state. Repeated clears are
+    /// idempotent, but the target user must exist.
+    #[allow(clippy::result_large_err)]
+    pub async fn clear_emby_recently_searched_for_request(
+        &self,
+        headers: &HeaderMap,
+        uri: &Uri,
+        requested_user_id: &str,
+    ) -> Result<StatusCode, Response> {
+        let target_user_id = self
+            .resolve_emby_search_state_user(headers, uri, requested_user_id)
+            .await?;
+        UserSearchStateRepository::new(Arc::clone(&self.database))
+            .clear(target_user_id)
+            .await
+            .map_err(|_| ApiError::Internal.into_response())?;
+        Ok(StatusCode::OK)
+    }
+
+    /// Validates and touches an opened stream for Emby's legacy MediaInfo
+    /// operation while preserving its empty-response wire contract.
+    ///
+    /// The removed official implementation performed an authenticated,
+    /// case-insensitive lookup in the global open-stream dictionary. Its
+    /// request has no user, item, device, or play-session field, so a stream
+    /// known to another authenticated session remains addressable by id.
+    #[allow(clippy::result_large_err)]
+    pub async fn emby_live_stream_media_info_for_request(
+        &self,
+        headers: &HeaderMap,
+        uri: &Uri,
+        live_stream_id: Option<&str>,
+    ) -> Result<StatusCode, Response> {
+        authorization::require_default(self, headers, uri)
+            .await
+            .map_err(IntoResponse::into_response)?;
+        let live_stream_id = live_stream_id
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| ApiError::InvalidRequest.into_response())?;
+        if !self.live_streams.touch_media_info(live_stream_id) {
+            return Err(ApiError::NotFound.into_response());
+        }
+        Ok(StatusCode::OK)
+    }
+
+    #[allow(clippy::result_large_err)]
+    async fn resolve_emby_search_state_user(
+        &self,
+        headers: &HeaderMap,
+        uri: &Uri,
+        requested_user_id: &str,
+    ) -> Result<Uuid, Response> {
+        let identity = authorization::require_default(self, headers, uri)
+            .await
+            .map_err(IntoResponse::into_response)?;
+        let requested_user_id = Uuid::parse_str(requested_user_id)
+            .map_err(|_| ApiError::InvalidRequest.into_response())?;
+        let target_user_id = identity
+            .target_user_id(Some(requested_user_id))
+            .map_err(IntoResponse::into_response)?;
+        self.users
+            .get(target_user_id)
+            .await
+            .map_err(ApiError::from)
+            .map_err(IntoResponse::into_response)?;
+        Ok(target_user_id)
+    }
+
     /// Snapshot plugin/package data for the Emby protocol adapter.
     pub fn emby_plugins(&self) -> Vec<jellyfin_model::PluginInfo> {
         self.plugins.plugins()
@@ -1190,6 +1592,82 @@ fn parse_optional_uuid(value: Option<&str>) -> Result<Option<Uuid>, Response> {
         .map(Uuid::parse_str)
         .transpose()
         .map_err(|_| StatusCode::BAD_REQUEST.into_response())
+}
+
+fn parse_emby_metadata_reset_ids(value: Option<&str>) -> Result<Vec<Uuid>, Response> {
+    let value = value
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| ApiError::InvalidRequest.into_response())?;
+    let mut seen = HashSet::new();
+    let mut item_ids = Vec::new();
+    for value in value.split(',') {
+        let value = value.trim();
+        if value.is_empty() {
+            return Err(ApiError::InvalidRequest.into_response());
+        }
+        let item_id =
+            Uuid::parse_str(value).map_err(|_| ApiError::InvalidRequest.into_response())?;
+        if seen.insert(item_id) {
+            item_ids.push(item_id);
+        }
+    }
+    Ok(item_ids)
+}
+
+#[cfg(test)]
+mod emby_metadata_refresh_queue_tests {
+    use jellyfin_data::{DatabaseConfig, NewBaseItem};
+    use serde_json::json;
+
+    use super::*;
+
+    #[tokio::test]
+    async fn saturated_queue_rejects_before_persistent_reset() {
+        let database = jellyfin_data::connect(&DatabaseConfig::default())
+            .await
+            .expect("local PostgreSQL must be available");
+        jellyfin_data::migrate(&database)
+            .await
+            .expect("PostgreSQL migrations must succeed");
+        let repository = BaseItemRepository::new(database.clone());
+        let item_id = Uuid::new_v4();
+        let mut item = NewBaseItem::new(item_id, "Movie");
+        item.data = Some(json!({
+            "IsLocked": true,
+            "LockedFields": ["Name"],
+            "ProviderIds": { "Custom": "opaque" }
+        }));
+        let original = repository.create(item).await.expect("locked item fixture");
+        let state = AppState::new(
+            database.clone(),
+            "Metadata queue saturation test".to_owned(),
+            "http://127.0.0.1:8096".to_owned(),
+        )
+        .with_omdb_api_key("");
+
+        let held_permits = state
+            .emby_metadata_refresh_sender
+            .try_reserve_many(EMBY_METADATA_REFRESH_QUEUE_CAPACITY)
+            .expect("empty queue capacity")
+            .collect::<Vec<_>>();
+        let response = match state.enqueue_emby_metadata_reset(vec![item_id]).await {
+            Ok(status) => panic!("saturated queue unexpectedly accepted reset: {status}"),
+            Err(response) => response,
+        };
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let unchanged = repository
+            .get(item_id)
+            .await
+            .expect("post-rejection item lookup")
+            .expect("post-rejection item");
+        assert_eq!(unchanged.row_version, original.row_version);
+        assert_eq!(unchanged.data, original.data);
+
+        drop(held_permits);
+        drop(state);
+        repository.delete(item_id).await.expect("fixture cleanup");
+        database.close().await.expect("database pool cleanup");
+    }
 }
 
 #[allow(clippy::too_many_lines)]
@@ -3489,6 +3967,7 @@ pub(crate) enum ApiError {
     Playstate(PlaystateError),
     UserData(UserDataServiceError),
     Artist(ArtistError),
+    GameGenre(GameGenreError),
     Genre(GenreError),
     Studio(StudioError),
     MusicGenre(MusicGenreError),
@@ -3592,6 +4071,12 @@ impl From<ArtistError> for ApiError {
 impl From<GenreError> for ApiError {
     fn from(error: GenreError) -> Self {
         Self::Genre(error)
+    }
+}
+
+impl From<GameGenreError> for ApiError {
+    fn from(error: GameGenreError) -> Self {
+        Self::GameGenre(error)
     }
 }
 
@@ -3875,6 +4360,7 @@ impl IntoResponse for ApiError {
             ) => (StatusCode::NOT_FOUND, "User, item, or lyrics not found"),
             Self::UserLibrary(UserLibraryError::Forbidden)
             | Self::Artist(ArtistError::Forbidden)
+            | Self::GameGenre(GameGenreError::Forbidden)
             | Self::Genre(GenreError::Forbidden)
             | Self::Studio(StudioError::Forbidden)
             | Self::MusicGenre(MusicGenreError::Forbidden)
@@ -3892,6 +4378,12 @@ impl IntoResponse for ApiError {
                 | GenreError::User(UserError::NotFound)
                 | GenreError::BaseItem(BaseItemError::NotFound),
             ) => (StatusCode::NOT_FOUND, "Genre or user not found"),
+            Self::GameGenre(
+                GameGenreError::NotFound
+                | GameGenreError::UserNotFound
+                | GameGenreError::User(UserError::NotFound)
+                | GameGenreError::BaseItem(BaseItemError::NotFound),
+            ) => (StatusCode::NOT_FOUND, "Game genre or user not found"),
             Self::Artist(
                 ArtistError::NotFound
                 | ArtistError::UserNotFound
@@ -3928,6 +4420,10 @@ impl IntoResponse for ApiError {
             Self::Genre(_) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "Genre persistence failed",
+            ),
+            Self::GameGenre(_) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Game genre persistence failed",
             ),
             Self::Artist(_) => (
                 StatusCode::INTERNAL_SERVER_ERROR,

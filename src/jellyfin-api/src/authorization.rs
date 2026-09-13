@@ -331,6 +331,38 @@ fn route_policy(method: &Method, path: &str) -> RoutePolicy {
     {
         return RoutePolicy::Public;
     }
+    // OriginalUri intentionally retains the client-facing casing even after
+    // the Emby adapter normalizes its dispatch URI. Apply ASP.NET's
+    // case-insensitive static-segment behavior here as well so mixed-case
+    // login routes do not accidentally fall back to authenticated-only.
+    if segments
+        .first()
+        .is_some_and(|segment| segment.eq_ignore_ascii_case("Users"))
+        && (matches!(segments.as_slice(), [_, action] if [
+            "Public",
+            "AuthenticateByName",
+            "ForgotPassword",
+        ]
+        .iter()
+        .any(|candidate| action.eq_ignore_ascii_case(candidate)))
+            || matches!(segments.as_slice(), [_, action, pin]
+                if action.eq_ignore_ascii_case("ForgotPassword")
+                    && pin.eq_ignore_ascii_case("Pin"))
+            || matches!(segments.as_slice(), [_, _, action]
+                if action.eq_ignore_ascii_case("Authenticate")))
+    {
+        return RoutePolicy::Public;
+    }
+    if matches!(segments.as_slice(), [users, _, action]
+        if users.eq_ignore_ascii_case("Users") && action.eq_ignore_ascii_case("Policy"))
+    {
+        return RoutePolicy::Elevated;
+    }
+    if matches!(segments.as_slice(), [users, _, action]
+        if users.eq_ignore_ascii_case("Users") && action.eq_ignore_ascii_case("Configuration"))
+    {
+        return RoutePolicy::Default;
+    }
 
     match segments.as_slice() {
         ["health" | "GetUtcTime" | "getutctime" | "metrics"]
@@ -687,6 +719,14 @@ mod tests {
             route_policy(&Method::POST, "/system/restart"),
             RoutePolicy::LocalOrElevated
         );
+        assert_eq!(
+            route_policy(&Method::POST, "/emby/uSeRs/not-a-uuid/PoLiCy"),
+            RoutePolicy::Elevated
+        );
+        assert_eq!(
+            route_policy(&Method::POST, "/emby/uSeRs/not-a-uuid/CoNfIgUrAtIoN"),
+            RoutePolicy::Default
+        );
     }
 
     #[test]
@@ -731,6 +771,16 @@ mod tests {
             route_policy(&Method::POST, "/Users/AuthenticateByName"),
             RoutePolicy::Public
         );
+        for route in [
+            "/emby/uSeRs/aUtHeNtIcAtEbYnAmE",
+            "/emby/uSeRs/user-id/aUtHeNtIcAtE",
+        ] {
+            assert_eq!(
+                route_policy(&Method::POST, route),
+                RoutePolicy::Public,
+                "mixed-case Emby login route {route}"
+            );
+        }
         for route in ["/users/forgotpassword", "/users/forgotpassword/pin"] {
             assert_eq!(
                 route_policy(&Method::POST, route),

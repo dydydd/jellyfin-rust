@@ -397,6 +397,8 @@ pub struct BaseItemDto {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub episode_count: Option<i32>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub game_count: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub movie_count: Option<i32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub music_video_count: Option<i32>,
@@ -1100,6 +1102,9 @@ async fn get_item_for(
                 .await?
         }
     };
+    if !is_emby_request(&uri) && is_emby_game_type(&item.item_type) {
+        return Err(ApiError::NotFound);
+    }
     let defaults =
         media_stream_defaults_for_user(state.as_ref(), target_user_id, requested_fields).await?;
     let remembered_user_data =
@@ -1374,6 +1379,7 @@ pub(crate) fn item_to_dto(item: base_item::Model, server_id: &str) -> BaseItemDt
         album_count: None,
         artist_count: None,
         episode_count: None,
+        game_count: None,
         movie_count: None,
         music_video_count: None,
         program_count: None,
@@ -4073,6 +4079,17 @@ fn is_emby_request(uri: &axum::http::Uri) -> bool {
         .split('/')
         .nth(1)
         .is_some_and(|segment| segment.eq_ignore_ascii_case("emby"))
+}
+
+fn is_emby_game_type(item_type: &str) -> bool {
+    [
+        "Game",
+        "MediaBrowser.Controller.Entities.Game",
+        "GameGenre",
+        "MediaBrowser.Controller.Entities.GameGenre",
+    ]
+    .iter()
+    .any(|candidate| item_type.eq_ignore_ascii_case(candidate))
 }
 
 fn retain_emby_media_streams(streams: &mut Vec<MediaStream>) {

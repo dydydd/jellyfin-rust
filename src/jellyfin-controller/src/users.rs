@@ -24,6 +24,8 @@ use thiserror::Error;
 use uuid::Uuid;
 
 const USER_MUTATION_LOCK_KEY: i64 = 0x4a45_4c4c_5955_5345;
+const EMBY_USER_CONFIGURATION_KEY: &str = "EmbyUserConfiguration";
+const EMBY_USER_POLICY_KEY: &str = "EmbyUserPolicy";
 const DEFAULT_AUTHENTICATION_PROVIDER_NAME: &str = "Default";
 const DEFAULT_PASSWORD_RESET_PROVIDER_NAME: &str = "Default Password Reset Provider";
 
@@ -64,6 +66,14 @@ pub enum UserError {
 #[derive(Clone)]
 pub struct UserService {
     database: jellyfin_data::SharedDatabase,
+}
+
+/// Independently selectable categories exposed by Emby's user-copy APIs.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct UserCopyOptions {
+    pub policy: bool,
+    pub configuration: bool,
+    pub user_data: bool,
 }
 
 impl UserService {
@@ -235,6 +245,132 @@ impl UserService {
         self.create_with_role(name, false).await
     }
 
+    /// Creates one user and copies the selected state from `source_user_id`
+    /// in the same transaction. The password and session identity are never
+    /// copied.
+    pub async fn create_with_copy(
+        &self,
+        name: &str,
+        source_user_id: Uuid,
+        options: UserCopyOptions,
+    ) -> Result<user::Model, UserError> {
+        validate_username(name)?;
+        let transaction = self.database.begin().await?;
+        lock_user_mutations(&transaction).await?;
+        let source = user::Entity::find_by_id(source_user_id)
+            .lock_exclusive()
+            .one(&transaction)
+            .await?
+            .ok_or(UserError::NotFound)?;
+        let mut active = new_user_active_model(name, false)?;
+        if options.policy {
+            copy_policy_to_active_model(&mut active, &source);
+        }
+        if options.configuration {
+            active.preferences = Set(source.preferences.clone());
+            active.enable_local_password = Set(source.enable_local_password);
+        }
+        let inserted = insert_user(&transaction, active, name).await?;
+        if options.user_data {
+            copy_user_data_rows(&transaction, source_user_id, &[inserted.id]).await?;
+        }
+        transaction.commit().await?;
+        Ok(inserted)
+    }
+
+    /// Copies selected Emby user state to all targets atomically.
+    pub async fn copy_to_users(
+        &self,
+        source_user_id: Uuid,
+        target_user_ids: &[Uuid],
+        options: UserCopyOptions,
+    ) -> Result<Vec<Uuid>, UserError> {
+        if target_user_ids.is_empty() {
+            return Err(UserError::NotFound);
+        }
+        let transaction = self.database.begin().await?;
+        lock_user_mutations(&transaction).await?;
+        let source = user::Entity::find_by_id(source_user_id)
+            .lock_exclusive()
+            .one(&transaction)
+            .await?
+            .ok_or(UserError::NotFound)?;
+        let mut targets = target_user_ids.to_vec();
+        targets.sort_unstable();
+        targets.dedup();
+        let requested_count = targets.len();
+        let rows = user::Entity::find()
+            .filter(user::Column::Id.is_in(targets.iter().copied()))
+            .lock_exclusive()
+            .all(&transaction)
+            .await?;
+        if rows.len() != requested_count {
+            return Err(UserError::NotFound);
+        }
+        targets.retain(|id| *id != source_user_id);
+
+        let became_disabled = if options.policy && source.is_disabled {
+            rows.iter()
+                .filter(|target| targets.contains(&target.id) && !target.is_disabled)
+                .map(|target| target.id)
+                .collect()
+        } else {
+            Vec::new()
+        };
+        if options.policy && !targets.is_empty() {
+            validate_copy_policy_invariants(&transaction, &source, &rows, &targets).await?;
+            let ids = serde_json::json!(targets.iter().map(Uuid::to_string).collect::<Vec<_>>());
+            transaction
+                .execute(Statement::from_sql_and_values(
+                    DbBackend::Postgres,
+                    r"
+                    UPDATE jellyfin.users AS target
+                    SET policy = source.policy,
+                        authentication_provider_id = source.authentication_provider_id,
+                        password_reset_provider_id = source.password_reset_provider_id,
+                        invalid_login_attempt_count = source.invalid_login_attempt_count,
+                        login_attempts_before_lockout = source.login_attempts_before_lockout,
+                        is_administrator = source.is_administrator,
+                        is_hidden = source.is_hidden,
+                        is_disabled = source.is_disabled,
+                        updated_at = now()
+                    FROM jellyfin.users AS source
+                    WHERE source.id = $1::uuid
+                      AND target.id IN (
+                          SELECT value::uuid FROM jsonb_array_elements_text($2::jsonb)
+                      )
+                    ",
+                    [source_user_id.into(), ids.into()],
+                ))
+                .await?;
+        }
+        if options.configuration && !targets.is_empty() {
+            let ids = serde_json::json!(targets.iter().map(Uuid::to_string).collect::<Vec<_>>());
+            transaction
+                .execute(Statement::from_sql_and_values(
+                    DbBackend::Postgres,
+                    r"
+                    UPDATE jellyfin.users AS target
+                    SET preferences = source.preferences,
+                        enable_local_password = source.enable_local_password,
+                        updated_at = now()
+                    FROM jellyfin.users AS source
+                    WHERE source.id = $1::uuid
+                      AND target.id IN (
+                          SELECT value::uuid FROM jsonb_array_elements_text($2::jsonb)
+                      )
+                    ",
+                    [source_user_id.into(), ids.into()],
+                ))
+                .await?;
+        }
+        if options.user_data && !targets.is_empty() {
+            copy_user_data_rows(&transaction, source_user_id, &targets).await?;
+        }
+        transaction.commit().await?;
+        Ok(became_disabled)
+    }
+
     /// Creates the initial administrator account.
     ///
     /// # Errors
@@ -251,69 +387,12 @@ impl UserService {
         is_administrator: bool,
     ) -> Result<user::Model, UserError> {
         validate_username(name)?;
-        let normalized = normalize_username(name);
-
-        let now = Utc::now();
-        let policy = UserPolicy {
-            is_administrator,
-            authentication_provider_id: Some(
-                UserPolicy::DEFAULT_AUTHENTICATION_PROVIDER_ID.to_owned(),
-            ),
-            password_reset_provider_id: Some(
-                UserPolicy::DEFAULT_PASSWORD_RESET_PROVIDER_ID.to_owned(),
-            ),
-            ..UserPolicy::default()
-        };
-        let result = user::Entity::insert(user::ActiveModel {
-            id: Set(Uuid::new_v4()),
-            username: Set(name.to_owned()),
-            normalized_username: Set(normalized),
-            password_hash: Set(None),
-            must_update_password: Set(false),
-            enable_local_password: Set(false),
-            is_administrator: Set(is_administrator),
-            is_hidden: Set(true),
-            is_disabled: Set(false),
-            enable_auto_login: Set(false),
-            last_login_date: Set(None),
-            last_activity_date: Set(None),
-            invalid_login_attempt_count: Set(0),
-            login_attempts_before_lockout: Set(-1),
-            authentication_provider_id: Set(
-                UserPolicy::DEFAULT_AUTHENTICATION_PROVIDER_ID.to_owned()
-            ),
-            password_reset_provider_id: Set(
-                UserPolicy::DEFAULT_PASSWORD_RESET_PROVIDER_ID.to_owned()
-            ),
-            policy: Set(serde_json::to_value(policy).map_err(UserError::PolicySerialization)?),
-            preferences: Set(json!({
-                "RememberAudioSelections": true,
-                "RememberSubtitleSelections": true,
-                "EnableNextEpisodeAutoPlay": true
-            })),
-            row_version: Set(1),
-            created_at: Set(now),
-            updated_at: Set(now),
-        })
-        .on_conflict(
-            OnConflict::column(user::Column::NormalizedUsername)
-                .do_nothing()
-                .to_owned(),
+        insert_user(
+            self.database.as_ref(),
+            new_user_active_model(name, is_administrator)?,
+            name,
         )
-        .do_nothing()
-        .exec_with_returning(self.database.as_ref())
-        .await;
-
-        // SeaORM 1.1 converts a zero-row `DO NOTHING RETURNING` result into
-        // `RecordNotFound` before its `TryInsertResult` adapter sees it.
-        match result {
-            Ok(TryInsertResult::Inserted(inserted)) => Ok(inserted),
-            Ok(TryInsertResult::Conflicted) | Err(DbErr::RecordNotFound(_)) => {
-                Err(UserError::DuplicateUsername(name.to_owned()))
-            }
-            Ok(TryInsertResult::Empty) => Err(DbErr::RecordNotInserted.into()),
-            Err(error) => Err(error.into()),
-        }
+        .await
     }
 
     /// Retrieves a user by identifier.
@@ -495,10 +574,24 @@ impl UserService {
         authenticated_user: user::Model,
     ) -> Result<user::Model, UserError> {
         let now = Utc::now();
+        let mut emby_policy = authenticated_user
+            .policy
+            .get(EMBY_USER_POLICY_KEY)
+            .filter(|value| value.is_object())
+            .cloned();
+        if let Some(object) = emby_policy
+            .as_mut()
+            .and_then(serde_json::Value::as_object_mut)
+        {
+            object.insert("InvalidLoginAttemptCount".to_owned(), json!(0));
+        }
         let mut policy = UserPolicy::deserialize(&authenticated_user.policy)
             .map_err(UserError::PolicySerialization)?;
         policy.invalid_login_attempt_count = 0;
-        let policy = serde_json::to_value(policy).map_err(UserError::PolicySerialization)?;
+        let mut policy = serde_json::to_value(policy).map_err(UserError::PolicySerialization)?;
+        if let (Some(object), Some(emby_policy)) = (policy.as_object_mut(), emby_policy) {
+            object.insert(EMBY_USER_POLICY_KEY.to_owned(), emby_policy);
+        }
         let result = user::Entity::update_many()
             .col_expr(
                 user::Column::PasswordHash,
@@ -534,9 +627,20 @@ impl UserService {
             .one(&transaction)
             .await?
             .ok_or(UserError::NotFound)?;
+        let mut emby_policy = target
+            .policy
+            .get(EMBY_USER_POLICY_KEY)
+            .filter(|value| value.is_object())
+            .cloned();
         let mut policy: UserPolicy =
             serde_json::from_value(target.policy).map_err(UserError::PolicySerialization)?;
         let attempts = policy.invalid_login_attempt_count.saturating_add(1);
+        if let Some(object) = emby_policy
+            .as_mut()
+            .and_then(serde_json::Value::as_object_mut)
+        {
+            object.insert("InvalidLoginAttemptCount".to_owned(), json!(attempts));
+        }
         policy.invalid_login_attempt_count = attempts;
         policy.login_attempts_before_lockout =
             normalized_login_attempts(policy.login_attempts_before_lockout);
@@ -548,7 +652,10 @@ impl UserService {
         } else {
             target.is_disabled
         };
-        let policy = serde_json::to_value(&policy).map_err(UserError::PolicySerialization)?;
+        let mut policy = serde_json::to_value(&policy).map_err(UserError::PolicySerialization)?;
+        if let (Some(object), Some(emby_policy)) = (policy.as_object_mut(), emby_policy) {
+            object.insert(EMBY_USER_POLICY_KEY.to_owned(), emby_policy);
+        }
         user::Entity::update_many()
             .col_expr(user::Column::Policy, Expr::value(policy))
             .col_expr(
@@ -677,6 +784,29 @@ impl UserService {
         id: Uuid,
         policy: &UserPolicy,
     ) -> Result<(user::Model, bool), UserError> {
+        self.update_policy_with_emby_contract(id, policy, None)
+            .await
+    }
+
+    /// Atomically replaces the shared policy and persists the complete Emby
+    /// wire contract beside it. The nested contract keeps Emby-only fields
+    /// out of Jellyfin's typed DTO while retaining them in PostgreSQL.
+    pub async fn update_emby_policy(
+        &self,
+        id: Uuid,
+        policy: &UserPolicy,
+        emby_policy: serde_json::Value,
+    ) -> Result<(user::Model, bool), UserError> {
+        self.update_policy_with_emby_contract(id, policy, Some(emby_policy))
+            .await
+    }
+
+    async fn update_policy_with_emby_contract(
+        &self,
+        id: Uuid,
+        policy: &UserPolicy,
+        emby_policy: Option<serde_json::Value>,
+    ) -> Result<(user::Model, bool), UserError> {
         let login_attempts_before_lockout =
             normalized_login_attempts(policy.login_attempts_before_lockout);
         let authentication_provider_id =
@@ -705,6 +835,17 @@ impl UserService {
             .one(&transaction)
             .await?
             .ok_or(UserError::NotFound)?;
+
+        let emby_policy = emby_policy.or_else(|| {
+            target
+                .policy
+                .get(EMBY_USER_POLICY_KEY)
+                .filter(|value| value.is_object())
+                .cloned()
+        });
+        if let (Some(object), Some(emby_policy)) = (serialized.as_object_mut(), emby_policy) {
+            object.insert(EMBY_USER_POLICY_KEY.to_owned(), emby_policy);
+        }
 
         if target.is_administrator && policy.is_disabled {
             return Err(UserError::AdministratorCannotBeDisabled);
@@ -786,8 +927,55 @@ impl UserService {
         id: Uuid,
         configuration: &UserConfiguration,
     ) -> Result<user::Model, UserError> {
-        let serialized =
+        self.update_configuration_with_emby_contract(id, configuration, None)
+            .await
+    }
+
+    /// Replaces the shared configuration and persists the full Emby wire
+    /// contract in the same `jsonb` document without exposing protocol-only
+    /// fields through Jellyfin's typed response.
+    pub async fn update_emby_configuration(
+        &self,
+        id: Uuid,
+        configuration: &UserConfiguration,
+        emby_configuration: serde_json::Value,
+    ) -> Result<user::Model, UserError> {
+        self.update_configuration_with_emby_contract(id, configuration, Some(emby_configuration))
+            .await
+    }
+
+    async fn update_configuration_with_emby_contract(
+        &self,
+        id: Uuid,
+        configuration: &UserConfiguration,
+        emby_configuration: Option<serde_json::Value>,
+    ) -> Result<user::Model, UserError> {
+        let mut serialized =
             serde_json::to_value(configuration).map_err(UserError::ConfigurationSerialization)?;
+        let transaction = self.database.begin().await?;
+        transaction
+            .execute(Statement::from_sql_and_values(
+                DbBackend::Postgres,
+                "SELECT pg_advisory_xact_lock($1)",
+                [USER_MUTATION_LOCK_KEY.into()],
+            ))
+            .await?;
+        let target = user::Entity::find_by_id(id)
+            .one(&transaction)
+            .await?
+            .ok_or(UserError::NotFound)?;
+        let emby_configuration = emby_configuration.or_else(|| {
+            target
+                .preferences
+                .get(EMBY_USER_CONFIGURATION_KEY)
+                .filter(|value| value.is_object())
+                .cloned()
+        });
+        if let (Some(object), Some(emby_configuration)) =
+            (serialized.as_object_mut(), emby_configuration)
+        {
+            object.insert(EMBY_USER_CONFIGURATION_KEY.to_owned(), emby_configuration);
+        }
         let result = user::Entity::update_many()
             .col_expr(user::Column::Preferences, Expr::value(serialized))
             .col_expr(
@@ -796,12 +984,17 @@ impl UserService {
             )
             .col_expr(user::Column::UpdatedAt, Expr::value(Utc::now()))
             .filter(user::Column::Id.eq(id))
-            .exec(self.database.as_ref())
+            .exec(&transaction)
             .await?;
         if result.rows_affected == 0 {
             return Err(UserError::NotFound);
         }
-        self.get(id).await
+        let updated = user::Entity::find_by_id(id)
+            .one(&transaction)
+            .await?
+            .ok_or(UserError::NotFound)?;
+        transaction.commit().await?;
+        Ok(updated)
     }
 
     /// Lists all users in normalized username order.
@@ -850,6 +1043,206 @@ impl UserService {
             .all(self.database.as_ref())
             .await?)
     }
+}
+
+fn new_user_active_model(
+    name: &str,
+    is_administrator: bool,
+) -> Result<user::ActiveModel, UserError> {
+    let now = Utc::now();
+    let policy = UserPolicy {
+        is_administrator,
+        authentication_provider_id: Some(UserPolicy::DEFAULT_AUTHENTICATION_PROVIDER_ID.to_owned()),
+        password_reset_provider_id: Some(UserPolicy::DEFAULT_PASSWORD_RESET_PROVIDER_ID.to_owned()),
+        ..UserPolicy::default()
+    };
+    Ok(user::ActiveModel {
+        id: Set(Uuid::new_v4()),
+        username: Set(name.to_owned()),
+        normalized_username: Set(normalize_username(name)),
+        password_hash: Set(None),
+        must_update_password: Set(false),
+        enable_local_password: Set(false),
+        is_administrator: Set(is_administrator),
+        is_hidden: Set(true),
+        is_disabled: Set(false),
+        enable_auto_login: Set(false),
+        last_login_date: Set(None),
+        last_activity_date: Set(None),
+        invalid_login_attempt_count: Set(0),
+        login_attempts_before_lockout: Set(-1),
+        authentication_provider_id: Set(UserPolicy::DEFAULT_AUTHENTICATION_PROVIDER_ID.to_owned()),
+        password_reset_provider_id: Set(UserPolicy::DEFAULT_PASSWORD_RESET_PROVIDER_ID.to_owned()),
+        policy: Set(serde_json::to_value(policy).map_err(UserError::PolicySerialization)?),
+        preferences: Set(json!({
+            "RememberAudioSelections": true,
+            "RememberSubtitleSelections": true,
+            "EnableNextEpisodeAutoPlay": true
+        })),
+        row_version: Set(1),
+        created_at: Set(now),
+        updated_at: Set(now),
+    })
+}
+
+fn copy_policy_to_active_model(active: &mut user::ActiveModel, source: &user::Model) {
+    active.policy = Set(source.policy.clone());
+    active.is_administrator = Set(source.is_administrator);
+    active.is_hidden = Set(source.is_hidden);
+    active.is_disabled = Set(source.is_disabled);
+    active.invalid_login_attempt_count = Set(source.invalid_login_attempt_count);
+    active.login_attempts_before_lockout = Set(source.login_attempts_before_lockout);
+    active.authentication_provider_id = Set(source.authentication_provider_id.clone());
+    active.password_reset_provider_id = Set(source.password_reset_provider_id.clone());
+}
+
+async fn insert_user<C>(
+    database: &C,
+    active: user::ActiveModel,
+    name: &str,
+) -> Result<user::Model, UserError>
+where
+    C: ConnectionTrait,
+{
+    let result = user::Entity::insert(active)
+        .on_conflict(
+            OnConflict::column(user::Column::NormalizedUsername)
+                .do_nothing()
+                .to_owned(),
+        )
+        .do_nothing()
+        .exec_with_returning(database)
+        .await;
+    match result {
+        Ok(TryInsertResult::Inserted(inserted)) => Ok(inserted),
+        Ok(TryInsertResult::Conflicted) | Err(DbErr::RecordNotFound(_)) => {
+            Err(UserError::DuplicateUsername(name.to_owned()))
+        }
+        Ok(TryInsertResult::Empty) => Err(DbErr::RecordNotInserted.into()),
+        Err(error) => Err(error.into()),
+    }
+}
+
+async fn lock_user_mutations<C>(database: &C) -> Result<(), UserError>
+where
+    C: ConnectionTrait,
+{
+    database
+        .execute(Statement::from_sql_and_values(
+            DbBackend::Postgres,
+            "SELECT pg_advisory_xact_lock($1)",
+            [USER_MUTATION_LOCK_KEY.into()],
+        ))
+        .await?;
+    Ok(())
+}
+
+async fn validate_copy_policy_invariants<C>(
+    database: &C,
+    source: &user::Model,
+    loaded_targets: &[user::Model],
+    effective_target_ids: &[Uuid],
+) -> Result<(), UserError>
+where
+    C: ConnectionTrait,
+{
+    let targets = loaded_targets
+        .iter()
+        .filter(|target| effective_target_ids.contains(&target.id))
+        .collect::<Vec<_>>();
+    if source.is_disabled && targets.iter().any(|target| target.is_administrator) {
+        return Err(UserError::AdministratorCannotBeDisabled);
+    }
+    let current_admins = user::Entity::find()
+        .filter(user::Column::IsAdministrator.eq(true))
+        .count(database)
+        .await?;
+    let replaced_admins = targets
+        .iter()
+        .filter(|target| target.is_administrator)
+        .count() as u64;
+    let resulting_admins = current_admins - replaced_admins
+        + if source.is_administrator {
+            targets.len() as u64
+        } else {
+            0
+        };
+    if resulting_admins == 0 {
+        return Err(UserError::LastAdministrator);
+    }
+    let current_enabled = user::Entity::find()
+        .filter(user::Column::IsDisabled.eq(false))
+        .count(database)
+        .await?;
+    let replaced_enabled = targets.iter().filter(|target| !target.is_disabled).count() as u64;
+    let resulting_enabled = current_enabled - replaced_enabled
+        + if source.is_disabled {
+            0
+        } else {
+            targets.len() as u64
+        };
+    if resulting_enabled == 0 {
+        return Err(UserError::LastEnabledUser);
+    }
+    Ok(())
+}
+
+async fn copy_user_data_rows<C>(
+    database: &C,
+    source_user_id: Uuid,
+    target_user_ids: &[Uuid],
+) -> Result<(), UserError>
+where
+    C: ConnectionTrait,
+{
+    let ids = serde_json::json!(
+        target_user_ids
+            .iter()
+            .map(Uuid::to_string)
+            .collect::<Vec<_>>()
+    );
+    database
+        .execute(Statement::from_sql_and_values(
+            DbBackend::Postgres,
+            r"
+            INSERT INTO jellyfin.user_data (
+                item_id, user_id, custom_data_key, rating,
+                playback_position_ticks, play_count, is_favorite,
+                last_played_date, played, audio_stream_index,
+                subtitle_stream_index, likes, retention_date,
+                is_hidden_from_resume
+            )
+            SELECT source.item_id, targets.user_id, source.custom_data_key,
+                source.rating, source.playback_position_ticks,
+                source.play_count, source.is_favorite,
+                source.last_played_date, source.played,
+                source.audio_stream_index, source.subtitle_stream_index,
+                source.likes, source.retention_date,
+                source.is_hidden_from_resume
+            FROM jellyfin.user_data AS source
+            CROSS JOIN (
+                SELECT DISTINCT value::uuid AS user_id
+                FROM jsonb_array_elements_text($2::jsonb)
+            ) AS targets
+            WHERE source.user_id = $1::uuid
+              AND targets.user_id <> $1::uuid
+            ON CONFLICT (item_id, user_id, custom_data_key) DO UPDATE
+            SET rating = EXCLUDED.rating,
+                playback_position_ticks = EXCLUDED.playback_position_ticks,
+                play_count = EXCLUDED.play_count,
+                is_favorite = EXCLUDED.is_favorite,
+                last_played_date = EXCLUDED.last_played_date,
+                played = EXCLUDED.played,
+                audio_stream_index = EXCLUDED.audio_stream_index,
+                subtitle_stream_index = EXCLUDED.subtitle_stream_index,
+                likes = EXCLUDED.likes,
+                retention_date = EXCLUDED.retention_date,
+                is_hidden_from_resume = EXCLUDED.is_hidden_from_resume
+            ",
+            [source_user_id.into(), ids.into()],
+        ))
+        .await?;
+    Ok(())
 }
 
 async fn remove_user_from_playlists<C>(database: &C, user_id: Uuid) -> Result<(), UserError>

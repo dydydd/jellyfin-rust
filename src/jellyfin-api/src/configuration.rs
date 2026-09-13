@@ -231,6 +231,11 @@ async fn get_named_by_key(
     key: &str,
 ) -> Result<Json<Value>, ApiError> {
     authorization::require_default(&state, &headers, &uri).await?;
+    if is_protocol_owned_named_configuration(key) {
+        return Err(ApiError::NamedConfiguration(
+            NamedConfigurationStoreError::NotFound(key.to_owned()),
+        ));
+    }
     let repository = state
         .named_configurations
         .as_ref()
@@ -249,6 +254,11 @@ pub(crate) async fn update_named(
     authentication::authenticated_identity(&state, &headers, Some(&uri))
         .await?
         .require_administrator()?;
+    if is_protocol_owned_named_configuration(&key) {
+        return Err(ApiError::NamedConfiguration(
+            NamedConfigurationStoreError::NotFound(key),
+        ));
+    }
     let Json(configuration) = request.map_err(|_| ApiError::InvalidRequest)?;
     if !configuration.is_object() {
         return Err(ApiError::InvalidRequest);
@@ -259,6 +269,12 @@ pub(crate) async fn update_named(
         .ok_or(ApiError::Internal)?;
     repository.save(&key, configuration).await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+fn is_protocol_owned_named_configuration(key: &str) -> bool {
+    key.trim()
+        .to_ascii_lowercase()
+        .starts_with("emby-encoding-")
 }
 
 fn server_configuration(

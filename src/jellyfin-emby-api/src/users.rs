@@ -1,17 +1,25 @@
 //! Emby-only user query contracts missing from Jellyfin's public surface.
 
-use std::sync::Arc;
+mod contracts;
+
+use std::{fmt, sync::Arc};
 
 use axum::{
     Json, Router,
-    extract::{OriginalUri, Query, State},
-    http::HeaderMap,
-    response::Response,
-    routing::get,
+    body::{Body, Bytes, to_bytes},
+    extract::{OriginalUri, Path, Query, Request, State},
+    http::{HeaderMap, Method, StatusCode, header},
+    middleware::Next,
+    response::{IntoResponse, Response},
+    routing::{get, post},
 };
-use jellyfin_api::AppState;
+use jellyfin_api::{AppState, EmbyUserCopyOptions};
 use jellyfin_model::{NameIdPair, UserDto};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, de};
+use serde_json::Value;
+use uuid::Uuid;
+
+use contracts::{EmbyUserConfiguration, EmbyUserPolicy};
 
 pub(crate) fn routes() -> Router<Arc<AppState>> {
     Router::new()
@@ -21,29 +29,70 @@ pub(crate) fn routes() -> Router<Arc<AppState>> {
         .route("/users/itemaccess", get(item_access))
         .route("/Users/CopyDataOptions", get(copy_data_options))
         .route("/users/copydataoptions", get(copy_data_options))
+        .route("/Users/{user_id}/CopyData", post(copy_data))
+        .route("/users/{user_id}/copydata", post(copy_data))
+        .route("/Users/New", post(create_user))
+        .route("/users/new", post(create_user))
         .route("/Users/Prefixes", get(prefixes))
         .route("/users/prefixes", get(prefixes))
+        .route("/Users/{user_id}/Configuration", post(update_configuration))
+        .route("/users/{user_id}/configuration", post(update_configuration))
+        .route("/Users/{user_id}/Policy", post(update_policy))
+        .route("/users/{user_id}/policy", post(update_policy))
 }
 
-#[derive(Debug, Default, Deserialize)]
-#[serde(default)]
+#[derive(Debug, Default)]
 struct UserQuery {
-    #[serde(rename = "IsHidden", alias = "isHidden", alias = "ishidden")]
     is_hidden: Option<bool>,
-    #[serde(rename = "IsDisabled", alias = "isDisabled", alias = "isdisabled")]
     is_disabled: Option<bool>,
-    #[serde(rename = "StartIndex", alias = "startIndex", alias = "startindex")]
     start_index: Option<i32>,
-    #[serde(rename = "Limit", alias = "limit")]
     limit: Option<i32>,
-    #[serde(
-        rename = "NameStartsWithOrGreater",
-        alias = "nameStartsWithOrGreater",
-        alias = "namestartswithorgreater"
-    )]
     name_starts_with_or_greater: Option<String>,
-    #[serde(rename = "SortOrder", alias = "sortOrder", alias = "sortorder")]
     sort_order: Option<String>,
+}
+
+impl<'de> Deserialize<'de> for UserQuery {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct Visitor;
+
+        impl<'de> de::Visitor<'de> for Visitor {
+            type Value = UserQuery;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("an Emby user query")
+            }
+
+            fn visit_map<M>(self, mut map: M) -> Result<Self::Value, M::Error>
+            where
+                M: de::MapAccess<'de>,
+            {
+                let mut query = UserQuery::default();
+                while let Some(name) = map.next_key::<String>()? {
+                    if name.eq_ignore_ascii_case("IsHidden") {
+                        query.is_hidden = Some(map.next_value()?);
+                    } else if name.eq_ignore_ascii_case("IsDisabled") {
+                        query.is_disabled = Some(map.next_value()?);
+                    } else if name.eq_ignore_ascii_case("StartIndex") {
+                        query.start_index = Some(map.next_value()?);
+                    } else if name.eq_ignore_ascii_case("Limit") {
+                        query.limit = Some(map.next_value()?);
+                    } else if name.eq_ignore_ascii_case("NameStartsWithOrGreater") {
+                        query.name_starts_with_or_greater = Some(map.next_value()?);
+                    } else if name.eq_ignore_ascii_case("SortOrder") {
+                        query.sort_order = Some(map.next_value()?);
+                    } else {
+                        map.next_value::<de::IgnoredAny>()?;
+                    }
+                }
+                Ok(query)
+            }
+        }
+
+        deserializer.deserialize_map(Visitor)
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -58,6 +107,138 @@ struct UserQueryResult {
 #[serde(rename_all = "PascalCase")]
 struct FullUserCopyDataOptions {
     data_options: Vec<NameIdPair>,
+}
+
+#[derive(Debug, Default, PartialEq, Eq)]
+struct CopyDataRequest {
+    /// The generated body repeats the route's UserId property. ServiceStack's
+    /// route binding supplies the authoritative value, so this nullable body
+    /// value is accepted for SDK compatibility but never overrides the path.
+    user_id: Option<String>,
+    to_user_ids: Option<Vec<String>>,
+    copy_options: Option<Vec<String>>,
+}
+
+#[derive(Debug, Default, PartialEq, Eq)]
+struct CreateUserRequest {
+    name: Option<String>,
+    copy_from_user_id: Option<String>,
+    user_copy_options: Option<Vec<String>>,
+}
+
+impl<'de> Deserialize<'de> for CreateUserRequest {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct Visitor;
+        impl<'de> de::Visitor<'de> for Visitor {
+            type Value = CreateUserRequest;
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("an Emby CreateUserByName object")
+            }
+            fn visit_map<M>(self, mut map: M) -> Result<Self::Value, M::Error>
+            where
+                M: de::MapAccess<'de>,
+            {
+                let mut fields = serde_json::Map::new();
+                while let Some(name) = map.next_key::<String>()? {
+                    let value = map.next_value::<Value>()?;
+                    let canonical = ["Name", "CopyFromUserId", "UserCopyOptions"]
+                        .iter()
+                        .find(|field| field.eq_ignore_ascii_case(&name));
+                    if let Some(canonical) = canonical {
+                        fields.insert((*canonical).to_owned(), value);
+                    }
+                }
+                Ok(CreateUserRequest {
+                    name: fields
+                        .remove("Name")
+                        .map(serde_json::from_value)
+                        .transpose()
+                        .map_err(de::Error::custom)?
+                        .flatten(),
+                    copy_from_user_id: fields
+                        .remove("CopyFromUserId")
+                        .map(serde_json::from_value)
+                        .transpose()
+                        .map_err(de::Error::custom)?
+                        .flatten(),
+                    user_copy_options: fields
+                        .remove("UserCopyOptions")
+                        .map(serde_json::from_value)
+                        .transpose()
+                        .map_err(de::Error::custom)?
+                        .flatten(),
+                })
+            }
+        }
+        deserializer.deserialize_map(Visitor)
+    }
+}
+
+impl<'de> Deserialize<'de> for CopyDataRequest {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct CopyDataVisitor;
+
+        impl<'de> de::Visitor<'de> for CopyDataVisitor {
+            type Value = CopyDataRequest;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("an Emby CopyData object")
+            }
+
+            fn visit_map<M>(self, mut map: M) -> Result<Self::Value, M::Error>
+            where
+                M: de::MapAccess<'de>,
+            {
+                let mut fields = serde_json::Map::new();
+                while let Some(name) = map.next_key::<String>()? {
+                    let value = map.next_value::<Value>()?;
+                    let canonical = if name.eq_ignore_ascii_case("UserId") {
+                        Some("UserId")
+                    } else if name.eq_ignore_ascii_case("ToUserIds") {
+                        Some("ToUserIds")
+                    } else if name.eq_ignore_ascii_case("CopyOptions") {
+                        Some("CopyOptions")
+                    } else {
+                        None
+                    };
+                    if let Some(canonical) = canonical {
+                        // ASP.NET property binding is case-insensitive and the
+                        // last duplicate value wins.
+                        fields.insert(canonical.to_owned(), value);
+                    }
+                }
+                let mut fields = fields;
+                Ok(CopyDataRequest {
+                    user_id: fields
+                        .remove("UserId")
+                        .map(serde_json::from_value)
+                        .transpose()
+                        .map_err(de::Error::custom)?
+                        .flatten(),
+                    to_user_ids: fields
+                        .remove("ToUserIds")
+                        .map(serde_json::from_value)
+                        .transpose()
+                        .map_err(de::Error::custom)?
+                        .flatten(),
+                    copy_options: fields
+                        .remove("CopyOptions")
+                        .map(serde_json::from_value)
+                        .transpose()
+                        .map_err(de::Error::custom)?
+                        .flatten(),
+                })
+            }
+        }
+
+        deserializer.deserialize_map(CopyDataVisitor)
+    }
 }
 
 async fn query_users(
@@ -85,18 +266,298 @@ async fn item_access(
     )))
 }
 
+async fn update_configuration(
+    State(state): State<Arc<AppState>>,
+    OriginalUri(uri): OriginalUri,
+    headers: HeaderMap,
+    Path(user_id): Path<Uuid>,
+    body: Bytes,
+) -> Result<StatusCode, Response> {
+    // Authorize and resolve the target before decoding JSON. This preserves
+    // Emby's 401/403/404 precedence over a malformed request body.
+    let mut shared = state
+        .emby_configuration_update_target(&headers, &uri, user_id)
+        .await?;
+    let configuration: EmbyUserConfiguration =
+        serde_json::from_slice(&body).map_err(|_| StatusCode::BAD_REQUEST.into_response())?;
+    configuration.apply_to_shared(&mut shared);
+    let wire = serde_json::to_value(configuration)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())?;
+    state
+        .persist_emby_configuration(user_id, &shared, wire)
+        .await
+}
+
+async fn update_policy(
+    State(state): State<Arc<AppState>>,
+    OriginalUri(uri): OriginalUri,
+    headers: HeaderMap,
+    Path(user_id): Path<Uuid>,
+    body: Bytes,
+) -> Result<StatusCode, Response> {
+    let (mut shared, current_token) = state
+        .emby_policy_update_target(&headers, &uri, user_id)
+        .await?;
+    let policy: EmbyUserPolicy =
+        serde_json::from_slice(&body).map_err(|_| StatusCode::BAD_REQUEST.into_response())?;
+    policy.apply_to_shared(&mut shared);
+    let wire = serde_json::to_value(policy)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())?;
+    state
+        .persist_emby_policy(user_id, &shared, wire, &current_token)
+        .await
+}
+
+/// Adapts every successful Emby user response emitted by the shared Jellyfin
+/// fallback, including nested authentication results. The caller installs
+/// this around the Emby route tree only; unprefixed Jellyfin responses never
+/// pass through it.
+pub(crate) async fn adapt_user_responses(
+    State(state): State<Arc<AppState>>,
+    request: Request,
+    next: Next,
+) -> Response {
+    let should_adapt = is_user_dto_response_path(request.method(), request.uri().path());
+    let response = next.run(request).await;
+    if !should_adapt || !response.status().is_success() {
+        return response;
+    }
+
+    let (mut parts, body) = response.into_parts();
+    let bytes = match to_bytes(body, 8 * 1024 * 1024).await {
+        Ok(bytes) => bytes,
+        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    };
+    let Ok(mut value) = serde_json::from_slice::<Value>(&bytes) else {
+        return Response::from_parts(parts, Body::from(bytes));
+    };
+    if let Err(response) = adapt_user_json(&state, &mut value).await {
+        return response;
+    }
+    let bytes = match serde_json::to_vec(&value) {
+        Ok(bytes) => bytes,
+        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    };
+    parts.headers.remove(header::CONTENT_LENGTH);
+    Response::from_parts(parts, Body::from(bytes))
+}
+
+fn is_user_dto_response_path(method: &Method, path: &str) -> bool {
+    let segments = path
+        .strip_prefix("/emby/")
+        .unwrap_or(path)
+        .split('/')
+        .filter(|segment| !segment.is_empty())
+        .collect::<Vec<_>>();
+    let Some(first) = segments.first() else {
+        return false;
+    };
+    if !first.eq_ignore_ascii_case("Users") {
+        return false;
+    }
+    match (method, segments.as_slice()) {
+        (&Method::GET, [_]) => true,
+        (&Method::GET, [_, action]) => {
+            action.parse::<Uuid>().is_ok()
+                || ["Public", "Me", "Query", "ItemAccess"]
+                    .iter()
+                    .any(|candidate| action.eq_ignore_ascii_case(candidate))
+        }
+        (&Method::POST, [_]) => true,
+        (&Method::POST, [_, action]) => {
+            action.parse::<Uuid>().is_ok()
+                || ["New", "AuthenticateByName"]
+                    .iter()
+                    .any(|candidate| action.eq_ignore_ascii_case(candidate))
+        }
+        (&Method::POST, [_, _user_id, action]) => action.eq_ignore_ascii_case("Authenticate"),
+        _ => false,
+    }
+}
+
+async fn adapt_user_json(state: &AppState, value: &mut Value) -> Result<(), Response> {
+    let mut ids = Vec::new();
+    collect_user_ids(value, &mut ids);
+    ids.sort_unstable();
+    ids.dedup();
+    if ids.is_empty() {
+        return Ok(());
+    }
+    let stored = state.emby_user_contract_storage(&ids).await?;
+    replace_user_contracts(value, &stored);
+    Ok(())
+}
+
+fn collect_user_ids(value: &Value, ids: &mut Vec<Uuid>) {
+    match value {
+        Value::Array(values) => {
+            for value in values {
+                collect_user_ids(value, ids);
+            }
+        }
+        Value::Object(object) => {
+            if object.contains_key("Configuration")
+                && object.contains_key("Policy")
+                && let Some(id) = object
+                    .get("Id")
+                    .and_then(Value::as_str)
+                    .and_then(|id| id.parse().ok())
+            {
+                ids.push(id);
+            }
+            for value in object.values() {
+                collect_user_ids(value, ids);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn replace_user_contracts(
+    value: &mut Value,
+    stored: &std::collections::HashMap<Uuid, (Value, Value, bool)>,
+) {
+    match value {
+        Value::Array(values) => {
+            for value in values {
+                replace_user_contracts(value, stored);
+            }
+        }
+        Value::Object(object) => {
+            let id = object
+                .get("Id")
+                .and_then(Value::as_str)
+                .and_then(|id| id.parse().ok());
+            if object.contains_key("Configuration")
+                && object.contains_key("Policy")
+                && let Some((preferences, policy, enable_local_password)) =
+                    id.and_then(|id| stored.get(&id))
+            {
+                let configuration =
+                    EmbyUserConfiguration::from_storage(preferences, *enable_local_password);
+                let policy = EmbyUserPolicy::from_storage(policy);
+                if let Ok(configuration) = serde_json::to_value(configuration) {
+                    object.insert("Configuration".to_owned(), configuration);
+                }
+                if let Ok(policy) = serde_json::to_value(policy) {
+                    object.insert("Policy".to_owned(), policy);
+                }
+            }
+            for value in object.values_mut() {
+                replace_user_contracts(value, stored);
+            }
+        }
+        _ => {}
+    }
+}
+
 async fn copy_data_options(
     State(state): State<Arc<AppState>>,
     OriginalUri(uri): OriginalUri,
     headers: HeaderMap,
 ) -> Result<Json<FullUserCopyDataOptions>, Response> {
     state.require_emby_administrator(&headers, &uri).await?;
-    // The companion CopyData operation is not implemented, so advertising no
-    // available options is more accurate than exposing actions that cannot be
-    // completed by this server.
     Ok(Json(FullUserCopyDataOptions {
-        data_options: Vec::new(),
+        // This order and these ids are used by Emby's 4.10 dashboard
+        // `users/usernew.js` when constructing UserCopyOptions.
+        data_options: vec![
+            NameIdPair {
+                name: "User Policy".to_owned(),
+                id: "UserPolicy".to_owned(),
+            },
+            NameIdPair {
+                name: "User Configuration".to_owned(),
+                id: "UserConfiguration".to_owned(),
+            },
+            NameIdPair {
+                name: "User Data".to_owned(),
+                id: "UserData".to_owned(),
+            },
+        ],
     }))
+}
+
+async fn create_user(
+    State(state): State<Arc<AppState>>,
+    OriginalUri(uri): OriginalUri,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Json<UserDto>, Response> {
+    state.require_emby_administrator(&headers, &uri).await?;
+    let request: CreateUserRequest =
+        serde_json::from_slice(&body).map_err(|_| StatusCode::BAD_REQUEST.into_response())?;
+    let name = request
+        .name
+        .as_deref()
+        .ok_or_else(|| StatusCode::BAD_REQUEST.into_response())?;
+    let source_user_id = request
+        .copy_from_user_id
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+        .map(|value| Uuid::parse_str(value).map_err(|_| StatusCode::BAD_REQUEST.into_response()))
+        .transpose()?;
+    // Emby's dashboard always sends its checkbox array explicitly. The
+    // generated API contract makes this field nullable, so an omitted or
+    // explicitly empty array conservatively copies no category.
+    let options = if source_user_id.is_some() {
+        match request.user_copy_options.as_deref() {
+            Some(values) => parse_copy_options(values)?,
+            None => EmbyUserCopyOptions::default(),
+        }
+    } else {
+        EmbyUserCopyOptions::default()
+    };
+    state
+        .create_emby_user_with_copy(name, source_user_id, options)
+        .await
+        .map(Json)
+}
+
+async fn copy_data(
+    State(state): State<Arc<AppState>>,
+    OriginalUri(uri): OriginalUri,
+    headers: HeaderMap,
+    Path(source_user_id): Path<String>,
+    body: Bytes,
+) -> Result<StatusCode, Response> {
+    let (source_user_id, current_token) = state
+        .resolve_emby_copy_data_source(&headers, &uri, &source_user_id)
+        .await?;
+    let request: CopyDataRequest =
+        serde_json::from_slice(&body).map_err(|_| StatusCode::BAD_REQUEST.into_response())?;
+    let CopyDataRequest {
+        user_id: _,
+        to_user_ids,
+        copy_options,
+    } = request;
+    let target_user_ids = to_user_ids
+        .filter(|targets| !targets.is_empty())
+        .ok_or_else(|| StatusCode::BAD_REQUEST.into_response())?
+        .into_iter()
+        .map(|target| Uuid::parse_str(&target).map_err(|_| StatusCode::BAD_REQUEST.into_response()))
+        .collect::<Result<Vec<_>, _>>()?;
+    let copy_options = copy_options.unwrap_or_default();
+    let options = parse_copy_options(&copy_options)?;
+    state
+        .copy_emby_user_state(source_user_id, &target_user_ids, options, &current_token)
+        .await?;
+    Ok(StatusCode::OK)
+}
+
+fn parse_copy_options(values: &[String]) -> Result<EmbyUserCopyOptions, Response> {
+    let mut options = EmbyUserCopyOptions::default();
+    for value in values {
+        if value.eq_ignore_ascii_case("UserPolicy") {
+            options.policy = true;
+        } else if value.eq_ignore_ascii_case("UserConfiguration") {
+            options.configuration = true;
+        } else if value.eq_ignore_ascii_case("UserData") {
+            options.user_data = true;
+        } else {
+            return Err(StatusCode::BAD_REQUEST.into_response());
+        }
+    }
+    Ok(options)
 }
 
 async fn prefixes(
@@ -215,12 +676,106 @@ mod tests {
     }
 
     #[test]
+    fn user_query_names_are_case_insensitive_and_last_duplicate_wins() {
+        let query: UserQuery = serde_json::from_str(
+            r#"{
+                "sTaRtInDeX": -2,
+                "LiMiT": 1,
+                "LIMIT": 2,
+                "iShIdDeN": true,
+                "IsDiSaBlEd": false,
+                "nAmEsTaRtSwItHoRgReAtEr": "M",
+                "sOrToRdEr": "Descending",
+                "ignored": {"nested": true}
+            }"#,
+        )
+        .expect("case-insensitive user query");
+        assert_eq!(query.start_index, Some(-2));
+        assert_eq!(query.limit, Some(2));
+        assert_eq!(query.is_hidden, Some(true));
+        assert_eq!(query.is_disabled, Some(false));
+        assert_eq!(query.name_starts_with_or_greater.as_deref(), Some("M"));
+        assert_eq!(query.sort_order.as_deref(), Some("Descending"));
+    }
+
+    #[test]
     fn copy_data_options_keep_swift_decodable_shape() {
         let value = serde_json::to_value(FullUserCopyDataOptions {
-            data_options: Vec::new(),
+            data_options: vec![
+                NameIdPair {
+                    name: "User Policy".to_owned(),
+                    id: "UserPolicy".to_owned(),
+                },
+                NameIdPair {
+                    name: "User Configuration".to_owned(),
+                    id: "UserConfiguration".to_owned(),
+                },
+                NameIdPair {
+                    name: "User Data".to_owned(),
+                    id: "UserData".to_owned(),
+                },
+            ],
         })
         .unwrap();
-        assert_eq!(value, serde_json::json!({ "DataOptions": [] }));
+        assert_eq!(
+            value,
+            serde_json::json!({
+                "DataOptions": [
+                    {"Name": "User Policy", "Id": "UserPolicy"},
+                    {"Name": "User Configuration", "Id": "UserConfiguration"},
+                    {"Name": "User Data", "Id": "UserData"}
+                ]
+            })
+        );
+    }
+
+    #[test]
+    fn copy_data_body_is_case_insensitive_and_last_duplicate_wins() {
+        let request: CopyDataRequest = serde_json::from_str(
+            r#"{
+                "USERID":"ignored",
+                "touserids":["old"],
+                "ToUserIds":["new"],
+                "copyOPTIONS":["UserData"]
+            }"#,
+        )
+        .expect("copy data request");
+        assert_eq!(request.user_id.as_deref(), Some("ignored"));
+        assert_eq!(request.to_user_ids, Some(vec!["new".to_owned()]));
+        assert_eq!(request.copy_options, Some(vec!["UserData".to_owned()]));
+    }
+
+    #[test]
+    fn response_adapter_is_limited_to_user_dto_routes() {
+        let user_id = Uuid::new_v4();
+        for (method, path) in [
+            (&Method::GET, "/Users".to_owned()),
+            (&Method::GET, "/Users/Public".to_owned()),
+            (&Method::GET, "/Users/Me".to_owned()),
+            (&Method::GET, "/Users/Query".to_owned()),
+            (&Method::GET, "/Users/ItemAccess".to_owned()),
+            (&Method::GET, format!("/Users/{user_id}")),
+            (&Method::POST, "/Users/New".to_owned()),
+            (&Method::POST, "/Users/AuthenticateByName".to_owned()),
+            (&Method::POST, format!("/Users/{user_id}/Authenticate")),
+            (&Method::POST, format!("/emby/Users/{user_id}")),
+        ] {
+            assert!(is_user_dto_response_path(method, &path), "{path}");
+        }
+
+        for (method, path) in [
+            (&Method::GET, format!("/Users/{user_id}/Items")),
+            (&Method::GET, format!("/Users/{user_id}/Views")),
+            (&Method::GET, "/Users/Prefixes".to_owned()),
+            (&Method::POST, format!("/Users/{user_id}/Configuration")),
+            (&Method::POST, format!("/Users/{user_id}/Policy")),
+            (
+                &Method::POST,
+                "/Users/AuthenticateWithQuickConnect".to_owned(),
+            ),
+        ] {
+            assert!(!is_user_dto_response_path(method, &path), "{path}");
+        }
     }
 
     #[tokio::test]

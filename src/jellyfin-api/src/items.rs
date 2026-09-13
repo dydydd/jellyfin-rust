@@ -969,7 +969,8 @@ pub(crate) async fn get(
     query: Result<Query<ItemsQuery>, QueryRejection>,
 ) -> Result<Json<user_library::BaseItemQueryResult>, ApiError> {
     let identity = authentication::authenticated_identity(&state, &headers, Some(&uri)).await?;
-    let Query(query) = query.map_err(|_| ApiError::InvalidRequest)?;
+    let Query(mut query) = query.map_err(|_| ApiError::InvalidRequest)?;
+    exclude_emby_game_types_from_jellyfin(&uri, &mut query);
     let mut result = get_for_identity(state, identity, query.user_id, query).await?;
     user_library::omit_incompatible_emby_relations(&uri, &mut result.0.items);
     Ok(result)
@@ -983,10 +984,36 @@ pub(crate) async fn get_legacy(
     query: Result<Query<ItemsQuery>, QueryRejection>,
 ) -> Result<Json<user_library::BaseItemQueryResult>, ApiError> {
     let identity = authentication::authenticated_identity(&state, &headers, Some(&uri)).await?;
-    let Query(query) = query.map_err(|_| ApiError::InvalidRequest)?;
+    let Query(mut query) = query.map_err(|_| ApiError::InvalidRequest)?;
+    exclude_emby_game_types_from_jellyfin(&uri, &mut query);
     let mut result = get_for_identity(state, identity, Some(user_id), query).await?;
     user_library::omit_incompatible_emby_relations(&uri, &mut result.0.items);
     Ok(result)
+}
+
+fn exclude_emby_game_types_from_jellyfin(uri: &axum::http::Uri, query: &mut ItemsQuery) {
+    if uri
+        .path()
+        .split('/')
+        .nth(1)
+        .is_some_and(|segment| segment.eq_ignore_ascii_case("emby"))
+    {
+        return;
+    }
+    for item_type in [
+        "Game",
+        "MediaBrowser.Controller.Entities.Game",
+        "GameGenre",
+        "MediaBrowser.Controller.Entities.GameGenre",
+    ] {
+        if !query
+            .exclude_item_types
+            .iter()
+            .any(|excluded| excluded.eq_ignore_ascii_case(item_type))
+        {
+            query.exclude_item_types.push(item_type.to_owned());
+        }
+    }
 }
 
 pub(crate) async fn query_items(
