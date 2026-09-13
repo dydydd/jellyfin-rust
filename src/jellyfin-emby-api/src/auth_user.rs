@@ -290,6 +290,9 @@ async fn update_display_preferences(
     request: Result<Json<EmbyDisplayPreferences>, JsonRejection>,
 ) -> Result<StatusCode, Response> {
     let Json(preferences) = request.map_err(|_| StatusCode::BAD_REQUEST.into_response())?;
+    // Emby's generated clients send Client in the DTO for updates.  Retain
+    // query precedence for callers that explicitly provide both forms.
+    let client = update_client(query.client, &preferences);
     state
         .update_display_preferences_for_request(
             &headers,
@@ -297,10 +300,17 @@ async fn update_display_preferences(
             &display_preferences_id,
             query.user_id.as_deref(),
             query.item_id.as_deref(),
-            query.client,
+            client,
             display_preferences_request(preferences),
         )
         .await
+}
+
+fn update_client(
+    query_client: Option<String>,
+    preferences: &EmbyDisplayPreferences,
+) -> Option<String> {
+    query_client.or_else(|| preferences.client.as_ref().map(ToOwned::to_owned))
 }
 
 #[cfg(test)]
@@ -357,6 +367,27 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(numeric.sort_order, SortOrder::Descending);
+    }
+
+    #[test]
+    fn update_client_prefers_query_and_falls_back_to_body() {
+        let preferences = EmbyDisplayPreferences {
+            client: Some("body-client".to_owned()),
+            ..Default::default()
+        };
+
+        assert_eq!(
+            update_client(None, &preferences).as_deref(),
+            Some("body-client")
+        );
+        assert_eq!(
+            update_client(Some("query-client".to_owned()), &preferences).as_deref(),
+            Some("query-client")
+        );
+        assert_eq!(
+            update_client(Some(String::new()), &preferences).as_deref(),
+            Some("")
+        );
     }
 
     #[test]
