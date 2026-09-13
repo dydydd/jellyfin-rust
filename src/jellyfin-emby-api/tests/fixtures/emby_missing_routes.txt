@@ -7,10 +7,6 @@ POST /Notifications/Admin
 POST /Sync/Jobs
 POST /Sync/OfflineActions
 POST /Sync/Data
-GET /UI/View
-POST /UI/Command
-GET /web/strings
-GET /web/stringset
 GET /Dlna/{UuId}/description.xml
 HEAD /Dlna/{UuId}/description.xml
 GET /Dlna/{UuId}/description

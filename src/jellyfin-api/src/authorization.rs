@@ -308,6 +308,29 @@ fn route_policy(method: &Method, path: &str) -> RoutePolicy {
     {
         return RoutePolicy::Public;
     }
+    // Emby's actual WebApp request DTOs mark these plugin-localization routes
+    // unauthenticated even though the generated Swagger says user auth. Keep
+    // that protocol-local correction case-insensitive.
+    if is_emby_protocol
+        && matches!(segments.as_slice(), [web, endpoint]
+            if web.eq_ignore_ascii_case("web")
+                && ["strings", "stringset"]
+                    .iter()
+                    .any(|candidate| endpoint.eq_ignore_ascii_case(candidate)))
+    {
+        return RoutePolicy::Public;
+    }
+    // Generic UI controllers expose plugin setup state and both operations are
+    // protected by the service-level administrator role in Emby 4.10.
+    if is_emby_protocol
+        && matches!(segments.as_slice(), [ui, endpoint]
+            if ui.eq_ignore_ascii_case("UI")
+                && ["View", "Command"]
+                    .iter()
+                    .any(|candidate| endpoint.eq_ignore_ascii_case(candidate)))
+    {
+        return RoutePolicy::Elevated;
+    }
     // Persisted Emby DLNA profiles are administrator configuration.  Keep the
     // rule protocol-local because Jellyfin has no matching unprefixed route.
     if is_emby_protocol
@@ -1294,6 +1317,45 @@ mod tests {
         ] {
             assert_eq!(route_policy(&method, canonical), RoutePolicy::Elevated);
             assert_eq!(route_policy(&method, lowercase), RoutePolicy::Elevated);
+        }
+    }
+
+    #[test]
+    fn emby_generic_ui_and_web_strings_use_official_runtime_policies() {
+        for route in [
+            "/emby/UI/View",
+            "/emby/ui/view",
+            "/emby/uI/vIeW",
+            "/emby/UI/Command",
+            "/emby/ui/command",
+            "/emby/uI/cOmMaNd",
+        ] {
+            assert_eq!(
+                route_policy(&Method::GET, route),
+                RoutePolicy::Elevated,
+                "Generic UI route must remain administrator-only: {route}",
+            );
+        }
+
+        for route in [
+            "/emby/web/strings",
+            "/emby/WeB/StRiNgS",
+            "/emby/web/stringset",
+            "/emby/WeB/StRiNgSeT",
+        ] {
+            assert_eq!(
+                route_policy(&Method::GET, route),
+                RoutePolicy::Public,
+                "official WebApp request DTO is unauthenticated: {route}",
+            );
+        }
+
+        for route in ["/UI/View", "/api/UI/View", "/UI/Command", "/api/UI/Command"] {
+            assert_ne!(
+                route_policy(&Method::GET, route),
+                RoutePolicy::Elevated,
+                "Emby-only Generic UI policy leaked into Jellyfin: {route}",
+            );
         }
     }
 }

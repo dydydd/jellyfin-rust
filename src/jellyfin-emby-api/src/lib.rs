@@ -26,6 +26,7 @@ mod connect;
 mod dlna;
 mod encoding;
 mod environment;
+mod generic_ui;
 mod hide_from_resume;
 mod home_sections;
 mod legacy_item_metadata;
@@ -45,6 +46,7 @@ mod system_misc;
 mod track_selections;
 mod typed_settings;
 mod users;
+mod web_strings;
 
 /// Emby's Android and iOS API base path.
 pub const EMBY_API_PREFIX: &str = "/emby";
@@ -172,6 +174,8 @@ const DEDICATED_ROUTE_TEMPLATES: &[&str] = &[
     "/System/ReleaseNotes",
     "/System/WakeOnLanInfo",
     "/Tags",
+    "/UI/Command",
+    "/UI/View",
     "/UserSettings/{user_id}/Partial",
     "/UserSettings/{user_id}",
     "/Users/{user_id}/Items/{item_id}/HideFromResume",
@@ -212,6 +216,8 @@ const DEDICATED_ROUTE_TEMPLATES: &[&str] = &[
     "/VideoCodecs",
     "/Videos/{item_id}/live_subtitles.m3u8",
     "/Videos/{item_id}/subtitles.m3u8",
+    "/web/strings",
+    "/web/stringset",
 ];
 
 fn case_insensitive_dedicated_routes(routes: Router) -> Router {
@@ -396,6 +402,7 @@ fn dedicated_routes() -> Router<Arc<AppState>> {
         .merge(dlna::routes())
         .merge(encoding::routes())
         .merge(environment::routes())
+        .merge(generic_ui::routes())
         .merge(hide_from_resume::routes())
         .merge(home_sections::routes())
         .merge(library::routes())
@@ -415,6 +422,7 @@ fn dedicated_routes() -> Router<Arc<AppState>> {
         .merge(track_selections::routes())
         .merge(typed_settings::routes())
         .merge(users::routes())
+        .merge(web_strings::routes())
         .route("/Branding/Configuration", get(branding_configuration))
         .route("/branding/configuration", get(branding_configuration))
         .route("/System/Info/Public", get(public_system_info))
