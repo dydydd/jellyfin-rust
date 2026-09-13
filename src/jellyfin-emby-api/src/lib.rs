@@ -128,6 +128,7 @@ const DEDICATED_ROUTE_TEMPLATES: &[&str] = &[
     "/GameGenres/{name}/Images/{image_type}/{image_index}",
     "/Games/{item_id}/Similar",
     "/Items/Access",
+    "/Items/Shared/Leave",
     "/Items/Metadata/Reset",
     "/Items/RemoteSearch/Game",
     "/Items/{item_id}/CriticReviews",

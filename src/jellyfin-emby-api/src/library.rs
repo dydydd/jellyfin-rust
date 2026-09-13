@@ -14,7 +14,7 @@ use axum::{
     response::{IntoResponse, Response},
     routing::{get, post},
 };
-use jellyfin_api::{AppState, EmbyItemAccessMutation};
+use jellyfin_api::{AppState, EmbyItemAccessMutation, EmbyLeaveSharedItemsMutation};
 use serde::{Deserialize, Deserializer, Serialize, de};
 
 /// Routes owned by the Emby protocol surface.
@@ -26,6 +26,8 @@ pub(crate) fn routes() -> Router<Arc<AppState>> {
     Router::new()
         .route("/Items/Access", post(update_item_access))
         .route("/items/access", post(update_item_access))
+        .route("/Items/Shared/Leave", post(leave_shared_items))
+        .route("/items/shared/leave", post(leave_shared_items))
         .route("/Items/Intros", get(intro_debug_info))
         .route("/items/intros", get(intro_debug_info))
         .route("/Items/Prefixes", get(item_prefixes))
@@ -57,6 +59,49 @@ struct UpdateUserItemAccess {
 
 #[derive(Debug)]
 struct CaseInsensitiveUpdateUserItemAccess(UpdateUserItemAccess);
+
+#[derive(Debug)]
+struct LeaveSharedItems {
+    item_ids: Option<Vec<String>>,
+    user_id: Option<String>,
+}
+
+#[derive(Debug)]
+struct CaseInsensitiveLeaveSharedItems(LeaveSharedItems);
+
+impl<'de> Deserialize<'de> for CaseInsensitiveLeaveSharedItems {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct LeaveVisitor;
+
+        impl<'de> de::Visitor<'de> for LeaveVisitor {
+            type Value = CaseInsensitiveLeaveSharedItems;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("an Emby leave shared items object")
+            }
+
+            fn visit_map<M: de::MapAccess<'de>>(self, mut map: M) -> Result<Self::Value, M::Error> {
+                let mut item_ids = None;
+                let mut user_id = None;
+                while let Some(key) = map.next_key::<String>()? {
+                    if key.eq_ignore_ascii_case("ItemIds") {
+                        item_ids = map.next_value()?;
+                    } else if key.eq_ignore_ascii_case("UserId") {
+                        user_id = map.next_value()?;
+                    } else {
+                        map.next_value::<de::IgnoredAny>()?;
+                    }
+                }
+                Ok(CaseInsensitiveLeaveSharedItems(LeaveSharedItems {
+                    item_ids,
+                    user_id,
+                }))
+            }
+        }
+
+        deserializer.deserialize_map(LeaveVisitor)
+    }
+}
 
 impl<'de> Deserialize<'de> for CaseInsensitiveUpdateUserItemAccess {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
@@ -195,6 +240,26 @@ async fn update_item_access(
         );
     state
         .update_emby_item_access_for_request(&headers, &uri, mutation)
+        .await
+}
+
+#[allow(clippy::result_large_err)]
+async fn leave_shared_items(
+    State(state): State<Arc<AppState>>,
+    OriginalUri(uri): OriginalUri,
+    headers: HeaderMap,
+    request: Result<Json<CaseInsensitiveLeaveSharedItems>, JsonRejection>,
+) -> Result<StatusCode, Response> {
+    let mutation = request
+        .ok()
+        .map(
+            |Json(CaseInsensitiveLeaveSharedItems(request))| EmbyLeaveSharedItemsMutation {
+                item_ids: request.item_ids,
+                user_id: request.user_id,
+            },
+        );
+    state
+        .leave_emby_shared_items_for_request(&headers, &uri, mutation)
         .await
 }
 
@@ -455,6 +520,20 @@ mod tests {
                 .unwrap();
             assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "{path}");
         }
+
+        for path in ["/Items/Shared/Leave", "/items/shared/leave"] {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::post(path)
+                        .header("content-type", "application/json")
+                        .body(Body::from(r#"{"iTeMiDs":[],"uSeRiD":null}"#))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "{path}");
+        }
     }
 
     #[test]
@@ -481,5 +560,21 @@ mod tests {
             let body = format!(r#"{{"ItemAccess":{value}}}"#);
             assert!(serde_json::from_str::<CaseInsensitiveUpdateUserItemAccess>(&body).is_err());
         }
+    }
+
+    #[test]
+    fn shared_leave_body_binds_case_insensitively_and_uses_last_duplicate() {
+        let parsed: CaseInsensitiveLeaveSharedItems = serde_json::from_str(
+            r#"{"ItemIds":["first"],"itemids":["second"],"UserId":"first-user","USERID":"second-user","unknown":true}"#,
+        )
+        .expect("case-insensitive body");
+        assert_eq!(parsed.0.item_ids, Some(vec!["second".to_owned()]));
+        assert_eq!(parsed.0.user_id.as_deref(), Some("second-user"));
+
+        let parsed: CaseInsensitiveLeaveSharedItems =
+            serde_json::from_str(r#"{"ItemIds":null,"UserId":null}"#)
+                .expect("nullable generated properties");
+        assert_eq!(parsed.0.item_ids, None);
+        assert_eq!(parsed.0.user_id, None);
     }
 }

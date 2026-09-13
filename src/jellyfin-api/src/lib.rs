@@ -347,6 +347,13 @@ pub struct EmbyItemAccessMutation {
     pub access_level: Option<i16>,
 }
 
+/// Parsed fields for Emby's protocol-private shared-item leave mutation.
+#[derive(Debug)]
+pub struct EmbyLeaveSharedItemsMutation {
+    pub item_ids: Option<Vec<String>>,
+    pub user_id: Option<String>,
+}
+
 impl From<EmbyUserCopyOptions> for UserCopyOptions {
     fn from(value: EmbyUserCopyOptions) -> Self {
         Self {
@@ -1196,6 +1203,53 @@ impl AppState {
         };
         EmbyItemAccessRepository::new(Arc::clone(&self.database))
             .replace(&user_ids, &item_ids, access)
+            .await
+            .map_err(|error| match error {
+                EmbyItemAccessStoreError::UserNotFound | EmbyItemAccessStoreError::ItemNotFound => {
+                    ApiError::NotFound.into_response()
+                }
+                EmbyItemAccessStoreError::Database(_) => ApiError::Internal.into_response(),
+            })?;
+        Ok(StatusCode::OK)
+    }
+
+    /// Removes the target user's explicit Emby shares without changing the
+    /// Jellyfin library-policy model.
+    ///
+    /// Emby's generated contract permits the user id to be omitted, in which
+    /// case a device session targets itself. Explicit targets retain the
+    /// normal self/administrator/API-key boundary. Target authorization and
+    /// lookup intentionally precede item-id binding so an ordinary user
+    /// cannot probe another user's shared items with a malformed item id.
+    #[allow(clippy::result_large_err)]
+    pub async fn leave_emby_shared_items_for_request(
+        &self,
+        headers: &HeaderMap,
+        uri: &Uri,
+        mutation: Option<EmbyLeaveSharedItemsMutation>,
+    ) -> Result<StatusCode, Response> {
+        let identity = authorization::require_default(self, headers, uri)
+            .await
+            .map_err(IntoResponse::into_response)?;
+        let mutation = mutation.ok_or_else(|| ApiError::InvalidRequest.into_response())?;
+        let requested_user_id = mutation
+            .user_id
+            .as_deref()
+            .map(Uuid::parse_str)
+            .transpose()
+            .map_err(|_| ApiError::InvalidRequest.into_response())?;
+        let target_user_id = identity
+            .target_user_id(requested_user_id)
+            .map_err(IntoResponse::into_response)?;
+        self.users
+            .get(target_user_id)
+            .await
+            .map_err(ApiError::from)
+            .map_err(IntoResponse::into_response)?;
+
+        let item_ids = parse_emby_item_access_ids(mutation.item_ids)?;
+        EmbyItemAccessRepository::new(Arc::clone(&self.database))
+            .replace(&[target_user_id], &item_ids, None)
             .await
             .map_err(|error| match error {
                 EmbyItemAccessStoreError::UserNotFound | EmbyItemAccessStoreError::ItemNotFound => {

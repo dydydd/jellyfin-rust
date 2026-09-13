@@ -30,7 +30,6 @@ GET /Dlna/Profiles/{Id}
 POST /Dlna/Profiles/{Id}
 DELETE /Dlna/Profiles/{Id}
 GET /Dlna/Profiles/Default
-POST /Items/Shared/Leave
 POST /Notifications/Services/Test
 GET /Notifications/Services/Defaults
 POST /Parties/{Id}/Join

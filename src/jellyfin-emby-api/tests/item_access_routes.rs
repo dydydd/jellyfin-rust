@@ -64,6 +64,7 @@ async fn exercise_routes(database_name: &str) {
     assert_binding_and_cartesian_update(&fixture).await;
     assert_missing_targets_roll_back(&fixture).await;
     assert_none_delete_and_restart_persistence(&fixture).await;
+    assert_shared_leave_authorization_binding_and_idempotency(&fixture).await;
     assert_protocol_isolation(&fixture).await;
 
     drop(fixture);
@@ -340,6 +341,199 @@ async fn assert_none_delete_and_restart_persistence(fixture: &Fixture) {
     );
 }
 
+async fn assert_shared_leave_authorization_binding_and_idempotency(fixture: &Fixture) {
+    for body in ["{", "[]", "null", r#"{"ItemIds":"bad"}"#] {
+        assert_eq!(
+            request(&fixture.emby, "/emby/Items/Shared/Leave", Some(body), None)
+                .await
+                .status(),
+            StatusCode::UNAUTHORIZED,
+            "authentication must precede invalid body handling: {body}",
+        );
+        assert_eq!(
+            request(
+                &fixture.emby,
+                "/emby/Items/Shared/Leave",
+                Some(body),
+                Some(&fixture.user_token),
+            )
+            .await
+            .status(),
+            StatusCode::BAD_REQUEST,
+            "authenticated invalid body must be rejected: {body}",
+        );
+    }
+
+    // A device session cannot remove another user's share. Authorize the
+    // target before binding item ids so malformed ids do not weaken the
+    // self-only boundary or expose target state.
+    let foreign_target = format!(
+        r#"{{"UserId":"{}","ItemIds":["not-a-uuid"]}}"#,
+        fixture.first_user
+    );
+    assert_eq!(
+        request(
+            &fixture.emby,
+            "/emby/Items/Shared/Leave",
+            Some(&foreign_target),
+            Some(&fixture.user_token),
+        )
+        .await
+        .status(),
+        StatusCode::FORBIDDEN,
+    );
+
+    let missing_target = format!(
+        r#"{{"UserId":"{}","ItemIds":["not-a-uuid"]}}"#,
+        Uuid::new_v4()
+    );
+    assert_eq!(
+        request(
+            &fixture.emby,
+            "/emby/Items/Shared/Leave",
+            Some(&missing_target),
+            Some(&fixture.api_key),
+        )
+        .await
+        .status(),
+        StatusCode::NOT_FOUND,
+    );
+
+    assert_eq!(
+        request(
+            &fixture.emby,
+            "/emby/Items/Shared/Leave",
+            Some(r#"{"UserId":"not-a-uuid","ItemIds":[]}"#),
+            Some(&fixture.api_key),
+        )
+        .await
+        .status(),
+        StatusCode::BAD_REQUEST,
+    );
+
+    assert_eq!(
+        request(
+            &fixture.emby,
+            "/emby/Items/Shared/Leave",
+            Some(r#"{"ItemIds":["not-a-uuid"]}"#),
+            Some(&fixture.api_key),
+        )
+        .await
+        .status(),
+        StatusCode::NOT_FOUND,
+        "an API key has no implicit current user",
+    );
+
+    assert_eq!(
+        request(
+            &fixture.emby,
+            "/emby/Items/Shared/Leave",
+            Some(r#"{"ItemIds":["not-a-uuid"]}"#),
+            Some(&fixture.user_token),
+        )
+        .await
+        .status(),
+        StatusCode::BAD_REQUEST,
+    );
+
+    // A missing item aborts the entire leave operation without deleting a
+    // valid assignment in the same request.
+    let missing_item = format!(
+        r#"{{"UserId":"{}","ItemIds":["{}","{}"]}}"#,
+        fixture.first_user,
+        fixture.first_item,
+        Uuid::new_v4()
+    );
+    assert_eq!(
+        request(
+            &fixture.emby,
+            "/emby/Items/Shared/Leave",
+            Some(&missing_item),
+            Some(&fixture.api_key),
+        )
+        .await
+        .status(),
+        StatusCode::NOT_FOUND,
+    );
+    assert_eq!(
+        stored(fixture, fixture.first_user, fixture.first_item).await,
+        Some(3),
+    );
+
+    // An omitted UserId targets the authenticated device user. ASP.NET JSON
+    // binding is case-insensitive and the last duplicate property wins.
+    let self_leave = format!(
+        r#"{{"ItemIds":["{}"],"iTeMiDs":["{}","{}"],"Unknown":true}}"#,
+        fixture.first_item, fixture.second_item, fixture.second_item
+    );
+    for path in ["/emby/iTeMs/sHaReD/lEaVe", "/emby/items/shared/leave"] {
+        assert_ok_empty(
+            request(
+                &fixture.emby,
+                path,
+                Some(&self_leave),
+                Some(&fixture.user_token),
+            )
+            .await,
+        )
+        .await;
+    }
+    assert_eq!(
+        stored(fixture, fixture.second_user, fixture.second_item).await,
+        None,
+        "leaving a share repeatedly must be idempotent",
+    );
+    assert_eq!(
+        stored(fixture, fixture.first_user, fixture.second_item).await,
+        Some(1),
+        "leaving must affect only the resolved target user",
+    );
+
+    assert_ok_empty(
+        request(
+            &fixture.emby,
+            "/emby/Items/Shared/Leave",
+            Some("{}"),
+            Some(&fixture.user_token),
+        )
+        .await,
+    )
+    .await;
+
+    let api_key_leave = format!(
+        r#"{{"UserId":"{}","USERID":"{}","ItemIds":["{}"]}}"#,
+        Uuid::new_v4(),
+        fixture.first_user,
+        fixture.first_item,
+    );
+    assert_ok_empty(
+        request(
+            &fixture.emby,
+            "/emby/Items/Shared/Leave",
+            Some(&api_key_leave),
+            Some(&fixture.api_key),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(
+        stored(fixture, fixture.first_user, fixture.first_item).await,
+        None,
+    );
+
+    let empty = format!(r#"{{"UserId":"{}","ItemIds":[]}}"#, fixture.first_user);
+    assert_ok_empty(
+        request(
+            &fixture.emby,
+            "/emby/Items/Shared/Leave",
+            Some(&empty),
+            Some(&fixture.api_key),
+        )
+        .await,
+    )
+    .await;
+}
+
 async fn assert_protocol_isolation(fixture: &Fixture) {
     let body = body_for(&[fixture.first_item], &[fixture.first_user], r#""Read""#);
     for path in ["/Items/Access", "/api/Items/Access"] {
@@ -356,9 +550,28 @@ async fn assert_protocol_isolation(fixture: &Fixture) {
             "Emby route leaked at {path}"
         );
     }
+
+    let leave = format!(
+        r#"{{"UserId":"{}","ItemIds":["{}"]}}"#,
+        fixture.first_user, fixture.second_item
+    );
+    for path in ["/Items/Shared/Leave", "/api/Items/Shared/Leave"] {
+        let response = request(
+            &fixture.jellyfin,
+            path,
+            Some(&leave),
+            Some(&fixture.api_key),
+        )
+        .await;
+        assert_ne!(
+            response.status(),
+            StatusCode::OK,
+            "Emby shared-leave route leaked at {path}",
+        );
+    }
     assert_eq!(
-        stored(fixture, fixture.first_user, fixture.first_item).await,
-        Some(3),
+        stored(fixture, fixture.first_user, fixture.second_item).await,
+        Some(1),
         "Jellyfin root requests must not mutate Emby's private access table",
     );
 }
