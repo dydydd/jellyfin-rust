@@ -7,6 +7,7 @@ rust-version.workspace = true
 
 [dependencies]
 axum.workspace = true
+base64 = "0.22"
 chrono.workspace = true
 jellyfin-api = { path = "../jellyfin-api" }
 jellyfin-model = { path = "../jellyfin-model" }

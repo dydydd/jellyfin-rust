@@ -1683,6 +1683,7 @@ name = "jellyfin-emby-api"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "base64",
  "chrono",
  "jellyfin-api",
  "jellyfin-controller",

@@ -27,6 +27,7 @@ mod notifications;
 mod packages;
 mod plugins;
 mod system_misc;
+mod typed_settings;
 mod users;
 
 /// Emby's Android and iOS API base path.
@@ -109,6 +110,7 @@ const DEDICATED_ROUTE_TEMPLATES: &[&str] = &[
     "/Users/{user_id}/HomeSections/Delete",
     "/Users/{user_id}/HomeSections/Move",
     "/Users/{user_id}/HomeSections",
+    "/Users/{user_id}/TypedSettings/{key}",
     "/Users/ItemAccess",
     "/Users/CopyDataOptions",
     "/Users/Prefixes",
@@ -199,6 +201,7 @@ fn dedicated_routes() -> Router<Arc<AppState>> {
         .merge(packages::routes())
         .merge(plugins::routes())
         .merge(system_misc::routes())
+        .merge(typed_settings::routes())
         .merge(users::routes())
         .route("/Branding/Configuration", get(branding_configuration))
         .route("/branding/configuration", get(branding_configuration))

@@ -341,6 +341,11 @@
   route tree before authorization and shared-fallback dispatch. All three forms must remain
   anonymously accessible and return the raw SDK-decodable `UserDto[]`; do not broaden or otherwise
   change the unprefixed Jellyfin route while adding this Emby compatibility adapter.
+- Persist Emby typed user settings as opaque bytes in a protocol-owned display-preference record.
+  Preserve the body exactly through POST/GET, isolate keys and target users, and return an empty
+  octet stream for an unset key. Authorize and resolve the target user before inspecting a rejected
+  body, keep dynamic key casing intact while matching static path segments case-insensitively, and
+  never register the typed-settings route on the unprefixed Jellyfin tree.
 - Keep login case-insensitive through both static segments: `/users/authenticatebyname` must retain
   the canonical route's public authorization policy as well as its handler.
 - Keep Startup, external library-update reports, elevated Person remote search, and elevated remote

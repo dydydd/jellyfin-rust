@@ -95,8 +95,6 @@ POST /Sync/JobItems/{Id}/MarkForRemoval
 POST /Sync/JobItems/{Id}/UnmarkForRemoval
 DELETE /Users/{Id}/TrackSelections/{TrackType}
 POST /Users/{Id}/RecentlySearched/Delete
-GET /Users/{UserId}/TypedSettings/{Key}
-POST /Users/{UserId}/TypedSettings/{Key}
 POST /Users/{Id}/Connect/Link
 DELETE /Users/{Id}/Connect/Link
 POST /Videos/{Id}/AlternateSources/Delete
