@@ -265,8 +265,8 @@ pub(crate) async fn hints(
             .project_search_hint_images_many(&media_item_ids)
             .await
             .map_err(|_| ApiError::Internal)?;
-        let media = media_search_hint_result(page, search_term, &mut image_projections);
-        result.total_record_count += media.total_record_count;
+        let media = media_search_hint_result(page, search_term, &mut image_projections)?;
+        add_total_record_count(&mut result, media.total_record_count)?;
         result.search_hints.extend(media.search_hints);
     }
 
@@ -296,7 +296,10 @@ pub(crate) async fn hints(
                 },
             )
             .await?;
-        result.total_record_count += usize::try_from(page.total_record_count).unwrap_or(usize::MAX);
+        add_total_record_count(
+            &mut result,
+            crate::user_library::checked_int32(page.total_record_count)?,
+        )?;
         let person_ids = page
             .people
             .iter()
@@ -341,7 +344,10 @@ pub(crate) async fn hints(
                 },
             )
             .await?;
-        result.total_record_count += usize::try_from(page.total_record_count).unwrap_or(usize::MAX);
+        add_total_record_count(
+            &mut result,
+            crate::user_library::checked_int32(page.total_record_count)?,
+        )?;
         result.search_hints.extend(
             page.genres
                 .into_iter()
@@ -375,7 +381,10 @@ pub(crate) async fn hints(
                 },
             )
             .await?;
-        result.total_record_count += usize::try_from(page.total_record_count).unwrap_or(usize::MAX);
+        add_total_record_count(
+            &mut result,
+            crate::user_library::checked_int32(page.total_record_count)?,
+        )?;
         result.search_hints.extend(
             page.genres
                 .into_iter()
@@ -409,7 +418,10 @@ pub(crate) async fn hints(
                 },
             )
             .await?;
-        result.total_record_count += usize::try_from(page.total_record_count).unwrap_or(usize::MAX);
+        add_total_record_count(
+            &mut result,
+            crate::user_library::checked_int32(page.total_record_count)?,
+        )?;
         result.search_hints.extend(
             page.studios
                 .into_iter()
@@ -444,7 +456,10 @@ pub(crate) async fn hints(
                 },
             )
             .await?;
-        result.total_record_count += usize::try_from(page.total_record_count).unwrap_or(usize::MAX);
+        add_total_record_count(
+            &mut result,
+            crate::user_library::checked_int32(page.total_record_count)?,
+        )?;
         result.search_hints.extend(
             page.artists
                 .into_iter()
@@ -481,6 +496,14 @@ fn paginate_search_hints(result: &mut SearchHintResult, start_index: i32, limit:
         .skip(start)
         .take(limit)
         .collect();
+}
+
+fn add_total_record_count(result: &mut SearchHintResult, count: i32) -> Result<(), ApiError> {
+    result.total_record_count = result
+        .total_record_count
+        .checked_add(count)
+        .ok_or(ApiError::Internal)?;
+    Ok(())
 }
 
 fn media_types_for_query(
@@ -536,9 +559,9 @@ fn media_search_hint_result(
     page: ScoredBaseItemPage,
     matched_term: &str,
     image_projections: &mut std::collections::HashMap<Uuid, DtoImageProjection>,
-) -> SearchHintResult {
-    SearchHintResult {
-        total_record_count: usize::try_from(page.total_record_count).unwrap_or(usize::MAX),
+) -> Result<SearchHintResult, ApiError> {
+    Ok(SearchHintResult {
+        total_record_count: crate::user_library::checked_int32(page.total_record_count)?,
         search_hints: page
             .items
             .into_iter()
@@ -551,7 +574,7 @@ fn media_search_hint_result(
                 hint
             })
             .collect(),
-    }
+    })
 }
 
 fn attach_search_hint_images(
@@ -698,4 +721,23 @@ fn metadata_string_array(value: Option<&serde_json::Value>, keys: &[&str]) -> Ve
             })
         })
         .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn combined_search_total_rejects_int32_overflow() {
+        let mut result = SearchHintResult {
+            total_record_count: i32::MAX - 1,
+            ..SearchHintResult::default()
+        };
+        add_total_record_count(&mut result, 1).unwrap();
+        assert_eq!(result.total_record_count, i32::MAX);
+        assert!(matches!(
+            add_total_record_count(&mut result, 1),
+            Err(ApiError::Internal)
+        ));
+    }
 }

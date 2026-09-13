@@ -63,7 +63,7 @@ pub(crate) struct ActivityLogParameters {
 #[serde(rename_all = "PascalCase")]
 pub(crate) struct ActivityLogResult {
     items: Vec<ActivityLogEntry>,
-    total_record_count: u64,
+    total_record_count: i32,
     start_index: i32,
 }
 
@@ -101,7 +101,7 @@ pub(crate) async fn entries(
 
     Ok(Json(ActivityLogResult {
         items: page.items.into_iter().map(ActivityLogEntry::from).collect(),
-        total_record_count: page.total_record_count,
+        total_record_count: crate::user_library::checked_int32(page.total_record_count)?,
         start_index: requested_start_index,
     }))
 }

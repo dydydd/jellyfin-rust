@@ -76,7 +76,7 @@ fn api_key_query_result_uses_official_authentication_info_contract() {
         user_name: None,
     };
 
-    let value = serde_json::to_value(QueryResult::from_items(vec![key])).unwrap();
+    let value = serde_json::to_value(QueryResult::from_items(vec![key]).unwrap()).unwrap();
     assert_eq!(value["StartIndex"], 0);
     assert_eq!(value["TotalRecordCount"], 1);
     assert_eq!(value["Items"][0]["Id"], 42);
@@ -99,13 +99,16 @@ fn api_key_query_result_uses_official_authentication_info_contract() {
 fn media_segments_use_official_query_result_contract() {
     let item_id = Uuid::parse_str("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa").unwrap();
     let segment_id = Uuid::parse_str("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb").unwrap();
-    let value = serde_json::to_value(QueryResult::from_items(vec![MediaSegmentDto {
-        id: segment_id,
-        item_id,
-        segment_type: MediaSegmentType::Intro,
-        start_ticks: 12_000_000,
-        end_ticks: 45_000_000,
-    }]))
+    let value = serde_json::to_value(
+        QueryResult::from_items(vec![MediaSegmentDto {
+            id: segment_id,
+            item_id,
+            segment_type: MediaSegmentType::Intro,
+            start_ticks: 12_000_000,
+            end_ticks: 45_000_000,
+        }])
+        .unwrap(),
+    )
     .unwrap();
 
     assert_eq!(value["StartIndex"], 0);

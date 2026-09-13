@@ -958,7 +958,7 @@ pub(crate) struct SuggestionsQuery {
 #[serde(rename_all = "PascalCase")]
 pub(crate) struct SuggestionsResult {
     items: Vec<user_library::BaseItemDto>,
-    total_record_count: usize,
+    total_record_count: i32,
     start_index: i32,
 }
 
@@ -1627,9 +1627,7 @@ async fn latest_for(
             .await?
             .items;
     for (item, child_count) in items.iter_mut().zip(child_counts) {
-        if child_count.is_some() {
-            item.child_count = child_count;
-        }
+        user_library::attach_child_count(item, child_count)?;
     }
     Ok(Json(items))
 }
@@ -2555,13 +2553,16 @@ async fn page_to_dto_with_fields_and_options(
         user_library::attach_has_lyrics(&mut dto, lyric_item_ids.contains(&item_id));
         user_library::attach_has_subtitles(&mut dto, subtitle_item_ids.contains(&item_id));
         let original_language = dto.original_language.clone();
-        user_library::attach_child_count(&mut dto, child_counts.remove(&item_id));
-        user_library::attach_recursive_item_count(&mut dto, recursive_item_counts.remove(&item_id));
+        user_library::attach_child_count(&mut dto, child_counts.remove(&item_id))?;
+        user_library::attach_recursive_item_count(
+            &mut dto,
+            recursive_item_counts.remove(&item_id),
+        )?;
         if requested_fields.wants_media_source_count() && !requested_fields.wants_media_sources() {
             user_library::attach_media_source_count(
                 &mut dto,
                 media_source_counts.remove(&item_id).unwrap_or_default(),
-            );
+            )?;
         }
         if let Some(user_data) = user_dtos.remove(&item_id) {
             user_library::attach_user_data_dto(&mut dto, user_data);
@@ -2588,7 +2589,7 @@ async fn page_to_dto_with_fields_and_options(
                 user_library::attach_media_source_count(
                     &mut dto,
                     u64::try_from(source_items.len()).unwrap_or(u64::MAX),
-                );
+                )?;
             }
             let remembered = remembered_user_data.remove(&item_id);
             user_library::project_item_dto_with_versioned_sources(
@@ -2629,8 +2630,8 @@ async fn page_to_dto_with_fields_and_options(
 
     Ok(user_library::BaseItemQueryResult {
         items,
-        total_record_count: usize::try_from(page.total_record_count).unwrap_or(usize::MAX),
-        start_index: i32::try_from(page.start_index).unwrap_or(i32::MAX),
+        total_record_count: user_library::checked_int32(page.total_record_count)?,
+        start_index: user_library::checked_int32(page.start_index)?,
     })
 }
 

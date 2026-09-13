@@ -118,7 +118,7 @@ pub(crate) struct YearByNameQuery {
 #[serde(rename_all = "PascalCase")]
 pub(crate) struct YearsResult {
     items: Vec<user_library::BaseItemDto>,
-    total_record_count: usize,
+    total_record_count: i32,
     start_index: i32,
 }
 
@@ -223,10 +223,9 @@ pub(crate) async fn list(
     .await?;
     Ok(Json(YearsResult {
         items: projected.items,
-        total_record_count: usize::try_from(
+        total_record_count: user_library::checked_int32(
             recursive_item_total.unwrap_or(page.total_record_count),
-        )
-        .unwrap_or(usize::MAX),
+        )?,
         start_index: requested_start_index,
     }))
 }
@@ -277,7 +276,7 @@ pub(crate) async fn get(
     } else {
         project_year_without_user(&state, item).await?
     };
-    apply_year_counts(&mut dto, state.base_items.item_counts(&count_query).await?);
+    apply_year_counts(&mut dto, state.base_items.item_counts(&count_query).await?)?;
     Ok(Json(dto))
 }
 
@@ -301,28 +300,45 @@ fn year_item_count_query(year: i32) -> BaseItemQuery {
     }
 }
 
-fn apply_year_counts(dto: &mut user_library::BaseItemDto, counts: jellyfin_data::BaseItemCounts) {
-    let count = |value| u64::try_from(value).unwrap_or_default();
-    dto.album_count = Some(count(counts.album_count));
-    dto.artist_count = Some(count(counts.artist_count));
-    dto.episode_count = Some(count(counts.episode_count));
-    dto.movie_count = Some(count(counts.movie_count));
-    dto.music_video_count = Some(count(counts.music_video_count));
-    dto.program_count = Some(count(counts.program_count));
-    dto.series_count = Some(count(counts.series_count));
-    dto.song_count = Some(count(counts.song_count));
-    dto.trailer_count = Some(count(counts.trailer_count));
-    dto.child_count = Some(
-        count(counts.album_count)
-            .saturating_add(count(counts.artist_count))
-            .saturating_add(count(counts.episode_count))
-            .saturating_add(count(counts.movie_count))
-            .saturating_add(count(counts.music_video_count))
-            .saturating_add(count(counts.program_count))
-            .saturating_add(count(counts.series_count))
-            .saturating_add(count(counts.song_count))
-            .saturating_add(count(counts.trailer_count)),
-    );
+fn apply_year_counts(
+    dto: &mut user_library::BaseItemDto,
+    counts: jellyfin_data::BaseItemCounts,
+) -> Result<(), ApiError> {
+    let album_count = user_library::checked_int32(counts.album_count)?;
+    let artist_count = user_library::checked_int32(counts.artist_count)?;
+    let episode_count = user_library::checked_int32(counts.episode_count)?;
+    let movie_count = user_library::checked_int32(counts.movie_count)?;
+    let music_video_count = user_library::checked_int32(counts.music_video_count)?;
+    let program_count = user_library::checked_int32(counts.program_count)?;
+    let series_count = user_library::checked_int32(counts.series_count)?;
+    let song_count = user_library::checked_int32(counts.song_count)?;
+    let trailer_count = user_library::checked_int32(counts.trailer_count)?;
+    let child_count = [
+        album_count,
+        artist_count,
+        episode_count,
+        movie_count,
+        music_video_count,
+        program_count,
+        series_count,
+        song_count,
+        trailer_count,
+    ]
+    .into_iter()
+    .try_fold(0_i32, |total, count| {
+        total.checked_add(count).ok_or(ApiError::Internal)
+    })?;
+    dto.album_count = Some(album_count);
+    dto.artist_count = Some(artist_count);
+    dto.episode_count = Some(episode_count);
+    dto.movie_count = Some(movie_count);
+    dto.music_video_count = Some(music_video_count);
+    dto.program_count = Some(program_count);
+    dto.series_count = Some(series_count);
+    dto.song_count = Some(song_count);
+    dto.trailer_count = Some(trailer_count);
+    dto.child_count = Some(child_count);
+    Ok(())
 }
 
 async fn project_year_without_user(

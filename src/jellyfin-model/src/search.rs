@@ -118,5 +118,5 @@ impl Default for SearchHint {
 #[serde(default, rename_all = "PascalCase")]
 pub struct SearchHintResult {
     pub search_hints: Vec<SearchHint>,
-    pub total_record_count: usize,
+    pub total_record_count: i32,
 }

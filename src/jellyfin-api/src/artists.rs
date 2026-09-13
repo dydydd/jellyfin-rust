@@ -351,9 +351,14 @@ async fn list_kind(
         .collect::<std::collections::HashMap<_, _>>();
     let mut items = Vec::with_capacity(page.artists.len());
     for artist in page.artists {
-        let mut dto = projected_by_id.remove(&artist.id).unwrap_or_else(|| {
-            let mut dto =
-                user_library::artist_to_dto(artist.clone(), state.server_id(), include_item_counts);
+        let mut dto = if let Some(dto) = projected_by_id.remove(&artist.id) {
+            dto
+        } else {
+            let mut dto = user_library::artist_to_dto(
+                artist.clone(),
+                state.server_id(),
+                include_item_counts,
+            )?;
             if !dto_options.enable_images {
                 dto.image_tags = None;
                 dto.backdrop_image_tags = None;
@@ -364,19 +369,19 @@ async fn list_kind(
                 dto.backdrop_image_tags = None;
             }
             dto
-        });
+        };
         // Item-by-name artist list entries retain their historical folder
         // shape even when the accessed-by-name backing row is non-folder.
         dto.is_folder = true;
         if include_item_counts {
-            apply_artist_counts(&mut dto, artist.item_count, artist.counts);
+            apply_artist_counts(&mut dto, artist.item_count, artist.counts)?;
         }
         items.push(dto);
     }
     let total_record_count = if enable_total_record_count {
-        usize::try_from(page.total_record_count).unwrap_or(usize::MAX)
+        user_library::checked_int32(page.total_record_count)?
     } else {
-        items.len()
+        user_library::checked_int32(items.len())?
     };
     Ok(Json(user_library::BaseItemQueryResult {
         items,
@@ -432,7 +437,7 @@ pub(crate) async fn get(
     if !target_user_exists {
         dto.user_data = None;
     }
-    apply_artist_counts(&mut dto, detail.item_count, detail.counts);
+    apply_artist_counts(&mut dto, detail.item_count, detail.counts)?;
     Ok(Json(dto))
 }
 
@@ -440,11 +445,12 @@ fn apply_artist_counts(
     dto: &mut user_library::BaseItemDto,
     item_count: u64,
     counts: jellyfin_data::ItemValueCounts,
-) {
-    dto.child_count = Some(item_count);
-    dto.album_count = Some(counts.album_count);
-    dto.music_video_count = Some(counts.music_video_count);
-    dto.song_count = Some(counts.song_count);
+) -> Result<(), ApiError> {
+    dto.child_count = Some(user_library::checked_int32(item_count)?);
+    dto.album_count = Some(user_library::checked_int32(counts.album_count)?);
+    dto.music_video_count = Some(user_library::checked_int32(counts.music_video_count)?);
+    dto.song_count = Some(user_library::checked_int32(counts.song_count)?);
+    Ok(())
 }
 
 pub(crate) async fn get_image(

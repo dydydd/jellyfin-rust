@@ -71,7 +71,9 @@ pub(crate) async fn list(
         let custom_name = options.get(&device.device_id).cloned().flatten();
         items.push(device_info(&state, device, custom_name).await?);
     }
-    Ok(Json(QueryResult::from_items(items)))
+    Ok(Json(
+        QueryResult::from_items(items).map_err(|_| ApiError::Internal)?,
+    ))
 }
 
 pub(crate) async fn info(

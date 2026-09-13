@@ -232,8 +232,12 @@ async fn user_views_for(
         let child_count = view
             .content_parent_ids
             .iter()
-            .map(|parent_id| child_counts.get(parent_id).copied().unwrap_or_default())
-            .sum();
+            .try_fold(0_i32, |total, parent_id| {
+                let count = crate::user_library::checked_int32(
+                    child_counts.get(parent_id).copied().unwrap_or_default(),
+                )?;
+                total.checked_add(count).ok_or(ApiError::Internal)
+            })?;
         let mut dto = source_item.map_or_else(
             || user_view_to_dto(view, state.server_id()),
             |item| crate::user_library::item_to_dto(item, state.server_id()),
@@ -250,7 +254,7 @@ async fn user_views_for(
         items.push(dto);
     }
     Ok(Json(BaseItemQueryResult {
-        total_record_count: items.len(),
+        total_record_count: crate::user_library::checked_int32(items.len())?,
         start_index: 0,
         items,
     }))

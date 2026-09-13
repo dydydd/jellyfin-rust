@@ -26,11 +26,14 @@ pub(crate) async fn list(
 ) -> Result<Json<QueryResult<AuthenticationInfo>>, ApiError> {
     require_elevated(&state, &headers, &uri).await?;
     let keys = state.api_keys.list().await?;
-    Ok(Json(QueryResult::from_items(
-        keys.into_iter()
-            .map(api_key_to_authentication_info)
-            .collect(),
-    )))
+    Ok(Json(
+        QueryResult::from_items(
+            keys.into_iter()
+                .map(api_key_to_authentication_info)
+                .collect(),
+        )
+        .map_err(|_| ApiError::Internal)?,
+    ))
 }
 
 pub(crate) async fn create(

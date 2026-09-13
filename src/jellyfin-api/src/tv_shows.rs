@@ -123,7 +123,7 @@ pub(crate) struct EpisodesQuery {
 #[serde(rename_all = "PascalCase")]
 pub(crate) struct EpisodesResult {
     items: Vec<user_library::BaseItemDto>,
-    total_record_count: usize,
+    total_record_count: i32,
     start_index: i32,
 }
 
@@ -210,7 +210,7 @@ pub(crate) struct NextUpQuery {
 #[serde(rename_all = "PascalCase")]
 pub(crate) struct NextUpResult {
     items: Vec<user_library::BaseItemDto>,
-    total_record_count: usize,
+    total_record_count: i32,
     start_index: i32,
 }
 
@@ -577,7 +577,7 @@ pub(crate) async fn episodes(
     .await?;
     Ok(Json(EpisodesResult {
         items: projected.items,
-        total_record_count,
+        total_record_count: user_library::checked_int32(total_record_count)?,
         start_index: query.start_index.unwrap_or_default(),
     }))
 }

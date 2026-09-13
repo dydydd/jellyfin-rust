@@ -387,27 +387,27 @@ pub struct BaseItemDto {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parent_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub child_count: Option<u64>,
+    pub child_count: Option<i32>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub recursive_item_count: Option<u64>,
+    pub recursive_item_count: Option<i32>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub album_count: Option<u64>,
+    pub album_count: Option<i32>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub artist_count: Option<u64>,
+    pub artist_count: Option<i32>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub episode_count: Option<u64>,
+    pub episode_count: Option<i32>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub movie_count: Option<u64>,
+    pub movie_count: Option<i32>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub music_video_count: Option<u64>,
+    pub music_video_count: Option<i32>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub program_count: Option<u64>,
+    pub program_count: Option<i32>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub series_count: Option<u64>,
+    pub series_count: Option<i32>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub song_count: Option<u64>,
+    pub song_count: Option<i32>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub trailer_count: Option<u64>,
+    pub trailer_count: Option<i32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub local_trailer_count: Option<i32>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -625,7 +625,7 @@ pub struct BaseItemPerson {
 #[serde(rename_all = "PascalCase")]
 pub struct BaseItemQueryResult {
     pub items: Vec<BaseItemDto>,
-    pub total_record_count: usize,
+    pub total_record_count: i32,
     pub start_index: i32,
 }
 
@@ -1038,8 +1038,8 @@ async fn get_root_for(
         remembered_user_data.as_ref(),
     )
     .await?;
-    attach_child_count(&mut dto, child_counts.remove(&item_id));
-    attach_recursive_item_count(&mut dto, recursive_item_counts.remove(&item_id));
+    attach_child_count(&mut dto, child_counts.remove(&item_id))?;
+    attach_recursive_item_count(&mut dto, recursive_item_counts.remove(&item_id))?;
     Ok(Json(dto))
 }
 
@@ -1101,8 +1101,8 @@ async fn get_item_for(
         remembered_user_data.as_ref(),
     )
     .await?;
-    attach_child_count(&mut dto, child_counts.remove(&item_id));
-    attach_recursive_item_count(&mut dto, recursive_item_counts.remove(&item_id));
+    attach_child_count(&mut dto, child_counts.remove(&item_id))?;
+    attach_recursive_item_count(&mut dto, recursive_item_counts.remove(&item_id))?;
     Ok(Json(dto))
 }
 
@@ -1960,7 +1960,7 @@ pub(crate) async fn project_item_to_dto_with_context(
             .await?
             .remove(&item_id)
             .unwrap_or_default();
-        attach_media_source_count(&mut dto, count);
+        attach_media_source_count(&mut dto, count)?;
     }
     if !fields.wants_media_streams() {
         return Ok(dto);
@@ -1996,7 +1996,7 @@ pub(crate) async fn project_item_to_dto_with_context(
                 attach_media_source_count(
                     &mut dto,
                     u64::try_from(source_items.len()).unwrap_or(u64::MAX),
-                );
+                )?;
             }
             attach_versioned_media_sources(
                 state,
@@ -2314,8 +2314,13 @@ pub(crate) fn apply_media_source_policy(dto: &mut BaseItemDto, policy: &UserPoli
     }
 }
 
-pub(crate) fn attach_media_source_count(dto: &mut BaseItemDto, count: u64) {
-    dto.media_source_count = (count > 1).then(|| i32::try_from(count).ok()).flatten();
+pub(crate) fn attach_media_source_count(dto: &mut BaseItemDto, count: u64) -> Result<(), ApiError> {
+    dto.media_source_count = if count > 1 {
+        Some(checked_int32(count)?)
+    } else {
+        None
+    };
+    Ok(())
 }
 
 pub(crate) fn attach_has_lyrics(dto: &mut BaseItemDto, has_lyrics: bool) {
@@ -2985,31 +2990,46 @@ pub(crate) async fn unplayed_item_counts_for_items(
             .user_library
             .recursive_played_item_counts(target_user_id, &parent_ids),
     )?;
-    Ok(total
+    total
         .into_iter()
         .map(|(item_id, total)| {
             let played = played.get(&item_id).copied().unwrap_or_default();
-            (
-                item_id,
-                i32::try_from(total.saturating_sub(played)).unwrap_or(i32::MAX),
-            )
+            Ok((item_id, checked_unplayed_item_count(total, played)?))
         })
-        .collect())
+        .collect()
 }
 
-pub(crate) fn attach_child_count(dto: &mut BaseItemDto, child_count: Option<u64>) {
+fn checked_unplayed_item_count(total: u64, played: u64) -> Result<i32, ApiError> {
+    checked_int32(total.saturating_sub(played))
+}
+
+/// Official Jellyfin response counts use signed `Int32`; reject wider database
+/// counts instead of emitting JSON that generated clients cannot decode.
+pub(crate) fn checked_int32<T>(value: T) -> Result<i32, ApiError>
+where
+    i32: TryFrom<T>,
+{
+    i32::try_from(value).map_err(|_| ApiError::Internal)
+}
+
+pub(crate) fn attach_child_count(
+    dto: &mut BaseItemDto,
+    child_count: Option<u64>,
+) -> Result<(), ApiError> {
     if let Some(child_count) = child_count {
-        dto.child_count = Some(child_count);
+        dto.child_count = Some(checked_int32(child_count)?);
     }
+    Ok(())
 }
 
 pub(crate) fn attach_recursive_item_count(
     dto: &mut BaseItemDto,
     recursive_item_count: Option<u64>,
-) {
+) -> Result<(), ApiError> {
     if let Some(recursive_item_count) = recursive_item_count {
-        dto.recursive_item_count = Some(recursive_item_count);
+        dto.recursive_item_count = Some(checked_int32(recursive_item_count)?);
     }
+    Ok(())
 }
 
 pub(crate) fn attach_trickplay_manifest(
@@ -3460,7 +3480,7 @@ pub(crate) fn music_genre_to_dto(
     genre: MusicGenre,
     server_id: &str,
     include_item_counts: bool,
-) -> BaseItemDto {
+) -> Result<BaseItemDto, ApiError> {
     let presentation_unique_key = Some(format!("MusicGenre-{}", genre.name));
     let counts = genre.counts;
     let item_count = genre.item_count;
@@ -3516,15 +3536,15 @@ pub(crate) fn music_genre_to_dto(
         item_count,
         "MusicGenre",
         include_item_counts,
-    );
-    dto
+    )?;
+    Ok(dto)
 }
 
 pub(crate) fn artist_to_dto(
     artist: Artist,
     server_id: &str,
     include_item_counts: bool,
-) -> BaseItemDto {
+) -> Result<BaseItemDto, ApiError> {
     let presentation_unique_key = Some(format!("Artist-{}", artist.name));
     let counts = artist.counts;
     let item_count = artist.item_count;
@@ -3580,8 +3600,8 @@ pub(crate) fn artist_to_dto(
         item_count,
         "MusicArtist",
         include_item_counts,
-    );
-    dto
+    )?;
+    Ok(dto)
 }
 
 fn apply_item_value_counts(
@@ -3590,26 +3610,27 @@ fn apply_item_value_counts(
     item_count: u64,
     item_type: &str,
     include_item_counts: bool,
-) {
+) -> Result<(), ApiError> {
     if !include_item_counts {
-        return;
+        return Ok(());
     }
-    dto.child_count = Some(item_count);
-    dto.album_count = Some(counts.album_count);
-    dto.music_video_count = Some(counts.music_video_count);
-    dto.song_count = Some(counts.song_count);
+    dto.child_count = Some(checked_int32(item_count)?);
+    dto.album_count = Some(checked_int32(counts.album_count)?);
+    dto.music_video_count = Some(checked_int32(counts.music_video_count)?);
+    dto.song_count = Some(checked_int32(counts.song_count)?);
     if item_type == "MusicArtist" {
-        return;
+        return Ok(());
     }
-    dto.artist_count = Some(counts.artist_count);
+    dto.artist_count = Some(checked_int32(counts.artist_count)?);
     if item_type == "MusicGenre" {
-        return;
+        return Ok(());
     }
-    dto.episode_count = Some(counts.episode_count);
-    dto.movie_count = Some(counts.movie_count);
-    dto.program_count = Some(counts.program_count);
-    dto.series_count = Some(counts.series_count);
-    dto.trailer_count = Some(counts.trailer_count);
+    dto.episode_count = Some(checked_int32(counts.episode_count)?);
+    dto.movie_count = Some(checked_int32(counts.movie_count)?);
+    dto.program_count = Some(checked_int32(counts.program_count)?);
+    dto.series_count = Some(checked_int32(counts.series_count)?);
+    dto.trailer_count = Some(checked_int32(counts.trailer_count)?);
+    Ok(())
 }
 
 fn metadata_value(data: Option<&Value>, keys: &[&str]) -> Option<Value> {
@@ -3957,6 +3978,100 @@ fn metadata_remote_trailers(data: Option<&Value>) -> Vec<MediaUrl> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn kotlin_int_response_counts_accept_int32_max_and_reject_wider_values() {
+        let maximum = u64::try_from(i32::MAX).unwrap();
+        assert_eq!(checked_int32(maximum).unwrap(), i32::MAX);
+        assert!(matches!(
+            checked_int32(maximum + 1),
+            Err(ApiError::Internal)
+        ));
+        assert!(matches!(
+            checked_int32(usize::try_from(maximum + 1).unwrap()),
+            Err(ApiError::Internal)
+        ));
+
+        let mut dto = BaseItemDto::default();
+        attach_child_count(&mut dto, Some(maximum)).unwrap();
+        attach_recursive_item_count(&mut dto, Some(maximum)).unwrap();
+        assert_eq!(dto.child_count, Some(i32::MAX));
+        assert_eq!(dto.recursive_item_count, Some(i32::MAX));
+        assert!(matches!(
+            attach_child_count(&mut dto, Some(maximum + 1)),
+            Err(ApiError::Internal)
+        ));
+        assert!(matches!(
+            attach_recursive_item_count(&mut dto, Some(maximum + 1)),
+            Err(ApiError::Internal)
+        ));
+    }
+
+    #[test]
+    fn base_item_aggregate_counts_serialize_as_signed_int32() {
+        let dto = BaseItemDto {
+            child_count: Some(i32::MAX),
+            recursive_item_count: Some(i32::MAX),
+            album_count: Some(i32::MAX),
+            artist_count: Some(i32::MAX),
+            episode_count: Some(i32::MAX),
+            movie_count: Some(i32::MAX),
+            music_video_count: Some(i32::MAX),
+            program_count: Some(i32::MAX),
+            series_count: Some(i32::MAX),
+            song_count: Some(i32::MAX),
+            trailer_count: Some(i32::MAX),
+            ..BaseItemDto::default()
+        };
+        let value = serde_json::to_value(dto).unwrap();
+        for name in [
+            "ChildCount",
+            "RecursiveItemCount",
+            "AlbumCount",
+            "ArtistCount",
+            "EpisodeCount",
+            "MovieCount",
+            "MusicVideoCount",
+            "ProgramCount",
+            "SeriesCount",
+            "SongCount",
+            "TrailerCount",
+        ] {
+            assert_eq!(value[name], i32::MAX);
+        }
+
+        let result = BaseItemQueryResult {
+            items: Vec::new(),
+            total_record_count: i32::MAX,
+            start_index: 0,
+        };
+        assert_eq!(
+            serde_json::to_value(result).unwrap()["TotalRecordCount"],
+            i32::MAX
+        );
+    }
+
+    #[test]
+    fn media_source_and_unplayed_counts_reject_values_above_int32_max() {
+        let maximum = u64::try_from(i32::MAX).unwrap();
+        let mut dto = BaseItemDto::default();
+
+        attach_media_source_count(&mut dto, 1).unwrap();
+        assert_eq!(dto.media_source_count, None);
+        attach_media_source_count(&mut dto, maximum).unwrap();
+        assert_eq!(dto.media_source_count, Some(i32::MAX));
+        assert!(matches!(
+            attach_media_source_count(&mut dto, maximum + 1),
+            Err(ApiError::Internal)
+        ));
+
+        assert_eq!(checked_unplayed_item_count(maximum, 0).unwrap(), i32::MAX);
+        assert_eq!(checked_unplayed_item_count(1, 2).unwrap(), 0);
+        assert!(matches!(
+            checked_unplayed_item_count(maximum + 1, 0),
+            Err(ApiError::Internal)
+        ));
+    }
 
     #[test]
     fn person_serialization_includes_primary_image_tag() {

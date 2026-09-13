@@ -137,7 +137,7 @@ pub(crate) struct GenreByNameQuery {
 #[serde(rename_all = "PascalCase")]
 pub(crate) struct GenresResult {
     items: Vec<user_library::BaseItemDto>,
-    total_record_count: usize,
+    total_record_count: i32,
     start_index: i32,
 }
 
@@ -225,11 +225,11 @@ pub(crate) async fn list(
     .await?;
     if include_item_counts {
         for (dto, genre) in projected.items.iter_mut().zip(page.genres) {
-            apply_genre_counts(dto, genre.item_count, genre.counts);
+            apply_genre_counts(dto, genre.item_count, genre.counts)?;
         }
     }
     let total_record_count = if enable_total_record_count {
-        usize::try_from(page.total_record_count).unwrap_or(usize::MAX)
+        user_library::checked_int32(page.total_record_count)?
     } else {
         0
     };
@@ -286,7 +286,7 @@ pub(crate) async fn get(
     } else {
         project_genre_without_user(&state, genre.item).await?
     };
-    apply_genre_counts(&mut dto, genre.item_count, genre.counts);
+    apply_genre_counts(&mut dto, genre.item_count, genre.counts)?;
     Ok(Json(dto))
 }
 
@@ -332,17 +332,18 @@ fn apply_genre_counts(
     dto: &mut user_library::BaseItemDto,
     item_count: u64,
     counts: jellyfin_data::ItemValueCounts,
-) {
-    dto.child_count = Some(item_count);
-    dto.album_count = Some(counts.album_count);
-    dto.artist_count = Some(counts.artist_count);
-    dto.episode_count = Some(counts.episode_count);
-    dto.movie_count = Some(counts.movie_count);
-    dto.music_video_count = Some(counts.music_video_count);
-    dto.program_count = Some(counts.program_count);
-    dto.series_count = Some(counts.series_count);
-    dto.song_count = Some(counts.song_count);
-    dto.trailer_count = Some(counts.trailer_count);
+) -> Result<(), ApiError> {
+    dto.child_count = Some(user_library::checked_int32(item_count)?);
+    dto.album_count = Some(user_library::checked_int32(counts.album_count)?);
+    dto.artist_count = Some(user_library::checked_int32(counts.artist_count)?);
+    dto.episode_count = Some(user_library::checked_int32(counts.episode_count)?);
+    dto.movie_count = Some(user_library::checked_int32(counts.movie_count)?);
+    dto.music_video_count = Some(user_library::checked_int32(counts.music_video_count)?);
+    dto.program_count = Some(user_library::checked_int32(counts.program_count)?);
+    dto.series_count = Some(user_library::checked_int32(counts.series_count)?);
+    dto.song_count = Some(user_library::checked_int32(counts.song_count)?);
+    dto.trailer_count = Some(user_library::checked_int32(counts.trailer_count)?);
+    Ok(())
 }
 
 pub(crate) async fn get_image(

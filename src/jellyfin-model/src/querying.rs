@@ -79,8 +79,8 @@ pub enum ItemFilter {
 #[serde(rename_all = "PascalCase")]
 pub struct QueryResult<T> {
     pub items: Vec<T>,
-    pub total_record_count: usize,
-    pub start_index: usize,
+    pub total_record_count: i32,
+    pub start_index: i32,
 }
 
 impl<T> Default for QueryResult<T> {
@@ -94,22 +94,26 @@ impl<T> Default for QueryResult<T> {
 }
 
 impl<T> QueryResult<T> {
-    #[must_use]
-    pub fn from_items(items: Vec<T>) -> Self {
-        Self {
-            total_record_count: items.len(),
+    /// Creates an unpaged result using the official signed `Int32` count contract.
+    pub fn from_items(items: Vec<T>) -> Result<Self, std::num::TryFromIntError> {
+        Ok(Self {
+            total_record_count: i32::try_from(items.len())?,
             items,
             start_index: 0,
-        }
+        })
     }
 
-    #[must_use]
-    pub fn paged(start_index: usize, total_record_count: usize, items: Vec<T>) -> Self {
-        Self {
+    /// Creates a paged result after checking both public pagination integers.
+    pub fn paged(
+        start_index: usize,
+        total_record_count: usize,
+        items: Vec<T>,
+    ) -> Result<Self, std::num::TryFromIntError> {
+        Ok(Self {
             items,
-            total_record_count,
-            start_index,
-        }
+            total_record_count: i32::try_from(total_record_count)?,
+            start_index: i32::try_from(start_index)?,
+        })
     }
 }
 

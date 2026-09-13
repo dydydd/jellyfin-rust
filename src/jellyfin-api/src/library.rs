@@ -224,8 +224,8 @@ pub(crate) struct MediaUpdateInfoPathDto {
 #[serde(rename_all = "PascalCase")]
 pub(crate) struct ThemeMediaResult {
     items: Vec<user_library::BaseItemDto>,
-    total_record_count: usize,
-    start_index: usize,
+    total_record_count: i32,
+    start_index: i32,
     owner_id: Uuid,
 }
 
@@ -588,7 +588,7 @@ pub(crate) async fn media_folders(
         .map(|folder| crate::user_views::view_to_dto(folder, state.server_id()))
         .collect::<Vec<_>>();
     Ok(Json(user_library::BaseItemQueryResult {
-        total_record_count: items.len(),
+        total_record_count: user_library::checked_int32(items.len())?,
         start_index: 0,
         items,
     }))
@@ -940,7 +940,7 @@ async fn theme_result(
     Ok(ThemeMediaResult {
         items: page.items,
         total_record_count: page.total_record_count,
-        start_index: usize::try_from(page.start_index).unwrap_or(usize::MAX),
+        start_index: page.start_index,
         owner_id,
     })
 }

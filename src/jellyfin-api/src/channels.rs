@@ -250,7 +250,7 @@ pub(crate) async fn list(
         .map(|item| user_library::item_to_dto(item, state.server_id()))
         .collect::<Vec<_>>();
     Ok(Json(user_library::BaseItemQueryResult {
-        total_record_count: usize::try_from(page.total_record_count).unwrap_or(usize::MAX),
+        total_record_count: user_library::checked_int32(page.total_record_count)?,
         start_index: requested_start_index,
         items,
     }))
