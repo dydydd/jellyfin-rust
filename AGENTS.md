@@ -86,6 +86,10 @@
   one-based numeric enum values and numeric strings, lock validated users/items in deterministic
   order, and apply each deduplicated Cartesian-product mutation atomically; `None`, null, or an
   omitted level removes explicit assignments.
+- Implement `/emby/Shows/Missing` through the shared authorized Items query while forcibly replacing
+  every casing or encoded spelling of `IncludeItemTypes` and `IsMissing` with `Episode` and `true`.
+  Preserve all other query pairs, signed pagination, target-user policy, batched DTO projection, and
+  the Emby response adapter, without exposing the route in Jellyfin's root or `/api` trees.
 - Store Emby's opaque encoding editor objects under private `emby-encoding-*` named-configuration
   keys. GET requires an authenticated user and POST requires administrator or API-key authority;
   preserve submitted JSON objects verbatim, keep codec context keys distinct, and never expose these

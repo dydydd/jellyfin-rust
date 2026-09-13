@@ -1,11 +1,18 @@
 //! Small Emby compatibility endpoints whose Jellyfin equivalents are not
 //! exposed as reusable public handlers.
 
-use std::sync::Arc;
+use std::{convert::Infallible, net::SocketAddr, sync::Arc};
 
-use axum::{Json, Router, http::StatusCode, routing::get};
+use axum::{
+    Json, Router,
+    extract::{ConnectInfo, OriginalUri, Request, State},
+    http::{StatusCode, Uri, uri::PathAndQuery},
+    response::{IntoResponse, Response},
+    routing::get,
+};
 use jellyfin_api::AppState;
 use serde::Serialize;
+use tower::ServiceExt;
 
 /// Emby system/discovery routes.  The parent router supplies the state.
 pub(crate) fn routes() -> Router<Arc<AppState>> {
@@ -28,8 +35,8 @@ pub(crate) fn routes() -> Router<Arc<AppState>> {
         )
         .route("/Packages/Updates", get(package_updates))
         .route("/packages/updates", get(package_updates))
-        .route("/Shows/Missing", get(empty_items))
-        .route("/shows/missing", get(empty_items))
+        .route("/Shows/Missing", get(shows_missing))
+        .route("/shows/missing", get(shows_missing))
         .route("/AudioBooks/NextUp", get(empty_items))
         .route("/audiobooks/nextup", get(empty_items))
         .route("/StreamLanguages", get(stream_languages))
@@ -82,6 +89,101 @@ struct QueryResult<T> {
 
 async fn package_updates() -> Json<Vec<PackageVersionInfo>> {
     Json(Vec::new())
+}
+
+async fn shows_missing(
+    State(state): State<Arc<AppState>>,
+    OriginalUri(original_uri): OriginalUri,
+    mut request: Request,
+) -> Result<Response, Response> {
+    let query = force_missing_episode_query(original_uri.query());
+    rewrite_as_items(request.uri_mut(), &query)
+        .map_err(|()| StatusCode::BAD_REQUEST.into_response())?;
+
+    // The outer Emby route's private routing extensions must not reach the
+    // shared Router. Preserve only transport context and the original Emby
+    // URI, which selects the protocol-local response adapter in `/Items`.
+    let connect_info = request
+        .extensions()
+        .get::<ConnectInfo<SocketAddr>>()
+        .copied();
+    let (mut parts, body) = request.into_parts();
+    parts.extensions.clear();
+    parts.extensions.insert(OriginalUri(original_uri));
+    if let Some(connect_info) = connect_info {
+        parts.extensions.insert(connect_info);
+    }
+    let request = Request::from_parts(parts, body);
+
+    Ok(jellyfin_api::unprefixed_router(state.as_ref().clone())
+        .oneshot(request)
+        .await
+        .unwrap_or_else(|error: Infallible| match error {}))
+}
+
+fn force_missing_episode_query(query: Option<&str>) -> String {
+    let mut retained = query
+        .unwrap_or_default()
+        .split('&')
+        .filter(|pair| {
+            let key = pair.split_once('=').map_or(*pair, |(key, _)| key);
+            let key = percent_decode_query_key(key);
+            !key.eq_ignore_ascii_case("IncludeItemTypes") && !key.eq_ignore_ascii_case("IsMissing")
+        })
+        .filter(|pair| !pair.is_empty())
+        .collect::<Vec<_>>();
+    retained.extend(["IncludeItemTypes=Episode", "IsMissing=true"]);
+    retained.join("&")
+}
+
+fn rewrite_as_items(uri: &mut Uri, query: &str) -> Result<(), ()> {
+    let path_and_query = PathAndQuery::try_from(format!("/Items?{query}")).map_err(|_| ())?;
+    let mut parts = uri.clone().into_parts();
+    parts.path_and_query = Some(path_and_query);
+    *uri = Uri::from_parts(parts).map_err(|_| ())?;
+    Ok(())
+}
+
+fn percent_decode_query_key(value: &str) -> String {
+    let bytes = value.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'+' => {
+                decoded.push(b' ');
+                index += 1;
+            }
+            b'%' if index + 2 < bytes.len() => {
+                let Some(high) = hex_value(bytes[index + 1]) else {
+                    decoded.push(bytes[index]);
+                    index += 1;
+                    continue;
+                };
+                let Some(low) = hex_value(bytes[index + 2]) else {
+                    decoded.push(bytes[index]);
+                    index += 1;
+                    continue;
+                };
+                decoded.push((high << 4) | low);
+                index += 3;
+            }
+            byte => {
+                decoded.push(byte);
+                index += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&decoded).into_owned()
+}
+
+const fn hex_value(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
 }
 
 async fn empty_items() -> Json<QueryResult<()>> {
@@ -145,7 +247,13 @@ mod tests {
                 .oneshot(Request::get(path).body(Body::empty()).unwrap())
                 .await
                 .unwrap();
-            assert!(response.status().is_success(), "{path}");
+            if path == "/Shows/Missing" {
+                // The real handler delegates to the PostgreSQL-backed Items
+                // query; the integration test covers its success path.
+                assert_ne!(response.status(), StatusCode::NOT_FOUND, "{path}");
+            } else {
+                assert!(response.status().is_success(), "{path}");
+            }
             let _ = to_bytes(response.into_body(), 64 * 1024).await.unwrap();
         }
     }
@@ -167,6 +275,17 @@ mod tests {
                 .await
                 .unwrap()
                 .is_empty()
+        );
+    }
+
+    #[test]
+    fn missing_episode_query_preserves_other_pairs_and_cannot_be_overridden() {
+        let query = force_missing_episode_query(Some(
+            "Fields=Overview&includeitemtypes=Movie&ISmissing=false&%49ncludeItemTypes=Series&Limit=-1&Fields=ProviderIds",
+        ));
+        assert_eq!(
+            query,
+            "Fields=Overview&Limit=-1&Fields=ProviderIds&IncludeItemTypes=Episode&IsMissing=true"
         );
     }
 
