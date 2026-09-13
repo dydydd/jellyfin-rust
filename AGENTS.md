@@ -6,6 +6,15 @@
 - The checked-out official server source in `jellyfin/` is the behavioral reference. Prefer matching its externally visible behavior, defaults, validation, authorization, ordering, and error semantics over inventing new behavior.
 - Current optimization priorities are media-library management and scanning, users and policies, metadata scraping/providers, and PostgreSQL-backed data access.
 - Do not work on Live TV unless a task explicitly asks for it. Avoid incidental changes under `src/jellyfin-live-tv`.
+- Treat `Emby.ApiClients/Clients/Go/api/swagger.yaml` and its generated Java and Swift clients as
+  the Emby wire contract. Keep Emby endpoints under `/emby`, register protocol-specific adapters
+  before the shared Jellyfin fallback, and never change an unprefixed Jellyfin response merely to
+  satisfy an Emby-only DTO.
+- Keep the checked-in Emby operation inventory synchronized with the generated client source.
+  Exclude only plugin operations and `/LiveTv` routes unless a task explicitly includes them;
+  ordinary playback `LiveStreams` routes remain in scope. Track every other missing method/path in
+  the explicit gap ledger, remove entries only with route and response-shape tests, and keep the
+  combined server test proving `/emby` and Jellyfin root routes remain isolated.
 
 ## Working practices
 

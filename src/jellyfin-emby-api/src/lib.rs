@@ -29,13 +29,25 @@ mod users;
 pub const EMBY_API_PREFIX: &str = "/emby";
 
 /// Version advertised by the checked-in Emby client contract.
-const EMBY_API_VERSION: &str = "4.9.5.0";
+const EMBY_API_VERSION: &str = "4.10.0.40";
 
 /// Builds the independent Emby route tree.
 pub fn router(state: AppState) -> Router {
     let state = Arc::new(state);
     let fallback = jellyfin_api::unprefixed_router(state.as_ref().clone());
-    let routes = Router::new()
+    let routes = dedicated_routes()
+        .fallback_service(fallback)
+        .layer(axum::middleware::from_fn_with_state(
+            Arc::clone(&state),
+            jellyfin_api::protocol_route_auth,
+        ))
+        .with_state(state);
+
+    Router::new().nest(EMBY_API_PREFIX, routes)
+}
+
+fn dedicated_routes() -> Router<Arc<AppState>> {
+    Router::new()
         .merge(auth_user::routes())
         .merge(backup::routes())
         .merge(encoding::routes())
@@ -51,14 +63,6 @@ pub fn router(state: AppState) -> Router {
         .route("/system/info/public", get(public_system_info))
         .route("/System/Info", get(system_info))
         .route("/system/info", get(system_info))
-        .fallback_service(fallback)
-        .layer(axum::middleware::from_fn_with_state(
-            Arc::clone(&state),
-            jellyfin_api::protocol_route_auth,
-        ))
-        .with_state(state);
-
-    Router::new().nest(EMBY_API_PREFIX, routes)
 }
 
 #[derive(Serialize)]
@@ -174,12 +178,34 @@ async fn system_info(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeSet;
+
     use axum::{
         body::{Body, to_bytes},
-        http::{Request, StatusCode},
+        extract::{MatchedPath, Request},
+        http::{HeaderName, HeaderValue, Method, StatusCode},
+        middleware::{self, Next},
+        response::IntoResponse,
     };
     use sea_orm::DatabaseConnection;
+    use serde::Deserialize;
     use tower::ServiceExt;
+
+    const MATCHED_PATH_HEADER: HeaderName = HeaderName::from_static("x-test-matched-path");
+
+    #[derive(Deserialize)]
+    struct ClientContract {
+        version: String,
+        operations: Vec<ClientOperation>,
+    }
+
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct ClientOperation {
+        method: String,
+        path: String,
+        tag: String,
+    }
 
     #[tokio::test]
     async fn jellyfin_and_emby_are_separate_route_trees() {
@@ -274,6 +300,102 @@ mod tests {
                 "{uri}"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn generated_emby_client_route_inventory_audit() {
+        let contract: ClientContract =
+            serde_json::from_str(include_str!("../tests/fixtures/emby_operations.json"))
+                .expect("checked-in Emby operation inventory must be valid");
+        assert_eq!(contract.version, EMBY_API_VERSION);
+
+        let state = AppState::new(
+            DatabaseConnection::Disconnected,
+            "API Test Server".to_owned(),
+            "http://127.0.0.1:8096".to_owned(),
+        );
+        let dedicated = dedicated_routes()
+            .with_state(Arc::new(state.clone()))
+            .layer(middleware::from_fn(short_circuit_matched_route));
+        let shared = jellyfin_api::unprefixed_router(state)
+            .layer(middleware::from_fn(short_circuit_matched_route));
+        let mut missing = BTreeSet::new();
+        let mut checked = 0;
+        for operation in contract.operations {
+            if matches!(operation.tag.as_str(), "LiveTvService" | "PluginService")
+                || operation.path == "/LiveTv"
+                || operation.path.starts_with("/LiveTv/")
+            {
+                continue;
+            }
+            checked += 1;
+            let method = Method::from_bytes(operation.method.as_bytes()).unwrap();
+            let path = materialize_path(&operation.path);
+            if !route_matches(&dedicated, method.clone(), &path).await
+                && !route_matches(&shared, method, &path).await
+            {
+                missing.insert(format!("{} {}", operation.method, operation.path));
+            }
+        }
+        let gap_ledger = include_str!("../tests/fixtures/emby_missing_routes.txt")
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty() && !line.starts_with('#'))
+            .map(ToOwned::to_owned)
+            .collect::<BTreeSet<_>>();
+
+        let unexpectedly_missing = missing.difference(&gap_ledger).collect::<Vec<_>>();
+        let now_supported = gap_ledger.difference(&missing).collect::<Vec<_>>();
+        assert!(
+            unexpectedly_missing.is_empty() && now_supported.is_empty(),
+            "Emby route gap ledger is stale (checked {checked} in-scope operations): \
+             unexpectedly missing={unexpectedly_missing:?}; now supported={now_supported:?}"
+        );
+    }
+
+    async fn short_circuit_matched_route(request: Request, next: Next) -> Response {
+        let Some(path) = request.extensions().get::<MatchedPath>() else {
+            return next.run(request).await;
+        };
+        let mut response = StatusCode::NO_CONTENT.into_response();
+        response.headers_mut().insert(
+            MATCHED_PATH_HEADER,
+            HeaderValue::from_str(path.as_str()).expect("matched paths are valid header values"),
+        );
+        response
+    }
+
+    async fn route_matches(app: &Router, method: Method, path: &str) -> bool {
+        app.clone()
+            .oneshot(
+                Request::builder()
+                    .method(method)
+                    .uri(path)
+                    .header("content-type", "application/json")
+                    .body(Body::from("{}"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+            .headers()
+            .contains_key(&MATCHED_PATH_HEADER)
+    }
+
+    fn materialize_path(template: &str) -> String {
+        let mut path = String::with_capacity(template.len());
+        let mut placeholder = false;
+        for character in template.chars() {
+            match character {
+                '{' => {
+                    placeholder = true;
+                    path.push('0');
+                }
+                '}' => placeholder = false,
+                _ if !placeholder => path.push(character),
+                _ => {}
+            }
+        }
+        path
     }
 
     async fn status(app: &Router, uri: &str) -> StatusCode {
