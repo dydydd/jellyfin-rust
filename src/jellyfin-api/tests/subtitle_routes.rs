@@ -1,7 +1,8 @@
 #![allow(clippy::too_many_lines)]
-use std::path::PathBuf;
+use std::{path::PathBuf, sync::Arc};
 
 use axum::{
+    Router,
     body::{Body, Bytes},
     http::{Method, Request, StatusCode, header},
 };
@@ -321,6 +322,66 @@ async fn exercise_remote_subtitle_routes(database_name: &str) {
             .status(),
         StatusCode::NOT_FOUND
     );
+
+    let emby_route = format!("/emby/Videos/{}/subtitles.m3u8", fixture.item_id);
+    assert_eq!(
+        fixture.send(Method::GET, &emby_route, None).await.status(),
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        fixture
+            .send(Method::GET, &emby_route, Some(&fixture.manager_token))
+            .await
+            .status(),
+        StatusCode::BAD_REQUEST,
+        "both generated Emby query parameters are required"
+    );
+    for route in [
+        format!("{emby_route}?SubtitleSegmentLength=10&ManifestSubtitles=vtt"),
+        format!(
+            "/emby/Videos/{}/live_subtitles.m3u8?subtitleSegmentLength=10&manifestSubtitles=VTT",
+            fixture.item_id
+        ),
+        format!(
+            "/emby/videos/{}/subtitles.m3u8?subtitlesegmentlength=10&manifestsubtitles=vtt",
+            fixture.item_id
+        ),
+    ] {
+        let response = fixture
+            .send(Method::GET, &route, Some(&fixture.manager_token))
+            .await;
+        assert_eq!(response.status(), StatusCode::OK, "{route}");
+        assert_eq!(
+            response.headers()[header::CONTENT_TYPE],
+            "application/x-mpegURL",
+            "{route}"
+        );
+        let playlist = String::from_utf8(body_bytes(response).await.to_vec())
+            .expect("legacy Emby subtitle playlist text");
+        assert!(playlist.contains("#EXT-X-PLAYLIST-TYPE:VOD"), "{route}");
+        assert!(
+            playlist.contains(&format!(
+                "{}/Subtitles/3/stream.vtt?",
+                fixture.item_id.simple()
+            )),
+            "legacy Emby playlist must reference the persisted subtitle stream: {route}"
+        );
+    }
+    for query in [
+        "SubtitleSegmentLength=0&ManifestSubtitles=vtt",
+        "SubtitleSegmentLength=10&ManifestSubtitles=",
+        "SubtitleSegmentLength=10&ManifestSubtitles=srt",
+    ] {
+        let status = fixture
+            .send(
+                Method::GET,
+                &format!("{emby_route}?{query}"),
+                Some(&fixture.manager_token),
+            )
+            .await
+            .status();
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{query}");
+    }
 
     fixture.cleanup().await;
 }
@@ -982,6 +1043,7 @@ impl Fixture {
                         stream_type: MediaStreamType::Subtitle,
                         codec: Some("ass".to_owned()),
                         language: Some("jpn".to_owned()),
+                        is_default: true,
                         is_external: true,
                         path: Some(format!("/media/Subtitle Movie {suffix}.jpn.ass")),
                         ..MediaStream::default()
@@ -1034,7 +1096,10 @@ impl Fixture {
             storage_root.join("cache"),
             storage_root.join("metadata"),
         );
-        let app = jellyfin_api::router(app_state);
+        let emby = jellyfin_api::emby_legacy_subtitle_hls_routes()
+            .fallback_service(jellyfin_api::unprefixed_router(app_state.clone()))
+            .with_state(Arc::new(app_state.clone()));
+        let app = jellyfin_api::router(app_state).merge(Router::new().nest("/emby", emby));
         Self {
             database,
             app,

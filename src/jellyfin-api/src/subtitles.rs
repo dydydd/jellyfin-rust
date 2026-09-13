@@ -15,7 +15,7 @@ use axum::{
 };
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
 use chrono::{DateTime, Utc};
-use jellyfin_controller::{SubtitleResponse, SubtitleSearchRequest};
+use jellyfin_controller::{MediaStreamFilter, SubtitleResponse, SubtitleSearchRequest};
 use jellyfin_data::{BaseItemError, NamedConfigurationStoreError};
 use jellyfin_model::{FontFile, MediaStream, MediaStreamType, MimeTypes, RemoteSubtitleInfo};
 use serde::Deserialize;
@@ -77,6 +77,23 @@ pub(crate) struct SubtitleStreamQuery {
 pub(crate) struct SubtitlePlaylistQuery {
     #[serde(alias = "SegmentLength", alias = "segmentlength")]
     segment_length: Option<i64>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+pub(crate) struct EmbyLegacySubtitlePlaylistQuery {
+    #[serde(
+        rename = "subtitleSegmentLength",
+        alias = "SubtitleSegmentLength",
+        alias = "subtitlesegmentlength"
+    )]
+    subtitle_segment_length: Option<i32>,
+    #[serde(
+        rename = "manifestSubtitles",
+        alias = "ManifestSubtitles",
+        alias = "manifestsubtitles"
+    )]
+    manifest_subtitles: Option<String>,
 }
 
 pub(crate) async fn delete_subtitle(
@@ -176,6 +193,65 @@ pub(crate) async fn get_subtitle_playlist(
     response
         .headers_mut()
         .insert(header::CONTENT_TYPE, content_type);
+    Ok(response)
+}
+
+pub(crate) async fn emby_legacy_subtitle_playlist(
+    State(state): State<Arc<AppState>>,
+    OriginalUri(uri): OriginalUri,
+    headers: HeaderMap,
+    AxumPath(item_id): AxumPath<Uuid>,
+    Query(query): Query<EmbyLegacySubtitlePlaylistQuery>,
+) -> Result<Response, ApiError> {
+    let identity = authorization::require_default(&state, &headers, &uri).await?;
+    let item = match &identity {
+        authentication::AuthenticatedIdentity::Device(session) => {
+            ensure_video_item(&state, &session.user, item_id).await?
+        }
+        authentication::AuthenticatedIdentity::ApiKey(_) => {
+            ensure_video_item_by_id(&state, item_id).await?
+        }
+    };
+    let segment_length_seconds = query
+        .subtitle_segment_length
+        .filter(|length| *length > 0)
+        .map(i64::from)
+        .ok_or(ApiError::InvalidRequest)?;
+    let manifest_format = query
+        .manifest_subtitles
+        .as_deref()
+        .and_then(|value| normalize_subtitle_format(value.trim()))
+        .filter(|value| value.eq_ignore_ascii_case("vtt"))
+        .ok_or(ApiError::InvalidRequest)?;
+    let runtime_ticks = item
+        .runtime_ticks
+        .filter(|runtime_ticks| *runtime_ticks > 0)
+        .ok_or(ApiError::InvalidRequest)?;
+    let streams = state
+        .media_streams
+        .get_media_streams(MediaStreamFilter::for_item(item.id))
+        .await?;
+    let subtitle = streams
+        .iter()
+        .filter(|stream| stream.stream_type == MediaStreamType::Subtitle)
+        .min_by_key(|stream| (!stream.is_default, stream.index))
+        .ok_or(ApiError::NotFound)?;
+    let media_source_id = item.id.simple();
+    let segment_url = format!(
+        "{media_source_id}/Subtitles/{}/stream.{manifest_format}",
+        subtitle.index
+    );
+    let playlist = subtitle_playlist_with_segment_url(
+        runtime_ticks,
+        segment_length_seconds,
+        identity.access_token(),
+        &segment_url,
+    );
+    let mut response = Response::new(Body::from(playlist));
+    response.headers_mut().insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("application/x-mpegURL"),
+    );
     Ok(response)
 }
 
@@ -701,6 +777,20 @@ fn subtitle_playlist(
     segment_length_seconds: i64,
     access_token: &str,
 ) -> String {
+    subtitle_playlist_with_segment_url(
+        runtime_ticks,
+        segment_length_seconds,
+        access_token,
+        "stream.vtt",
+    )
+}
+
+fn subtitle_playlist_with_segment_url(
+    runtime_ticks: i64,
+    segment_length_seconds: i64,
+    access_token: &str,
+    segment_url: &str,
+) -> String {
     const TICKS_PER_SECOND: i64 = 10_000_000;
 
     let segment_length_ticks = segment_length_seconds.saturating_mul(TICKS_PER_SECOND);
@@ -719,7 +809,7 @@ fn subtitle_playlist(
             runtime_ticks.min(position_ticks.saturating_add(segment_length_ticks));
         let _ = writeln!(
             playlist,
-            "stream.vtt?CopyTimestamps=true&AddVttTimeMap=true&StartPositionTicks={position_ticks}&EndPositionTicks={end_position_ticks}&ApiKey={access_token}"
+            "{segment_url}?CopyTimestamps=true&AddVttTimeMap=true&StartPositionTicks={position_ticks}&EndPositionTicks={end_position_ticks}&ApiKey={access_token}"
         );
         position_ticks = position_ticks.saturating_add(segment_length_ticks);
     }

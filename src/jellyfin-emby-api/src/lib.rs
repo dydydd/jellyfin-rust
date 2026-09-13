@@ -18,9 +18,11 @@ use tower::{ServiceExt, service_fn};
 
 mod auth_user;
 mod backup;
+mod bif;
 mod encoding;
 mod environment;
 mod library;
+mod notifications;
 mod packages;
 mod plugins;
 mod system_misc;
@@ -81,6 +83,7 @@ const DEDICATED_ROUTE_TEMPLATES: &[&str] = &[
     "/Items/Intros",
     "/Items/Prefixes",
     "/ItemTypes",
+    "/Notifications/Types",
     // Keep the literal route before the dynamic package-name route. This is
     // the same precedence ASP.NET gives literal segments.
     "/Packages/Updates",
@@ -104,7 +107,10 @@ const DEDICATED_ROUTE_TEMPLATES: &[&str] = &[
     "/Users/CopyDataOptions",
     "/Users/Prefixes",
     "/Users/Query",
+    "/Videos/{item_id}/index.bif",
     "/VideoCodecs",
+    "/Videos/{item_id}/live_subtitles.m3u8",
+    "/Videos/{item_id}/subtitles.m3u8",
 ];
 
 fn case_insensitive_dedicated_routes(routes: Router) -> Router {
@@ -171,11 +177,14 @@ fn normalized_dedicated_path(path: &str) -> Option<String> {
 fn dedicated_routes() -> Router<Arc<AppState>> {
     Router::new()
         .merge(jellyfin_api::emby_legacy_audio_hls_routes())
+        .merge(jellyfin_api::emby_legacy_subtitle_hls_routes())
         .merge(auth_user::routes())
         .merge(backup::routes())
+        .merge(bif::routes())
         .merge(encoding::routes())
         .merge(environment::routes())
         .merge(library::routes())
+        .merge(notifications::routes())
         .merge(packages::routes())
         .merge(plugins::routes())
         .merge(system_misc::routes())
@@ -446,13 +455,26 @@ mod tests {
             ("/iTeMs/iNtRoS", "/Items/Intros"),
             ("/iTeMs/pReFiXeS", "/Items/Prefixes"),
             ("/aRtIsTs/pReFiXeS", "/Artists/Prefixes"),
+            ("/nOtIfIcAtIoNs/tYpEs", "/Notifications/Types"),
             (
                 "/aUdIo/00000000-0000-0000-0000-000000000000/lIvE.m3U8",
                 "/Audio/{item_id}/live.m3u8",
             ),
             (
+                "/vIdEoS/00000000-0000-0000-0000-000000000000/sUbTiTlEs.M3u8",
+                "/Videos/{item_id}/subtitles.m3u8",
+            ),
+            (
+                "/vIdEoS/00000000-0000-0000-0000-000000000000/lIvE_sUbTiTlEs.M3u8",
+                "/Videos/{item_id}/live_subtitles.m3u8",
+            ),
+            (
                 "/sYsTeM/rElEaSeNoTeS/vErSiOnS",
                 "/System/ReleaseNotes/Versions",
+            ),
+            (
+                "/vIdEoS/00000000-0000-0000-0000-000000000000/InDeX.BiF",
+                "/Videos/{item_id}/index.bif",
             ),
         ] {
             let response = app

@@ -28,6 +28,16 @@
   Emby's legacy `/Audio/{Id}/live.m3u8` only under `/emby`; validate its required `Container` with
   the official encoding-container regex and reuse the authenticated HLS pipeline without changing
   Jellyfin's unprefixed Audio or existing Video live behavior.
+- Keep Emby's top-level subtitle HLS routes protocol-local. Bind `SubtitleSegmentLength` and
+  `ManifestSubtitles` case-insensitively, treat the latter as the segment format rather than a stream
+  index, and expose only formats the shared subtitle pipeline can actually produce. Prefer a marked
+  default Subtitle stream, then the smallest persisted stream index, and keep Jellyfin's modern
+  item/media-source/index subtitle routes unchanged.
+- Do not serve Jellyfin trickplay sprite tiles as Emby BIF files. Until a real BIF timestamp index
+  and individual-frame representation exists, validate the generated client's required signed
+  `Width` and return an empty 404 without advertising byte ranges. Capability-discovery endpoints
+  must return SDK-decodable empty collections when no corresponding provider exists rather than
+  inventing unavailable features.
 
 ## Working practices
 

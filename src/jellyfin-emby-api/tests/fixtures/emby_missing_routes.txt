@@ -22,7 +22,6 @@ GET /Encoding/CodecParameters
 POST /Encoding/CodecParameters
 GET /GameGenres/{Name}
 POST /LiveStreams/MediaInfo
-GET /Notifications/Types
 POST /Notifications/Admin
 GET /Parties/Info
 GET /Parties/Messages

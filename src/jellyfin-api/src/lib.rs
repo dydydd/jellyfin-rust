@@ -1123,6 +1123,28 @@ pub fn emby_legacy_audio_hls_routes() -> Router<Arc<AppState>> {
         )
 }
 
+/// Builds Emby's legacy top-level HLS subtitle playlist routes without
+/// exposing them from Jellyfin's unprefixed API.
+pub fn emby_legacy_subtitle_hls_routes() -> Router<Arc<AppState>> {
+    Router::new()
+        .route(
+            "/Videos/{item_id}/subtitles.m3u8",
+            get(subtitles::emby_legacy_subtitle_playlist),
+        )
+        .route(
+            "/Videos/{item_id}/live_subtitles.m3u8",
+            get(subtitles::emby_legacy_subtitle_playlist),
+        )
+        .route(
+            "/videos/{item_id}/subtitles.m3u8",
+            get(subtitles::emby_legacy_subtitle_playlist),
+        )
+        .route(
+            "/videos/{item_id}/live_subtitles.m3u8",
+            get(subtitles::emby_legacy_subtitle_playlist),
+        )
+}
+
 #[allow(clippy::too_many_lines)]
 fn base_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
     let index_path = state.web_directory.join("index.html");

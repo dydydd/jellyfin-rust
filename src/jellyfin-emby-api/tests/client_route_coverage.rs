@@ -70,4 +70,20 @@ async fn combined_server_keeps_protocol_routes_separate() {
     // before the nested fallback decides that no handler exists.
     assert_eq!(missing.status(), StatusCode::UNAUTHORIZED);
     assert!(missing.headers().get(&MATCHED_PATH_HEADER).is_none());
+
+    let item_id = "00000000-0000-0000-0000-000000000000";
+    let jellyfin_bif = response(&format!("/Videos/{item_id}/index.bif?Width=320")).await;
+    assert_eq!(jellyfin_bif.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        jellyfin_bif.headers()[&MATCHED_PATH_HEADER],
+        "/Videos/{item_id}/{stream_file_name}",
+        "the unprefixed Jellyfin tree must retain its existing dynamic stream route"
+    );
+
+    let emby_bif = response(&format!("/emby/Videos/{item_id}/index.bif?Width=320")).await;
+    assert_eq!(emby_bif.status(), StatusCode::UNAUTHORIZED);
+    assert!(
+        emby_bif.headers().get(&MATCHED_PATH_HEADER).is_none(),
+        "the protocol-owned BIF route must remain inside the /emby tree"
+    );
 }
