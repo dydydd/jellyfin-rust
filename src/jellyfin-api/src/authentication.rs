@@ -548,6 +548,7 @@ impl ClientMetadata {
     fn from_headers(headers: &HeaderMap) -> Result<Self, ApiError> {
         let header = headers
             .get(header::AUTHORIZATION)
+            .or_else(|| headers.get("x-emby-authorization"))
             .and_then(|value| value.to_str().ok())
             .ok_or(ApiError::InvalidRequest)?;
         let metadata = parse_authorization(header);
@@ -740,6 +741,64 @@ mod tests {
         assert_eq!(metadata.client, "Emby for iOS");
         assert_eq!(metadata.device_id, "ios-device");
         assert_eq!(metadata.token.as_deref(), Some("abc"));
+    }
+
+    #[test]
+    fn client_metadata_accepts_emby_generated_client_header() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "x-emby-authorization",
+            HeaderValue::from_static(
+                "Emby Client=\"Emby for iOS\", DeviceId=\"ios-device\", Device=\"iPhone\", Version=\"2.1\"",
+            ),
+        );
+
+        let metadata = ClientMetadata::from_headers(&headers).unwrap();
+        assert_eq!(metadata.client, "Emby for iOS");
+        assert_eq!(metadata.device_id, "ios-device");
+        assert_eq!(metadata.device, "iPhone");
+        assert_eq!(metadata.version, "2.1");
+    }
+
+    #[test]
+    fn standard_authorization_header_takes_precedence_over_emby_alias() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::AUTHORIZATION,
+            HeaderValue::from_static(
+                "MediaBrowser Client=\"Jellyfin Android\", DeviceId=\"jellyfin-device\", Device=\"Phone\", Version=\"2.6\"",
+            ),
+        );
+        headers.insert(
+            "x-emby-authorization",
+            HeaderValue::from_static(
+                "Emby Client=\"Emby for iOS\", DeviceId=\"emby-device\", Device=\"iPhone\", Version=\"2.1\"",
+            ),
+        );
+
+        let metadata = ClientMetadata::from_headers(&headers).unwrap();
+        assert_eq!(metadata.client, "Jellyfin Android");
+        assert_eq!(metadata.device_id, "jellyfin-device");
+        assert_eq!(metadata.device, "Phone");
+        assert_eq!(metadata.version, "2.6");
+    }
+
+    #[test]
+    fn client_metadata_keeps_standard_jellyfin_authorization_behavior() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::AUTHORIZATION,
+            HeaderValue::from_static(
+                "MediaBrowser Client=\"Jellyfin Web\", DeviceId=\"web-device\", Device=\"Browser\", Version=\"10.11\", Token=\"jellyfin-token\"",
+            ),
+        );
+
+        let metadata = ClientMetadata::from_headers(&headers).unwrap();
+        assert_eq!(metadata.client, "Jellyfin Web");
+        assert_eq!(metadata.device_id, "web-device");
+        assert_eq!(metadata.device, "Browser");
+        assert_eq!(metadata.version, "10.11");
+        assert_eq!(metadata.token.as_deref(), Some("jellyfin-token"));
     }
 
     #[test]
