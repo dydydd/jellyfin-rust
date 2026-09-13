@@ -53,8 +53,6 @@ GET /Games/{Id}/Similar
 POST /Items/RemoteSearch/Game
 POST /Items/Metadata/Reset
 POST /Items/Shared/Leave
-GET /Items/{Id}/CriticReviews
-GET /Items/{Id}/ThumbnailSet
 POST /Notifications/Services/Test
 GET /Notifications/Services/Defaults
 POST /Parties/{Id}/Join

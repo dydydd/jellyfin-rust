@@ -24,6 +24,7 @@ mod encoding;
 mod environment;
 mod hide_from_resume;
 mod home_sections;
+mod legacy_item_metadata;
 mod library;
 mod notifications;
 mod packages;
@@ -88,6 +89,8 @@ const DEDICATED_ROUTE_TEMPLATES: &[&str] = &[
     "/ExtendedVideoTypes",
     "/Features",
     "/Items/Access",
+    "/Items/{item_id}/CriticReviews",
+    "/Items/{item_id}/ThumbnailSet",
     "/Items/Intros",
     "/Items/Prefixes",
     "/ItemTypes",
@@ -211,6 +214,7 @@ fn dedicated_routes() -> Router<Arc<AppState>> {
         .merge(hide_from_resume::routes())
         .merge(home_sections::routes())
         .merge(library::routes())
+        .merge(legacy_item_metadata::routes())
         .merge(notifications::routes())
         .merge(packages::routes())
         .merge(plugins::routes())

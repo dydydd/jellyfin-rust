@@ -425,6 +425,12 @@
   200 after applying the real alternate-version unlink operation. Preserve typed-video 404 behavior,
   media rows and metadata while removing both linked-child and primary-version relationships; do
   not expose the POST alias from Jellyfin's root router or change its existing DELETE route's 204.
+- Keep Emby CriticReviews and ThumbnailSet isolated below `/emby` and resolve the requested item
+  through the caller's normal library policy before responding. With no critic-review persistence,
+  return the SDK's real empty `QueryResult<BaseItemDto>` shape; do not reinterpret Jellyfin composite
+  trickplay sprites as Emby's individually tagged thumbnails, and return 404 when no truthful
+  ThumbnailSet mapping exists. Bind their signed Int32 paging/Width query values case-insensitively,
+  and keep both paths absent from the Jellyfin root router.
 - Bind target `UserId` as `userId`, `UserId`, and fully lowercase `userid` on UserData, Rating, and
   DisplayPreferences operations; bind DisplayPreferences `ItemId` equivalently. A lowercase target
   id must never be ignored and silently redirected to the authenticated user: foreign targets keep
