@@ -725,15 +725,17 @@ pub(crate) async fn get_item_legacy(
     OriginalUri(uri): OriginalUri,
     Path((user_id, item_id)): Path<(Uuid, Uuid)>,
 ) -> Result<Json<BaseItemDto>, ApiError> {
-    get_item_for(
+    let mut result = get_item_for(
         state,
         headers,
-        uri,
+        uri.clone(),
         Some(user_id),
         item_id,
         BaseItemDtoFields::all(),
     )
-    .await
+    .await?;
+    omit_incompatible_emby_relations(&uri, std::slice::from_mut(&mut result.0));
+    Ok(result)
 }
 
 pub(crate) async fn get_item(
@@ -743,15 +745,17 @@ pub(crate) async fn get_item(
     Path(item_id): Path<Uuid>,
     Query(query): Query<UserIdQuery>,
 ) -> Result<Json<BaseItemDto>, ApiError> {
-    get_item_for(
+    let mut result = get_item_for(
         state,
         headers,
-        uri,
+        uri.clone(),
         query.user_id,
         item_id,
         BaseItemDtoFields::all(),
     )
-    .await
+    .await?;
+    omit_incompatible_emby_relations(&uri, std::slice::from_mut(&mut result.0));
+    Ok(result)
 }
 
 pub(crate) async fn get_intros_legacy(
@@ -3974,10 +3978,93 @@ fn metadata_remote_trailers(data: Option<&Value>) -> Vec<MediaUrl> {
         .unwrap_or_default()
 }
 
+/// Removes relation fields whose identifiers have incompatible Jellyfin and
+/// Emby wire types. Emby's generated clients declare these optional ids as
+/// `Int64`; sending Jellyfin's GUID string makes Swift reject the whole item.
+///
+/// Only the first URI path segment selects the protocol. This keeps every
+/// unprefixed Jellyfin response unchanged and avoids treating a later dynamic
+/// segment containing `emby` as a protocol marker.
+pub(crate) fn omit_incompatible_emby_relations(uri: &axum::http::Uri, items: &mut [BaseItemDto]) {
+    let is_emby = uri
+        .path()
+        .split('/')
+        .nth(1)
+        .is_some_and(|segment| segment.eq_ignore_ascii_case("emby"));
+    if !is_emby {
+        return;
+    }
+
+    for item in items {
+        // These are the NameLongIdPair collections currently projected by the
+        // shared Rust DTO. TagItems and Collections do not exist on this DTO.
+        item.studios.clear();
+        item.genre_items.clear();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+
+    fn item_with_name_id_relations() -> BaseItemDto {
+        BaseItemDto {
+            id: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_owned(),
+            studios: vec![NameIdPair {
+                name: "Studio".to_owned(),
+                id: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".to_owned(),
+            }],
+            genre_items: vec![NameIdPair {
+                name: "Drama".to_owned(),
+                id: "cccccccccccccccccccccccccccccccc".to_owned(),
+            }],
+            artist_items: Some(vec![NameIdPair {
+                name: "Artist".to_owned(),
+                id: "dddddddddddddddddddddddddddddddd".to_owned(),
+            }]),
+            ..BaseItemDto::default()
+        }
+    }
+
+    #[test]
+    fn emby_uri_omits_only_incompatible_name_long_id_relations() {
+        for path in ["/emby/Items", "/EmBy/Users/user/Items/item"] {
+            let uri = path.parse().unwrap();
+            let mut items = vec![item_with_name_id_relations(), item_with_name_id_relations()];
+            omit_incompatible_emby_relations(&uri, &mut items);
+
+            for item in items {
+                let value = serde_json::to_value(item).unwrap();
+                assert!(value.get("Studios").is_none(), "{path}");
+                assert!(value.get("GenreItems").is_none(), "{path}");
+                assert_eq!(
+                    value["ArtistItems"][0]["Id"],
+                    "dddddddddddddddddddddddddddddddd"
+                );
+                assert_eq!(value["Id"], "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+            }
+        }
+    }
+
+    #[test]
+    fn jellyfin_or_later_emby_segment_keeps_guid_relation_ids() {
+        for path in ["/Items", "/api/Items", "/Items/emby", "//emby/Items"] {
+            let uri = path.parse().unwrap();
+            let mut items = vec![item_with_name_id_relations()];
+            omit_incompatible_emby_relations(&uri, &mut items);
+            let value = serde_json::to_value(&items[0]).unwrap();
+
+            assert_eq!(
+                value["Studios"][0]["Id"], "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                "{path}"
+            );
+            assert_eq!(
+                value["GenreItems"][0]["Id"], "cccccccccccccccccccccccccccccccc",
+                "{path}"
+            );
+        }
+    }
 
     #[test]
     fn kotlin_int_response_counts_accept_int32_max_and_reject_wider_values() {

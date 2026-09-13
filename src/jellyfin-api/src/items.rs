@@ -970,7 +970,9 @@ pub(crate) async fn get(
 ) -> Result<Json<user_library::BaseItemQueryResult>, ApiError> {
     let identity = authentication::authenticated_identity(&state, &headers, Some(&uri)).await?;
     let Query(query) = query.map_err(|_| ApiError::InvalidRequest)?;
-    get_for_identity(state, identity, query.user_id, query).await
+    let mut result = get_for_identity(state, identity, query.user_id, query).await?;
+    user_library::omit_incompatible_emby_relations(&uri, &mut result.0.items);
+    Ok(result)
 }
 
 pub(crate) async fn get_legacy(
@@ -982,7 +984,9 @@ pub(crate) async fn get_legacy(
 ) -> Result<Json<user_library::BaseItemQueryResult>, ApiError> {
     let identity = authentication::authenticated_identity(&state, &headers, Some(&uri)).await?;
     let Query(query) = query.map_err(|_| ApiError::InvalidRequest)?;
-    get_for_identity(state, identity, Some(user_id), query).await
+    let mut result = get_for_identity(state, identity, Some(user_id), query).await?;
+    user_library::omit_incompatible_emby_relations(&uri, &mut result.0.items);
+    Ok(result)
 }
 
 pub(crate) async fn query_items(
