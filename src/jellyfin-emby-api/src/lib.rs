@@ -3,7 +3,7 @@
 //! The generated clients in `Emby.ApiClients` identify themselves with either
 //! the `Emby` or `MediaBrowser` scheme and use Emby's `/emby` API base path.
 
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use axum::{
     Json, Router,
@@ -104,8 +104,10 @@ const DEDICATED_ROUTE_TEMPLATES: &[&str] = &[
     "/GameGenres/{name}",
     "/GameGenres/{name}/Images/{image_type}",
     "/GameGenres/{name}/Images/{image_type}/{image_index}",
+    "/Games/{item_id}/Similar",
     "/Items/Access",
     "/Items/Metadata/Reset",
+    "/Items/RemoteSearch/Game",
     "/Items/{item_id}/CriticReviews",
     "/Items/{item_id}/ThumbnailSet",
     "/Items/Intros",
@@ -200,25 +202,16 @@ fn normalize_dedicated_route_uri(uri: &mut Uri) {
 
 fn normalized_dedicated_path(path: &str) -> Option<String> {
     let request_segments = path.strip_prefix('/')?.split('/').collect::<Vec<_>>();
-    for template in DEDICATED_ROUTE_TEMPLATES {
-        let template_segments = template
-            .strip_prefix('/')
-            .expect("dedicated route templates are absolute")
-            .split('/')
-            .collect::<Vec<_>>();
+    for template_segments in emby_route_templates() {
         if request_segments.len() != template_segments.len() {
             continue;
         }
         let mut normalized = String::with_capacity(path.len());
         let mut matches = true;
-        for (request_segment, template_segment) in
-            request_segments.iter().zip(template_segments.iter())
-        {
+        for (request_segment, template_segment) in request_segments.iter().zip(template_segments) {
             normalized.push('/');
-            if template_segment.starts_with('{') && template_segment.ends_with('}') {
-                normalized.push_str(request_segment);
-            } else if request_segment.eq_ignore_ascii_case(template_segment) {
-                normalized.push_str(template_segment);
+            if let Some(segment) = normalized_template_segment(request_segment, template_segment) {
+                normalized.push_str(&segment);
             } else {
                 matches = false;
                 break;
@@ -231,12 +224,126 @@ fn normalized_dedicated_path(path: &str) -> Option<String> {
     None
 }
 
+fn normalized_template_segment(request: &str, template: &str) -> Option<String> {
+    if !template.contains('{') {
+        return request
+            .eq_ignore_ascii_case(template)
+            .then(|| template.to_owned());
+    }
+    if template.starts_with('{') && template.ends_with('}') && template.matches('{').count() == 1 {
+        return Some(request.to_owned());
+    }
+
+    let mut normalized = String::with_capacity(request.len());
+    let mut request_offset = 0;
+    let mut template_offset = 0;
+    while let Some(open_relative) = template[template_offset..].find('{') {
+        let open = template_offset + open_relative;
+        let static_prefix = &template[template_offset..open];
+        let request_prefix = request.get(request_offset..request_offset + static_prefix.len())?;
+        if !request_prefix.eq_ignore_ascii_case(static_prefix) {
+            return None;
+        }
+        normalized.push_str(static_prefix);
+        request_offset += static_prefix.len();
+
+        let close = open + template[open..].find('}')?;
+        template_offset = close + 1;
+        let next_open = template[template_offset..]
+            .find('{')
+            .map(|offset| template_offset + offset)
+            .unwrap_or(template.len());
+        let next_static = &template[template_offset..next_open];
+        if next_static.is_empty() {
+            if next_open != template.len() {
+                return None;
+            }
+            normalized.push_str(&request[request_offset..]);
+            request_offset = request.len();
+            template_offset = template.len();
+            break;
+        }
+        let remaining = &request[request_offset..];
+        let matched_static = remaining
+            .to_ascii_lowercase()
+            .find(&next_static.to_ascii_lowercase())?;
+        normalized.push_str(&remaining[..matched_static]);
+        normalized.push_str(next_static);
+        request_offset += matched_static + next_static.len();
+        template_offset = next_open;
+    }
+    if template_offset < template.len() {
+        let suffix = &template[template_offset..];
+        let request_suffix = request.get(request_offset..)?;
+        if !request_suffix.eq_ignore_ascii_case(suffix) {
+            return None;
+        }
+        normalized.push_str(suffix);
+        request_offset = request.len();
+    }
+    (request_offset == request.len()).then_some(normalized)
+}
+
+fn emby_route_templates() -> &'static [Vec<String>] {
+    static TEMPLATES: OnceLock<Vec<Vec<String>>> = OnceLock::new();
+    TEMPLATES.get_or_init(|| {
+        let mut templates = DEDICATED_ROUTE_TEMPLATES
+            .iter()
+            .map(|template| route_template_segments(template))
+            .collect::<Vec<_>>();
+        let contract: serde_json::Value =
+            serde_json::from_str(include_str!("../tests/fixtures/emby_operations.json"))
+                .expect("checked-in Emby operation inventory must be valid");
+        for operation in contract["operations"]
+            .as_array()
+            .expect("Emby operation inventory must contain an operations array")
+        {
+            let path = operation["path"]
+                .as_str()
+                .expect("Emby operation path must be a string");
+            let tag = operation["tag"]
+                .as_str()
+                .expect("Emby operation tag must be a string");
+            if matches!(tag, "LiveTvService" | "PluginService")
+                || path == "/LiveTv"
+                || path.starts_with("/LiveTv/")
+                || path.contains("QuickConnect")
+            {
+                continue;
+            }
+            let segments = route_template_segments(path);
+            if !templates.contains(&segments) {
+                templates.push(segments);
+            }
+        }
+        // Literal routes must win before dynamic templates with the same
+        // segment count, matching ASP.NET endpoint precedence.
+        templates.sort_by_key(|segments| {
+            segments
+                .iter()
+                .filter(|segment| segment.starts_with('{') && segment.ends_with('}'))
+                .count()
+        });
+        templates
+    })
+}
+
+fn route_template_segments(template: &str) -> Vec<String> {
+    template
+        .strip_prefix('/')
+        .expect("Emby route templates are absolute")
+        .split('/')
+        .map(ToOwned::to_owned)
+        .collect()
+}
+
 fn dedicated_routes() -> Router<Arc<AppState>> {
     Router::new()
         .merge(jellyfin_api::emby_legacy_audio_hls_routes())
         .merge(jellyfin_api::emby_legacy_subtitle_delete_routes())
         .merge(jellyfin_api::emby_legacy_subtitle_hls_routes())
         .merge(jellyfin_api::emby_game_genre_routes())
+        .merge(jellyfin_api::emby_game_routes())
         .merge(auth_user::routes())
         .merge(alternate_sources::routes())
         .merge(backup::routes())
@@ -640,11 +747,11 @@ mod tests {
             status(&app, "/pAcKaGeS/MiXeD%20Name").await,
             StatusCode::NOT_FOUND
         );
-        assert_eq!(normalized_dedicated_path("/iTeMs/NotAPrefix"), None);
+        assert_eq!(normalized_dedicated_path("/NotAnApi/NotAPrefix"), None);
     }
 
     #[tokio::test]
-    async fn generated_dedicated_operations_have_mixed_case_dispatch() {
+    async fn generated_supported_operations_have_mixed_case_dispatch() {
         let contract: ClientContract =
             serde_json::from_str(include_str!("../tests/fixtures/emby_operations.json"))
                 .expect("checked-in Emby operation inventory must be valid");
@@ -654,9 +761,12 @@ mod tests {
             "http://127.0.0.1:8096".to_owned(),
         );
         let dedicated = dedicated_routes()
-            .with_state(Arc::new(state))
+            .with_state(Arc::new(state.clone()))
             .layer(middleware::from_fn(short_circuit_matched_route));
-        let mixed_case = case_insensitive_dedicated_routes(dedicated.clone());
+        let shared = jellyfin_api::unprefixed_router(state)
+            .layer(middleware::from_fn(short_circuit_matched_route));
+        let all_routes = dedicated.clone().fallback_service(shared.clone());
+        let mixed_case = case_insensitive_dedicated_routes(all_routes.clone());
 
         let mut checked = 0;
         for operation in contract.operations {
@@ -668,8 +778,10 @@ mod tests {
             }
             let method = Method::from_bytes(operation.method.as_bytes()).unwrap();
             let canonical = materialize_path(&operation.path);
-            let Some(expected_route) = matched_route(&dedicated, method.clone(), &canonical).await
-            else {
+            let expected_route = matched_route(&dedicated, method.clone(), &canonical)
+                .await
+                .or(matched_route(&shared, method.clone(), &canonical).await);
+            let Some(expected_route) = expected_route else {
                 continue;
             };
 
@@ -678,14 +790,14 @@ mod tests {
             assert_eq!(
                 matched_route(&mixed_case, method, &path).await.as_deref(),
                 Some(expected_route.as_str()),
-                "dedicated Emby operation lost mixed-case dispatch: {} {} ({path})",
+                "supported Emby operation lost mixed-case dispatch: {} {} ({path})",
                 operation.method,
                 operation.path
             );
         }
         assert!(
-            checked > 20,
-            "expected to audit the dedicated route surface"
+            checked > 300,
+            "expected to audit the supported Emby route surface"
         );
     }
 

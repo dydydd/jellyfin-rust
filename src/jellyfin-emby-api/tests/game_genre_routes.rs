@@ -88,6 +88,14 @@ async fn exercise(database_name: &str) {
     )
     .await;
     let game = create_item(&items, "Game", "Visible game", Some(allowed.id), false).await;
+    let similar_game = create_item(
+        &items,
+        "Game",
+        "Visible similar game",
+        Some(allowed.id),
+        false,
+    )
+    .await;
     let hidden_game = create_item(&items, "Game", "Hidden game", Some(hidden.id), false).await;
     let movie = create_item(&items, "Movie", "Movie", Some(allowed.id), false).await;
 
@@ -156,6 +164,79 @@ async fn exercise(database_name: &str) {
     );
     let jellyfin = jellyfin_api::router(state.clone());
     let emby = jellyfin_emby_api::router(state);
+
+    let similar_route = format!("/emby/gAmEs/{}/sImIlAr?UsErId={}&LiMiT=1", game.id, user.id);
+    let similar =
+        json_response(request(&emby, Method::GET, &similar_route, Some(&token)).await).await;
+    assert_eq!(similar["TotalRecordCount"], 1);
+    assert_eq!(
+        similar["Items"][0]["Id"],
+        similar_game.id.simple().to_string()
+    );
+    assert_eq!(similar["Items"][0]["Type"], "Game");
+    let api_key_similar = json_response(
+        request(
+            &emby,
+            Method::GET,
+            &format!("/emby/Games/{}/Similar?Limit=10", game.id),
+            Some(&api_key),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(api_key_similar["TotalRecordCount"], 2);
+    assert!(
+        api_key_similar["Items"]
+            .as_array()
+            .expect("API-key similar games")
+            .iter()
+            .any(|item| item["Id"] == hidden_game.id.simple().to_string())
+    );
+    assert_eq!(
+        request(
+            &jellyfin,
+            Method::GET,
+            &format!("/Games/{}/Similar", game.id),
+            Some(&token),
+        )
+        .await
+        .status(),
+        StatusCode::NOT_FOUND,
+        "Emby Game similarity must not leak into Jellyfin"
+    );
+
+    let remote_search_body = serde_json::json!({
+        "SearchInfo": {"Name": "Example Game", "ProviderIds": {}},
+        "ItemId": "42",
+        "Providers": ["LegacyGameProvider"],
+        "IncludeDisabledProviders": true
+    });
+    let remote_search = request_json(
+        &emby,
+        "/emby/iTeMs/rEmOtEsEaRcH/gAmE",
+        Some(&token),
+        &remote_search_body,
+    )
+    .await;
+    assert_eq!(remote_search.status(), StatusCode::OK);
+    assert_eq!(
+        to_bytes(remote_search.into_body(), 64 * 1024)
+            .await
+            .expect("remote search body"),
+        &b"[]"[..]
+    );
+    assert_eq!(
+        request_json(
+            &jellyfin,
+            "/Items/RemoteSearch/Game",
+            Some(&token),
+            &remote_search_body,
+        )
+        .await
+        .status(),
+        StatusCode::NOT_FOUND,
+        "Emby Game remote search must not leak into Jellyfin"
+    );
 
     assert_eq!(
         request(&emby, Method::GET, "/emby/GameGenres", None)
@@ -487,6 +568,23 @@ async fn request(app: &Router, method: Method, uri: &str, token: Option<&str>) -
     }
     app.clone()
         .oneshot(request.body(Body::empty()).expect("request"))
+        .await
+        .expect("route response")
+}
+
+async fn request_json(app: &Router, uri: &str, token: Option<&str>, body: &Value) -> Response {
+    let mut request = Request::post(uri).header(header::CONTENT_TYPE, "application/json");
+    if let Some(token) = token {
+        request = request
+            .header(header::AUTHORIZATION, AUTHORIZATION)
+            .header("x-emby-token", token);
+    }
+    app.clone()
+        .oneshot(
+            request
+                .body(Body::from(body.to_string()))
+                .expect("JSON request"),
+        )
         .await
         .expect("route response")
 }

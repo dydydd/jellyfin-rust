@@ -36,8 +36,6 @@ GET /Dlna/Profiles/{Id}
 POST /Dlna/Profiles/{Id}
 DELETE /Dlna/Profiles/{Id}
 GET /Dlna/Profiles/Default
-GET /Games/{Id}/Similar
-POST /Items/RemoteSearch/Game
 POST /Items/Shared/Leave
 POST /Notifications/Services/Test
 GET /Notifications/Services/Defaults

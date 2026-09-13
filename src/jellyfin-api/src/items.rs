@@ -2281,6 +2281,22 @@ pub(crate) async fn page_to_dto(
     .await
 }
 
+pub(crate) async fn page_to_dto_optional_user(
+    state: &AppState,
+    page: BaseItemPage,
+    fields: Vec<String>,
+    target_user_id: Option<Uuid>,
+) -> Result<user_library::BaseItemQueryResult, ApiError> {
+    page_to_dto_with_fields_and_options(
+        state,
+        page,
+        user_library::BaseItemDtoFields::from_names(&fields),
+        target_user_id,
+        &PageDtoOptions::default(),
+    )
+    .await
+}
+
 pub(crate) async fn page_to_dto_all_fields(
     state: &AppState,
     page: BaseItemPage,

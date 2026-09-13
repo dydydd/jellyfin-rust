@@ -149,6 +149,22 @@ pub fn emby_game_genre_routes() -> Router<Arc<AppState>> {
     game_genre::routes()
 }
 
+/// Emby-only legacy Game routes. These reuse the shared policy-aware
+/// implementation without adding removed Game endpoints to Jellyfin.
+pub fn emby_game_routes() -> Router<Arc<AppState>> {
+    Router::new()
+        .route("/Games/{item_id}/Similar", get(library::emby_game_similar))
+        .route("/games/{item_id}/similar", get(library::emby_game_similar))
+        .route(
+            "/Items/RemoteSearch/Game",
+            post(item_lookup::emby_game_remote_search),
+        )
+        .route(
+            "/items/remotesearch/game",
+            post(item_lookup::emby_game_remote_search),
+        )
+}
+
 /// Host lifecycle commands exposed by the system API.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum SystemCommand {

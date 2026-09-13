@@ -78,6 +78,42 @@ pub(crate) struct SimilarQuery {
     fields: Vec<String>,
 }
 
+impl SimilarQuery {
+    fn parse(uri: &axum::http::Uri) -> Result<Self, ApiError> {
+        let mut query = Self::default();
+        for (name, value) in form_urlencoded::parse(uri.query().unwrap_or_default().as_bytes()) {
+            if name.eq_ignore_ascii_case("ExcludeArtistIds") {
+                query.exclude_artist_ids.extend(
+                    value
+                        .split(',')
+                        .filter_map(|value| Uuid::parse_str(value.trim()).ok()),
+                );
+            } else if name.eq_ignore_ascii_case("UserId") {
+                query.user_id = if value.trim().is_empty() {
+                    None
+                } else {
+                    Some(Uuid::parse_str(value.trim()).map_err(|_| ApiError::InvalidRequest)?)
+                };
+            } else if name.eq_ignore_ascii_case("Limit") {
+                query.limit = if value.trim().is_empty() {
+                    None
+                } else {
+                    Some(value.parse().map_err(|_| ApiError::InvalidRequest)?)
+                };
+            } else if name.eq_ignore_ascii_case("Fields") {
+                query.fields.extend(
+                    value
+                        .split(',')
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                        .map(ToOwned::to_owned),
+                );
+            }
+        }
+        Ok(query)
+    }
+}
+
 #[derive(Debug, Default, Clone, Deserialize)]
 pub(crate) struct ThemeMediaQuery {
     #[serde(default, rename = "userId", alias = "UserId", alias = "userid")]
@@ -405,8 +441,8 @@ pub(crate) async fn similar(
     headers: HeaderMap,
     OriginalUri(uri): OriginalUri,
     Path(item_id): Path<Uuid>,
-    RepeatedQuery(query): RepeatedQuery<SimilarQuery>,
 ) -> Result<Json<user_library::BaseItemQueryResult>, ApiError> {
+    let query = SimilarQuery::parse(&uri)?;
     let authenticated = authentication::authenticated_session(&state, &headers).await?;
     let target_user_id = query
         .user_id
@@ -431,6 +467,77 @@ pub(crate) async fn similar(
     }
     let mut result =
         crate::items::page_to_dto(state.as_ref(), page, fields, target_user_id).await?;
+    user_library::omit_incompatible_emby_relations(&uri, &mut result.items);
+    Ok(Json(result))
+}
+
+pub(crate) async fn emby_game_similar(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    OriginalUri(uri): OriginalUri,
+    Path(item_id): Path<Uuid>,
+) -> Result<Json<user_library::BaseItemQueryResult>, ApiError> {
+    let query = SimilarQuery::parse(&uri)?;
+    let identity = authentication::authenticated_identity(&state, &headers, Some(&uri)).await?;
+    let requested_user_id = query.user_id.filter(|user_id| !user_id.is_nil());
+    let user_context = match (&identity, requested_user_id) {
+        (_, None) => None,
+        (authentication::AuthenticatedIdentity::Device(session), Some(target_user_id)) => {
+            if target_user_id != session.user.id && !session.user.is_administrator {
+                return Err(ApiError::Forbidden);
+            }
+            match state.users.get(target_user_id).await {
+                Ok(target) => Some((session.user.clone(), target)),
+                Err(UserError::NotFound) if session.user.is_administrator => None,
+                Err(error) => return Err(error.into()),
+            }
+        }
+        (authentication::AuthenticatedIdentity::ApiKey(_), Some(target_user_id)) => {
+            match state.users.get(target_user_id).await {
+                Ok(target) => Some((target.clone(), target)),
+                Err(UserError::NotFound) => None,
+                Err(error) => return Err(error.into()),
+            }
+        }
+    };
+    let (page, target_user_id) = if let Some((authenticated_user, target_user)) = user_context {
+        let target_user_id = target_user.id;
+        (
+            state
+                .library_controller
+                .similar_legacy_game_items(
+                    &authenticated_user,
+                    target_user_id,
+                    item_id,
+                    &query.exclude_artist_ids,
+                    query.limit,
+                )
+                .await?,
+            Some(target_user_id),
+        )
+    } else {
+        (
+            state
+                .library_controller
+                .similar_legacy_game_items_without_user(
+                    item_id,
+                    &query.exclude_artist_ids,
+                    query.limit,
+                )
+                .await?,
+            None,
+        )
+    };
+    let mut fields = query.fields;
+    if !fields
+        .iter()
+        .any(|field| field.eq_ignore_ascii_case("ProviderIds"))
+    {
+        fields.push("ProviderIds".to_owned());
+    }
+    let mut result =
+        crate::items::page_to_dto_optional_user(state.as_ref(), page, fields, target_user_id)
+            .await?;
     user_library::omit_incompatible_emby_relations(&uri, &mut result.items);
     Ok(Json(result))
 }

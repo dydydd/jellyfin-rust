@@ -11,7 +11,8 @@
   before the shared Jellyfin fallback, and never change an unprefixed Jellyfin response merely to
   satisfy an Emby-only DTO.
 - Keep the checked-in Emby operation inventory synchronized with the generated client source.
-  Exclude only plugin operations and `/LiveTv` routes unless a task explicitly includes them;
+  Exclude only plugin operations, `/LiveTv` routes, and QuickConnect unless a task explicitly
+  includes them;
   ordinary playback `LiveStreams` routes remain in scope. Track every other missing method/path in
   the explicit gap ledger, remove entries only with route and response-shape tests, and keep the
   combined server test proving `/emby` and Jellyfin root routes remain isolated.
@@ -24,7 +25,11 @@
   `/emby` responses. Preserve the person and every supported stream, and keep unprefixed Jellyfin
   DTOs byte-shape compatible with the Jellyfin contract.
 - Register generated-client literal routes ahead of shared dynamic fallbacks and dispatch every
-  static segment case-insensitively without normalizing dynamic values or query strings. Mount
+  static segment case-insensitively without normalizing dynamic values or query strings. Build the
+  normalization set from the full generated Emby operation inventory, including compound segments
+  such as `universal.{Container}`, and verify every supported shared or dedicated operation reaches
+  the same handler under mixed casing. Keep Emby-only authorization matching gated by `/emby` so it
+  cannot change root or `/api` error precedence. Mount
   Emby's legacy `/Audio/{Id}/live.m3u8` only under `/emby`; validate its required `Container` with
   the official encoding-container regex and reuse the authenticated HLS pipeline without changing
   Jellyfin's unprefixed Audio or existing Video live behavior.
@@ -63,6 +68,12 @@
   rows from real Game genre values in bounded pages, preserve signed pagination and user-less global
   query behavior, apply an explicit user's library policy, and expose GameGenre image routes only
   below `/emby`; unprefixed Jellyfin must not acquire Game or GameGenre endpoints.
+- Keep legacy Emby Game similarity and remote Game search protocol-local as well. Resolve Game and
+  its CLR alias without registering either in Jellyfin's global item-type registry; omitted or
+  unresolved `UserId` uses the official user-less query, while a resolved explicit user applies the
+  ordinary folder, tag, rating, and parental policy. Accept Emby's nullable signed 64-bit Game
+  search `ItemId`, including numeric strings, without fabricating a Jellyfin UUID mapping, and keep
+  both routes absent from the root and `/api` trees.
 - Store Emby's opaque encoding editor objects under private `emby-encoding-*` named-configuration
   keys. GET requires an authenticated user and POST requires administrator or API-key authority;
   preserve submitted JSON objects verbatim, keep codec context keys distinct, and never expose these
