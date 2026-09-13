@@ -374,6 +374,25 @@ pub struct EmbyLeaveSharedItemsMutation {
     pub user_id: Option<String>,
 }
 
+/// Authenticated request-session snapshot used by Emby's process-local party
+/// service. API keys authenticate successfully but have no associated user,
+/// matching Emby's synthetic user-less session context.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EmbyPartySessionContext {
+    pub session_id: String,
+    pub user: Option<EmbyPartyUser>,
+    pub has_now_playing_item: bool,
+}
+
+/// Minimal user shape serialized inside Emby's legacy `PartySessionInfo` and
+/// `PartyMessageDto` objects.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "PascalCase")]
+pub struct EmbyPartyUser {
+    pub id: String,
+    pub name: String,
+}
+
 impl From<EmbyUserCopyOptions> for UserCopyOptions {
     fn from(value: EmbyUserCopyOptions) -> Self {
         Self {
@@ -1307,6 +1326,40 @@ impl AppState {
                 EmbyItemAccessStoreError::Database(_) => ApiError::Internal.into_response(),
             })?;
         Ok(StatusCode::OK)
+    }
+
+    /// Resolves the session identity for Emby's legacy party service while
+    /// retaining the shared authentication, enabled-user, remote-access, and
+    /// parental-schedule checks.
+    pub async fn emby_party_session_context_for_request(
+        &self,
+        headers: &HeaderMap,
+        uri: &Uri,
+    ) -> Result<EmbyPartySessionContext, Response> {
+        let identity = authorization::require_default(self, headers, uri)
+            .await
+            .map_err(IntoResponse::into_response)?;
+        Ok(match identity {
+            authentication::AuthenticatedIdentity::Device(session) => EmbyPartySessionContext {
+                session_id: session::jellyfin_session_id(
+                    &session.device.app_name,
+                    &session.device.device_id,
+                ),
+                user: Some(EmbyPartyUser {
+                    id: session.user.id.simple().to_string(),
+                    name: session.user.username,
+                }),
+                has_now_playing_item: session.device.now_playing_item.is_some(),
+            },
+            authentication::AuthenticatedIdentity::ApiKey(api_key) => EmbyPartySessionContext {
+                // An API key cannot join a party because Emby requires a
+                // session with a user. Keep a stable internal key so its
+                // user-less Info/Messages/Leave requests remain isolated.
+                session_id: format!("api-key:{}", api_key.id),
+                user: None,
+                has_now_playing_item: false,
+            },
+        })
     }
 
     /// Resets Emby's administrator-owned metadata settings and performs a

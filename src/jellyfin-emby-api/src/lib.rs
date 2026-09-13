@@ -35,6 +35,7 @@ mod metadata_reset;
 mod notifications;
 mod package_updates;
 mod packages;
+mod parties;
 mod person_credits;
 mod plugins;
 mod recent_searches;
@@ -148,6 +149,11 @@ const DEDICATED_ROUTE_TEMPLATES: &[&str] = &[
     "/Packages/Updates",
     "/Packages",
     "/Packages/{name}",
+    "/Parties",
+    "/Parties/Info",
+    "/Parties/Leave",
+    "/Parties/Messages",
+    "/Parties/{party_id}/Join",
     "/OfficialRatings",
     "/Shows/Missing",
     "/StreamLanguages",
@@ -399,6 +405,7 @@ fn dedicated_routes() -> Router<Arc<AppState>> {
         .merge(notifications::routes())
         .merge(package_updates::routes())
         .merge(packages::routes())
+        .merge(parties::routes())
         .merge(person_credits::routes())
         .merge(plugins::routes())
         .merge(recent_searches::routes())

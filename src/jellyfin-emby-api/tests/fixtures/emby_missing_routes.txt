@@ -1,15 +1,9 @@
-GET /Parties
-POST /Parties
 POST /BackupRestore/Restore
 POST /BackupRestore/RestoreData
 GET /Devices/CameraUploads
 POST /Devices/CameraUploads
 POST /Dlna/Profiles
 POST /Notifications/Admin
-GET /Parties/Info
-GET /Parties/Messages
-POST /Parties/Messages
-POST /Parties/Leave
 POST /Sync/Jobs
 POST /Sync/OfflineActions
 POST /Sync/Data
@@ -28,7 +22,6 @@ DELETE /Dlna/Profiles/{Id}
 GET /Dlna/Profiles/Default
 POST /Notifications/Services/Test
 GET /Notifications/Services/Defaults
-POST /Parties/{Id}/Join
 POST /Sync/{ItemId}/Status
 GET /Sync/Jobs/{Id}
 POST /Sync/Jobs/{Id}
