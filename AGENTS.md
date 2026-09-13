@@ -137,7 +137,9 @@
   permission; device sessions must first pass the normal remote-access and parental-schedule checks,
   then the corresponding user-policy flag. Keep canonical and fully lowercase routes equivalent,
   including provider preview routes; malformed inputs from a disallowed user remain 403 rather
-  than leaking binding precedence as 400.
+  than leaking binding precedence as 400. Handlers must preserve that API-key permission instead of
+  requiring a device session again; resolve item-scoped subtitle and lyric searches through a typed,
+  unrestricted item lookup for API keys while retaining normal user-library policy for devices.
 - Project intros, local trailers, special features, and video additional parts with the official
   default all-fields DTO options through one batched projector. Apply the target user's policy to
   both the requested owner and every resolved child before returning the original response shape.
@@ -254,7 +256,11 @@
   PascalCase, camelCase, and representative lowercase form, with query values taking precedence,
   and pass device profile, bitrate, stream-selection, channel, seek, and direct-play options into
   the existing playback stream builder rather than silently ignoring them. API keys may Open only
-  with an explicit valid target user and may Close without a device session.
+  with an explicit valid target user and may Close without a device session. Scope every opened
+  stream to its authorized item, keep the registry bounded and lazily expire abandoned entries, and
+  validate that scope in PlaybackInfo, progressive Audio/Video, and HLS lookups. Include live-stream,
+  device, and play-session identity in HLS job keys so one session cannot reuse or stop another's
+  transcode. Close remains idempotent for unknown identifiers, including whitespace-only values.
 - Keep video version merging and alternate-source deletion on the official `RequiresElevation`
   policy through canonical and fully lowercase routes. Elevated API keys are administrator
   equivalents for both mutations and must not be rejected by a device-session-only handler. For
@@ -319,14 +325,22 @@
   replace them with same-directory atomic renames; never expose absolute server paths in the public
   manifest or accept a restore archive outside the configured backup directory.
 - Treat valid API keys as administrators for user creation, deletion, profile/configuration updates,
-  and password changes through modern and legacy routes. An omitted or nil target for an API key's
-  profile/configuration/password update remains a 404; ordinary user mutations still require self
+  password changes, and profile-image upload/deletion through modern and legacy routes. An omitted
+  or nil target for an API key's profile/configuration/password/image update remains a 404; ordinary
+  user mutations still require self
   access and `EnableUserPreferenceAccess`. Keep target lookup before those preference checks,
   preserve password-change token revocation and
   reset-without-revocation behavior, and retain equivalent lowercase route authorization.
 - Bind every top-level `UserPolicy` update property case-insensitively like ASP.NET JSON input,
   preserving the official last-duplicate-wins behavior and ignoring unknown properties. Do not let
   camelCase, lowercase, or mixed-case SDK payloads silently reset submitted policy values to defaults.
+- Keep `AccessSchedule` entries Kotlin-decodable: emit signed `Int32` `Id` and the owning compact
+  `UserId` in addition to day/start/end fields. Backfill the owning user during DTO projection for
+  historical policy JSON that predates those identity fields.
+- Keep public mobile DTO counts on the official signed `Int32` wire contract, including generic and
+  item query results, theme media, activity/search totals, aggregate item counts, media-source count,
+  unplayed count, and `DeviceOptions.Id`. Use checked conversions and checked aggregation; never
+  saturate, truncate, or silently omit an out-of-range value that Kotlin cannot decode.
 - Keep lower-case aliases for item details, root/counts, suggestions, themes, collections,
   intros/special features, show pages, InstantMix, search hints, trailers, and video additional
   parts on the same handler and authorization contract as their canonical routes.
@@ -645,6 +659,12 @@
 - Preserve Android audio `AudioStreamIndex` and `TranscodingMaxAudioChannels` query values when
   serving progressive audio; the selected media stream must reach FFmpeg instead of silently
   falling back to the first audio stream.
+- Match official audio encoding defaults across progressive and HLS requests: request
+  `CpuCoreLimit` overrides configured threads, `EnableAudioVbrEncoding` defaults true, codec-aware
+  channel/source/encoder caps apply before bitrate derivation, and segmented 3/4/5/7-channel layouts
+  normalize to 2/2/6/8. Copy and lossless output must not receive lossy bitrate or VBR arguments.
+  Parse codec-qualified `StreamOptions` from official lower-camel keys and the generated Kotlin and
+  Swift dictionary encodings, with empty qualified values falling back to unqualified options.
 - Keep video stream routes aligned with the official progressive contract: omitted or false
   `static` requests must transcode with the requested video/audio codecs, stream indexes,
   bitrate, dimensions, and start position; explicit `static=true` remains byte-for-byte static
@@ -1051,7 +1071,12 @@ unknown root model names, and enforce fields decoded with Swift's non-optional `
 silently treating them like `decodeIfPresent`. Include representative response models beyond the
 core item page—such as task, activity, metadata-editor, image-provider, playlist-user, and movie
 recommendation DTOs—and use real Swift Codable decoding as an additional check whenever a Swift
-toolchain is available. Do not add the checked-out SDK source tree or Python bytecode to commits.
+toolchain is available. Generate the dump only after every requested route and assertion succeeds;
+record each route plus its Kotlin and Swift root model in the manifest. Validate it with
+`tools/validate_mobile_dump.sh`, which must fail on a missing, malformed, invalid, or empty manifest
+instead of accepting zero responses. Keep `none` fixtures genuinely anonymous and include an active
+transcode in the Sessions response so nested transcoding reasons are exercised. Do not add the
+checked-out SDK source tree or Python bytecode to commits.
 
 Some `jellyfin-data` integration tests require PostgreSQL and create temporary databases whose names begin with `jellyfin_`. Do not point those tests at a database containing user data.
 
