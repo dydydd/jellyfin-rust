@@ -1,8 +1,9 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, sync::Arc};
 
+use chrono::{Duration, Local, TimeZone, Utc};
 use jellyfin_data::{
-    BaseItemError, BaseItemRepository, VirtualFolderError, VirtualFolderRepository,
-    entities::base_item,
+    BaseItemError, BaseItemRepository, LinkedChildRepository, LinkedChildStoreError,
+    VirtualFolderError, VirtualFolderRepository, entities::base_item,
 };
 use jellyfin_model::{
     ExternalIdInfo, ImageProviderInfo, ImageType, RemoteImageResult, RemoteSearchResult,
@@ -22,6 +23,7 @@ const TMDB_PROVIDER_NAME: &str = "TheMovieDb";
 const TV_MAZE_PROVIDER_NAME: &str = "TVMaze";
 const GOOGLE_BOOKS_PROVIDER_NAME: &str = "Google Books";
 const MUSIC_BRAINZ_PROVIDER_NAME: &str = "MusicBrainz";
+const TMDB_API_BASE_URL: &str = "https://api.themoviedb.org/3";
 
 #[derive(Debug, Error)]
 pub enum ItemLookupError {
@@ -31,6 +33,8 @@ pub enum ItemLookupError {
     BaseItem(#[from] BaseItemError),
     #[error(transparent)]
     VirtualFolder(#[from] VirtualFolderError),
+    #[error(transparent)]
+    LinkedChild(#[from] LinkedChildStoreError),
     #[error(transparent)]
     Metadata(#[from] MetadataProviderError),
     #[error(transparent)]
@@ -75,7 +79,9 @@ pub struct RemoteSearchRequest {
 #[derive(Clone)]
 pub struct ItemLookupService {
     items: BaseItemRepository,
+    linked_children: LinkedChildRepository,
     virtual_folders: VirtualFolderRepository,
+    tmdb_base_url: Arc<str>,
 }
 
 impl ItemLookupService {
@@ -84,8 +90,20 @@ impl ItemLookupService {
         let database = database.into();
         Self {
             items: BaseItemRepository::new(database.clone()),
+            linked_children: LinkedChildRepository::new(database.clone()),
             virtual_folders: VirtualFolderRepository::new(database),
+            tmdb_base_url: Arc::from(TMDB_API_BASE_URL),
         }
+    }
+
+    /// Replaces the TMDB endpoint used by lookup operations.
+    ///
+    /// This is primarily useful for deterministic integration tests and for
+    /// deployments that front TMDB with a compatible metadata proxy.
+    #[must_use]
+    pub fn with_tmdb_base_url(mut self, base_url: impl Into<String>) -> Self {
+        self.tmdb_base_url = Arc::from(base_url.into().trim_end_matches('/').to_owned());
+        self
     }
 
     /// Returns every registered external identifier supported by an item.
@@ -152,8 +170,9 @@ impl ItemLookupService {
             .search_info
             .year
             .or(request.search_info.production_year);
-        let tmdb_client = TmdbClient::with_locale(
+        let tmdb_client = TmdbClient::with_base_url_and_locale(
             api_key.to_owned(),
+            self.tmdb_base_url.to_string(),
             request
                 .search_info
                 .metadata_language
@@ -267,6 +286,109 @@ impl ItemLookupService {
         Ok(sort_remote_search_results(results?, &provider_options))
     }
 
+    /// Lists the remote movies reported by the enabled metadata provider for
+    /// one persisted BoxSet.
+    ///
+    /// Emby's legacy collection discovery compares provider identifiers
+    /// against all current collection members before applying its optional
+    /// missing/present and aired/unaired filters. The two PostgreSQL reads are
+    /// set based; no member causes an individual item lookup.
+    ///
+    /// # Errors
+    ///
+    /// Returns not-found for an unknown or non-BoxSet id, persistence errors,
+    /// or the metadata-provider error returned by TMDB.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn collection_provider_items(
+        &self,
+        item: &base_item::Model,
+        is_missing: Option<bool>,
+        is_unaired: Option<bool>,
+        api_key: &str,
+        metadata_language: &str,
+        metadata_country_code: &str,
+        metadata_options: &[jellyfin_model::MetadataOptions],
+    ) -> Result<Vec<RemoteSearchResult>, ItemLookupError> {
+        if !runtime_item_type_name(&item.item_type).eq_ignore_ascii_case("BoxSet") {
+            return Err(ItemLookupError::NotFound);
+        }
+        let item_id = item.id;
+        let reference = self
+            .virtual_folders
+            .library_options_for_item(item_id)
+            .await?;
+        let global_options = metadata_options
+            .iter()
+            .find(|options| options.item_type.eq_ignore_ascii_case("BoxSet"))
+            .cloned()
+            .unwrap_or_default();
+        let provider_options = RemoteSearchProviderOptions::new(
+            global_options,
+            reference
+                .as_ref()
+                .and_then(|reference| reference.library_options.as_ref()),
+            "BoxSet",
+        );
+        if item
+            .data
+            .as_ref()
+            .and_then(Value::as_object)
+            .and_then(|object| object_value_ignore_case(object, "IsLocked"))
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+            || api_key.trim().is_empty()
+            || provider_disabled(&provider_options, TMDB_PROVIDER_NAME, false, None)
+        {
+            return Ok(Vec::new());
+        }
+        let Some(tmdb_id) = provider_id_ignore_case(item.data.as_ref(), "Tmdb")
+            .and_then(|id| id.parse::<i64>().ok())
+        else {
+            return Ok(Vec::new());
+        };
+
+        let client = TmdbClient::with_base_url_and_locale(
+            api_key.to_owned(),
+            self.tmdb_base_url.to_string(),
+            metadata_language,
+            metadata_country_code,
+        );
+        let mut remote_items = client.collection_items(tmdb_id).await?;
+        if let Some(is_missing) = is_missing {
+            let links = self.linked_children.list(item_id).await?;
+            let member_ids = links.iter().map(|link| link.child_id).collect::<Vec<_>>();
+            let members = self.items.get_many(&member_ids).await?;
+            remote_items.retain(|remote| {
+                let present = members
+                    .iter()
+                    .any(|member| provider_ids_intersect(member.data.as_ref(), remote));
+                (!present) == is_missing
+            });
+        }
+        if let Some(is_unaired) = is_unaired {
+            let local_date = Local::now().date_naive();
+            let local_midnight = Local
+                .from_local_datetime(
+                    &local_date
+                        .and_hms_opt(0, 0, 0)
+                        .expect("midnight is always a valid naive time"),
+                )
+                .earliest()
+                .map_or_else(Utc::now, |value| value.with_timezone(&Utc));
+            if is_unaired {
+                // Emby intentionally allows a 1.1-day boundary tolerance.
+                let minimum = local_midnight - Duration::seconds(95_040);
+                remote_items.retain(|item| item.premiere_date.is_some_and(|date| date >= minimum));
+            } else {
+                remote_items.retain(|item| {
+                    item.premiere_date
+                        .is_some_and(|date| date <= local_midnight)
+                });
+            }
+        }
+        Ok(remote_items)
+    }
+
     /// Lists remote images offered by the item's configured TMDB provider.
     ///
     /// # Errors
@@ -307,8 +429,12 @@ impl ItemLookupService {
             return Ok(empty_remote_images_with_providers(providers));
         };
 
-        let client =
-            TmdbClient::with_locale(api_key.to_owned(), metadata_language, metadata_country_code);
+        let client = TmdbClient::with_base_url_and_locale(
+            api_key.to_owned(),
+            self.tmdb_base_url.to_string(),
+            metadata_language,
+            metadata_country_code,
+        );
         let images = match item.item_type.as_str() {
             "Movie" | "MusicVideo" | "Trailer" => client.movie_images(tmdb_id).await?,
             "Series" => client.tv_images(tmdb_id).await?,
@@ -409,6 +535,40 @@ impl ItemLookupService {
         self.items.update(item).await?;
         Ok(())
     }
+}
+
+fn provider_ids_intersect(data: Option<&Value>, remote: &RemoteSearchResult) -> bool {
+    let Some(provider_ids) = data
+        .and_then(Value::as_object)
+        .and_then(|object| object_value_ignore_case(object, "ProviderIds"))
+        .and_then(Value::as_object)
+    else {
+        return false;
+    };
+    provider_ids.iter().any(|(provider, local_value)| {
+        let Some(local_value) = local_value.as_str() else {
+            return false;
+        };
+        remote
+            .provider_ids
+            .iter()
+            .any(|(remote_provider, remote_value)| {
+                provider.eq_ignore_ascii_case(remote_provider)
+                    && local_value.eq_ignore_ascii_case(remote_value)
+            })
+    })
+}
+
+fn provider_id_ignore_case(data: Option<&Value>, provider: &str) -> Option<String> {
+    data.and_then(Value::as_object)
+        .and_then(|object| object_value_ignore_case(object, "ProviderIds"))
+        .and_then(Value::as_object)?
+        .iter()
+        .find_map(|(name, value)| {
+            name.eq_ignore_ascii_case(provider)
+                .then(|| value.as_str().map(str::to_owned))
+                .flatten()
+        })
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]

@@ -708,6 +708,16 @@ impl AppState {
         self
     }
 
+    /// Replaces the TMDB base URL used by interactive item-lookup routes.
+    ///
+    /// A compatible proxy may be supplied by deployments; route integration
+    /// tests use this to avoid contacting the public provider.
+    #[must_use]
+    pub fn with_item_lookup_tmdb_base_url(mut self, base_url: impl Into<String>) -> Self {
+        self.item_lookup = self.item_lookup.with_tmdb_base_url(base_url);
+        self
+    }
+
     /// Replaces the `OMDb` API key used by metadata providers.
     ///
     /// # Panics
@@ -4912,6 +4922,10 @@ fn item_lookup_error_response(error: &ItemLookupError) -> (StatusCode, &'static 
         ItemLookupError::VirtualFolder(_) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             "Library options could not be loaded",
+        ),
+        ItemLookupError::LinkedChild(_) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Collection members could not be loaded",
         ),
         ItemLookupError::Metadata(_) => (
             StatusCode::INTERNAL_SERVER_ERROR,

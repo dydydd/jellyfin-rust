@@ -109,16 +109,7 @@ impl TmdbClientFactory {
 }
 
 impl TmdbClient {
-    #[must_use]
-    pub fn with_locale(
-        api_key: impl Into<String>,
-        language: impl AsRef<str>,
-        country: impl AsRef<str>,
-    ) -> Self {
-        Self::with_base_url_and_locale(api_key, TMDB_API_BASE_URL.to_owned(), language, country)
-    }
-
-    fn with_base_url_and_locale(
+    pub(crate) fn with_base_url_and_locale(
         api_key: impl Into<String>,
         base_url: impl Into<String>,
         language: impl AsRef<str>,
@@ -305,6 +296,20 @@ impl TmdbClient {
             &[("language", self.language.as_str())],
         )
         .await
+    }
+
+    pub(crate) async fn collection_items(
+        &self,
+        id: i64,
+    ) -> Result<Vec<RemoteSearchResult>, MetadataProviderError> {
+        Ok(self
+            .collection_details(id)
+            .await?
+            .parts
+            .into_iter()
+            .filter(|part| part.media_type.eq_ignore_ascii_case("movie"))
+            .map(movie_search_to_remote_result)
+            .collect())
     }
 
     pub(crate) async fn person_details(
@@ -2507,6 +2512,7 @@ struct TmdbSearchMovie {
     overview: Option<String>,
     poster_path: Option<String>,
     release_date: Option<String>,
+    media_type: String,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -2649,6 +2655,7 @@ pub(crate) struct TmdbCollectionDetails {
     overview: Option<String>,
     poster_path: Option<String>,
     backdrop_path: Option<String>,
+    parts: Vec<TmdbSearchMovie>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -3502,6 +3509,7 @@ mod tests {
             overview: Some("Detective story".to_owned()),
             poster_path: Some("/falling.jpg".to_owned()),
             release_date: Some("1998-01-16".to_owned()),
+            media_type: "movie".to_owned(),
         });
 
         assert_eq!(result.provider_ids["Tmdb"], "30287");

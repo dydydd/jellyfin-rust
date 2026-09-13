@@ -5,13 +5,85 @@ use axum::{
     extract::rejection::JsonRejection,
     extract::{OriginalUri, Path, State},
     http::{HeaderMap, StatusCode},
+    response::{IntoResponse, Response},
 };
-use jellyfin_controller::{RemoteSearchInfo, RemoteSearchRequest};
+use jellyfin_controller::{ItemLookupError, RemoteSearchInfo, RemoteSearchRequest};
 use jellyfin_model::{ExternalIdInfo, RemoteSearchResult};
 use serde::Deserialize;
 use uuid::Uuid;
 
 use crate::{ApiError, AppState, authentication};
+
+impl AppState {
+    /// Resolves Emby's provider-backed BoxSet member discovery while keeping
+    /// authentication and provider configuration inside the shared API state.
+    pub async fn emby_collection_provider_items_for_request(
+        &self,
+        headers: &HeaderMap,
+        uri: &axum::http::Uri,
+        collection_id: Uuid,
+        user_id: Option<Uuid>,
+        is_missing: Option<bool>,
+        is_unaired: Option<bool>,
+    ) -> Result<Vec<RemoteSearchResult>, Response> {
+        self.emby_collection_provider_items(
+            headers,
+            uri,
+            collection_id,
+            user_id,
+            is_missing,
+            is_unaired,
+        )
+        .await
+        .map_err(IntoResponse::into_response)
+    }
+
+    async fn emby_collection_provider_items(
+        &self,
+        headers: &HeaderMap,
+        uri: &axum::http::Uri,
+        collection_id: Uuid,
+        user_id: Option<Uuid>,
+        is_missing: Option<bool>,
+        is_unaired: Option<bool>,
+    ) -> Result<Vec<RemoteSearchResult>, ApiError> {
+        let identity = authentication::authenticated_identity(self, headers, Some(uri)).await?;
+        let target_user_id = identity.target_user_id(user_id)?;
+        let item = match identity {
+            authentication::AuthenticatedIdentity::Device(authenticated) => {
+                self.user_library
+                    .item(&authenticated.user, target_user_id, collection_id)
+                    .await?
+            }
+            authentication::AuthenticatedIdentity::ApiKey(_) if target_user_id.is_nil() => self
+                .base_items
+                .get(collection_id)
+                .await?
+                .ok_or(ItemLookupError::NotFound)?,
+            authentication::AuthenticatedIdentity::ApiKey(_) => {
+                let target = self.users.get(target_user_id).await?;
+                self.user_library
+                    .item(&target, target_user_id, collection_id)
+                    .await?
+            }
+        };
+        let configuration = self.server_configuration.load().await?;
+        let api_key = Arc::clone(&*self.tmdb_api_key.read().await);
+        let metadata_options = crate::configuration::metadata_options(&configuration)?;
+        Ok(self
+            .item_lookup
+            .collection_provider_items(
+                &item,
+                is_missing,
+                is_unaired,
+                &api_key,
+                &configuration.preferred_metadata_language,
+                &configuration.metadata_country_code,
+                &metadata_options,
+            )
+            .await?)
+    }
+}
 
 pub(crate) async fn external_id_infos(
     State(state): State<Arc<AppState>>,

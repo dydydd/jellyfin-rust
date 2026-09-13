@@ -19,8 +19,6 @@ GET /UI/View
 POST /UI/Command
 GET /web/strings
 GET /web/stringset
-GET /Collections/{Id}/ProviderItems
-GET /Collections/{Id}/Missing
 GET /Dlna/{UuId}/description.xml
 HEAD /Dlna/{UuId}/description.xml
 GET /Dlna/{UuId}/description

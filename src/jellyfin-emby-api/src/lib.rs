@@ -21,6 +21,7 @@ mod audiobooks;
 mod auth_user;
 mod backup;
 mod bif;
+mod collection_provider;
 mod dlna;
 mod encoding;
 mod environment;
@@ -104,6 +105,8 @@ const DEDICATED_ROUTE_TEMPLATES: &[&str] = &[
     "/BackupRestore/BackupInfo",
     "/Branding/Configuration",
     "/Containers",
+    "/Collections/{collection_id}/Missing",
+    "/Collections/{collection_id}/ProviderItems",
     "/Dlna/ProfileInfos",
     "/DisplayPreferences/{display_preferences_id}",
     "/Encoding/CodecConfiguration/Defaults",
@@ -379,6 +382,7 @@ fn dedicated_routes() -> Router<Arc<AppState>> {
         .merge(audiobooks::routes())
         .merge(backup::routes())
         .merge(bif::routes())
+        .merge(collection_provider::routes())
         .merge(dlna::routes())
         .merge(encoding::routes())
         .merge(environment::routes())
