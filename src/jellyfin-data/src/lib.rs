@@ -5,6 +5,7 @@ mod base_item_repository;
 mod chapter_repository;
 mod collection_repository;
 mod display_preference_repository;
+mod emby_item_access_repository;
 pub mod entities;
 mod item_by_name_repository;
 mod item_types;
@@ -51,6 +52,9 @@ pub use base_item_repository::{
 pub use chapter_repository::{ChapterRecord, ChapterRepository, ChapterStoreError, NewChapter};
 pub use collection_repository::{CollectionRepository, CollectionStoreError};
 pub use display_preference_repository::{DisplayPreferenceRepository, DisplayPreferenceStoreError};
+pub use emby_item_access_repository::{
+    EmbyItemAccessLevel, EmbyItemAccessRepository, EmbyItemAccessStoreError,
+};
 pub use item_by_name_repository::{ItemByNameRepository, ItemByNameStoreError};
 pub use item_types::OFFICIAL_ITEM_TYPE_ALIASES;
 pub use item_update_repository::{ItemMetadataPatch, ItemUpdateRepository, ItemUpdateStoreError};

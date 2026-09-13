@@ -80,6 +80,12 @@
   unsupported Sync mutation methods stay in the explicit gap ledger. Emby System Ping, public
   system info, Branding configuration/CSS, and Features follow the generated Emby authenticated or
   elevated policies even though the corresponding Jellyfin bootstrap routes remain public.
+- Persist `POST /emby/Items/Access` assignments in the private PostgreSQL Emby relation without
+  changing Jellyfin's item policy model or adding the route to root or `/api`. Bind the three body
+  properties case-insensitively with last-duplicate-wins semantics, accept the generated .NET
+  one-based numeric enum values and numeric strings, lock validated users/items in deterministic
+  order, and apply each deduplicated Cartesian-product mutation atomically; `None`, null, or an
+  omitted level removes explicit assignments.
 - Store Emby's opaque encoding editor objects under private `emby-encoding-*` named-configuration
   keys. GET requires an authenticated user and POST requires administrator or API-key authority;
   preserve submitted JSON objects verbatim, keep codec context keys distinct, and never expose these

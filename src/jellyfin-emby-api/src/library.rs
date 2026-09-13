@@ -14,7 +14,7 @@ use axum::{
     response::Response,
     routing::{get, post},
 };
-use jellyfin_api::AppState;
+use jellyfin_api::{AppState, EmbyItemAccessMutation};
 use serde::{Deserialize, Deserializer, Serialize, de};
 
 /// Routes owned by the Emby protocol surface.
@@ -127,6 +127,8 @@ impl<'de> Deserialize<'de> for UserItemShareLevel {
                     Ok(UserItemShareLevel::Manage)
                 } else if value.eq_ignore_ascii_case("ManageDelete") {
                     Ok(UserItemShareLevel::ManageDelete)
+                } else if let Ok(value) = value.parse::<i64>() {
+                    self.visit_i64(value)
                 } else {
                     Err(E::unknown_variant(
                         value,
@@ -136,12 +138,15 @@ impl<'de> Deserialize<'de> for UserItemShareLevel {
             }
 
             fn visit_i64<E: de::Error>(self, value: i64) -> Result<Self::Value, E> {
+                // Emby's generated .NET clients expose these underlying enum
+                // values as one-based even though the normal wire form is a
+                // string. Json.NET also permits their numeric representation.
                 match value {
-                    0 => Ok(UserItemShareLevel::None),
-                    1 => Ok(UserItemShareLevel::Read),
-                    2 => Ok(UserItemShareLevel::Write),
-                    3 => Ok(UserItemShareLevel::Manage),
-                    4 => Ok(UserItemShareLevel::ManageDelete),
+                    1 => Ok(UserItemShareLevel::None),
+                    2 => Ok(UserItemShareLevel::Read),
+                    3 => Ok(UserItemShareLevel::Write),
+                    4 => Ok(UserItemShareLevel::Manage),
+                    5 => Ok(UserItemShareLevel::ManageDelete),
                     _ => Err(E::invalid_value(de::Unexpected::Signed(value), &self)),
                 }
             }
@@ -166,16 +171,31 @@ struct IntroDebugInfo {
     end: i64,
 }
 
-// Emby's global item-sharing table has no equivalent in the Rust persistence
-// layer. Reject a well-formed mutation explicitly instead of returning success
-// without storing the requested access policy.
+#[allow(clippy::result_large_err)]
 async fn update_item_access(
+    State(state): State<Arc<AppState>>,
+    OriginalUri(uri): OriginalUri,
+    headers: HeaderMap,
     request: Result<Json<CaseInsensitiveUpdateUserItemAccess>, JsonRejection>,
-) -> Result<StatusCode, StatusCode> {
-    let Json(CaseInsensitiveUpdateUserItemAccess(request)) =
-        request.map_err(|_| StatusCode::BAD_REQUEST)?;
-    drop((request.item_ids, request.user_ids, request.item_access));
-    Err(StatusCode::NOT_IMPLEMENTED)
+) -> Result<StatusCode, Response> {
+    let mutation = request
+        .ok()
+        .map(
+            |Json(CaseInsensitiveUpdateUserItemAccess(request))| EmbyItemAccessMutation {
+                item_ids: request.item_ids,
+                user_ids: request.user_ids,
+                access_level: request.item_access.and_then(|access| match access {
+                    UserItemShareLevel::None => None,
+                    UserItemShareLevel::Read => Some(1),
+                    UserItemShareLevel::Write => Some(2),
+                    UserItemShareLevel::Manage => Some(3),
+                    UserItemShareLevel::ManageDelete => Some(4),
+                }),
+            },
+        );
+    state
+        .update_emby_item_access_for_request(&headers, &uri, mutation)
+        .await
 }
 
 // IntroDebugInfo belongs to Emby's proprietary intro-debug persistence, not
@@ -318,7 +338,7 @@ mod tests {
     use super::*;
     use axum::{
         body::Body,
-        http::{Method, Request, StatusCode},
+        http::{Request, StatusCode},
     };
     use sea_orm::DatabaseConnection;
     use tower::ServiceExt;
@@ -368,9 +388,7 @@ mod tests {
             let response = app
                 .clone()
                 .oneshot(
-                    Request::builder()
-                        .method(Method::POST)
-                        .uri(path)
+                    Request::post(path)
                         .header("content-type", "application/json")
                         .body(Body::from(
                             r#"{"iTeMiDs":[],"USERIDS":[],"itemACCESS":"manageDelete"}"#,
@@ -379,18 +397,33 @@ mod tests {
                 )
                 .await
                 .unwrap();
-            assert_eq!(response.status(), StatusCode::NOT_IMPLEMENTED, "{path}");
+            assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "{path}");
         }
+    }
 
-        let response = app
-            .oneshot(
-                Request::post("/Items/Access")
-                    .header("content-type", "application/json")
-                    .body(Body::from("[]"))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    #[test]
+    fn item_access_body_binds_case_insensitively_and_uses_last_duplicate() {
+        let parsed: CaseInsensitiveUpdateUserItemAccess = serde_json::from_str(
+            r#"{"ItemIds":["first"],"itemids":["second"],"USERIDS":[],"ItemAccess":1,"itemaccess":"ManageDelete","unknown":true}"#,
+        )
+        .expect("case-insensitive body");
+        assert_eq!(parsed.0.item_ids, Some(vec!["second".to_owned()]));
+        assert_eq!(parsed.0.user_ids, Some(Vec::new()));
+        assert_eq!(parsed.0.item_access, Some(UserItemShareLevel::ManageDelete));
+
+        for value in ["None", "read", "WRITE", "Manage", "manageDelete"] {
+            let body = format!(r#"{{"ItemAccess":"{value}"}}"#);
+            assert!(serde_json::from_str::<CaseInsensitiveUpdateUserItemAccess>(&body).is_ok());
+        }
+        for value in 1..=5 {
+            let body = format!(r#"{{"ItemAccess":{value}}}"#);
+            assert!(serde_json::from_str::<CaseInsensitiveUpdateUserItemAccess>(&body).is_ok());
+            let body = format!(r#"{{"ItemAccess":"{value}"}}"#);
+            assert!(serde_json::from_str::<CaseInsensitiveUpdateUserItemAccess>(&body).is_ok());
+        }
+        for value in [0, 6] {
+            let body = format!(r#"{{"ItemAccess":{value}}}"#);
+            assert!(serde_json::from_str::<CaseInsensitiveUpdateUserItemAccess>(&body).is_err());
+        }
     }
 }

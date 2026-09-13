@@ -36,7 +36,8 @@ use jellyfin_data::{
     ActivityLogError, ActivityLogRepository, ApiKeyRepository, AuthenticationStoreError,
     BaseItemError, BaseItemImageRepository, BaseItemRepository, ChapterRepository,
     DeviceOptionsRepository, DeviceRepository, DisplayPreferenceRepository,
-    DisplayPreferenceStoreError, ItemUpdateRepository, ItemUpdateStoreError, ItemValueRepository,
+    DisplayPreferenceStoreError, EmbyItemAccessLevel, EmbyItemAccessRepository,
+    EmbyItemAccessStoreError, ItemUpdateRepository, ItemUpdateStoreError, ItemValueRepository,
     KeyframeDataRepository, NamedConfigurationRepository, NamedConfigurationStoreError,
     PersonRepository, QuickConnectRepository, RememberedTrackSelection,
     ServerConfigurationRepository, ServerConfigurationStoreError, SessionCommandRepository,
@@ -334,6 +335,16 @@ pub struct EmbyUserCopyOptions {
     pub policy: bool,
     pub configuration: bool,
     pub user_data: bool,
+}
+
+/// Parsed fields for Emby's protocol-private item-access mutation.
+#[derive(Debug)]
+pub struct EmbyItemAccessMutation {
+    pub item_ids: Option<Vec<String>>,
+    pub user_ids: Option<Vec<String>>,
+    /// `None` represents both an omitted/null field and Emby's numeric `None`
+    /// value; all three remove an explicit assignment.
+    pub access_level: Option<i16>,
 }
 
 impl From<EmbyUserCopyOptions> for UserCopyOptions {
@@ -1155,6 +1166,46 @@ impl AppState {
             .map_err(IntoResponse::into_response)
     }
 
+    /// Persists Emby's explicit user/item share levels without exposing the
+    /// protocol-private table through Jellyfin's root API.
+    ///
+    /// The checked-in generated contract requires ordinary authenticated-user
+    /// access rather than elevation. Authentication deliberately precedes
+    /// body and UUID validation, and the repository validates every referenced
+    /// row before applying the Cartesian-product mutation atomically.
+    #[allow(clippy::result_large_err)]
+    pub async fn update_emby_item_access_for_request(
+        &self,
+        headers: &HeaderMap,
+        uri: &Uri,
+        mutation: Option<EmbyItemAccessMutation>,
+    ) -> Result<StatusCode, Response> {
+        authorization::require_default(self, headers, uri)
+            .await
+            .map_err(IntoResponse::into_response)?;
+        let mutation = mutation.ok_or_else(|| ApiError::InvalidRequest.into_response())?;
+        let user_ids = parse_emby_item_access_ids(mutation.user_ids)?;
+        let item_ids = parse_emby_item_access_ids(mutation.item_ids)?;
+        let access = match mutation.access_level {
+            None => None,
+            Some(1) => Some(EmbyItemAccessLevel::Read),
+            Some(2) => Some(EmbyItemAccessLevel::Write),
+            Some(3) => Some(EmbyItemAccessLevel::Manage),
+            Some(4) => Some(EmbyItemAccessLevel::ManageDelete),
+            Some(_) => return Err(ApiError::InvalidRequest.into_response()),
+        };
+        EmbyItemAccessRepository::new(Arc::clone(&self.database))
+            .replace(&user_ids, &item_ids, access)
+            .await
+            .map_err(|error| match error {
+                EmbyItemAccessStoreError::UserNotFound | EmbyItemAccessStoreError::ItemNotFound => {
+                    ApiError::NotFound.into_response()
+                }
+                EmbyItemAccessStoreError::Database(_) => ApiError::Internal.into_response(),
+            })?;
+        Ok(StatusCode::OK)
+    }
+
     /// Resets Emby's administrator-owned metadata settings and performs a
     /// real full metadata replacement for every requested item.
     ///
@@ -1628,6 +1679,14 @@ fn parse_emby_metadata_reset_ids(value: Option<&str>) -> Result<Vec<Uuid>, Respo
         }
     }
     Ok(item_ids)
+}
+
+fn parse_emby_item_access_ids(values: Option<Vec<String>>) -> Result<Vec<Uuid>, Response> {
+    values
+        .unwrap_or_default()
+        .into_iter()
+        .map(|value| Uuid::parse_str(&value).map_err(|_| ApiError::InvalidRequest.into_response()))
+        .collect()
 }
 
 #[cfg(test)]
