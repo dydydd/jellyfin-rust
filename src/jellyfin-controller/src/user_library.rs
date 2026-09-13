@@ -5,10 +5,10 @@ use std::{
 
 use chrono::{DateTime, Utc};
 use jellyfin_data::{
-    BaseItemCounts, BaseItemError, BaseItemOrder, BaseItemPage, BaseItemQuery, BaseItemRepository,
-    ItemValueQuery, LatestTvGroup, PersonMovieRecommendationCandidate,
-    PersonMovieRecommendationRequest, ScoredBaseItem, ScoredBaseItemPage,
-    ServerConfigurationRepository,
+    BaseItemCounts, BaseItemError, BaseItemFacet, BaseItemFacetPage, BaseItemOrder, BaseItemPage,
+    BaseItemQuery, BaseItemRepository, ItemValueQuery, LatestTvGroup,
+    PersonMovieRecommendationCandidate, PersonMovieRecommendationRequest, ScoredBaseItem,
+    ScoredBaseItemPage, ServerConfigurationRepository,
     entities::{base_item, user},
 };
 use jellyfin_model::{MediaStream, MediaStreamType, UserPolicy};
@@ -221,6 +221,42 @@ impl UserLibraryService {
         query.enable_all_folders = true;
         query.blocked_media_folders = None;
         Ok(self.hydrate_page(self.items.query(&query).await?))
+    }
+
+    /// Queries one distinct facet over a target user's visible item set.
+    ///
+    /// This deliberately does not add the ordinary item-page root scope: the
+    /// legacy discovery endpoints enumerate the user's complete visible
+    /// library unless their Items query explicitly supplies a parent.
+    pub async fn query_item_facet(
+        &self,
+        authenticated_user: &user::Model,
+        target_user_id: Uuid,
+        mut query: BaseItemQuery,
+        facet: BaseItemFacet,
+    ) -> Result<BaseItemFacetPage, UserLibraryError> {
+        self.authorize_and_apply_user_policy(authenticated_user, target_user_id, &mut query)
+            .await?;
+        query.user_id = Some(target_user_id);
+        Ok(self.items.query_facet(&query, facet).await?)
+    }
+
+    /// Queries one distinct facet without a user-policy context.
+    pub async fn query_item_facet_without_user(
+        &self,
+        mut query: BaseItemQuery,
+        facet: BaseItemFacet,
+    ) -> Result<BaseItemFacetPage, UserLibraryError> {
+        query.user_id = None;
+        query.allowed_official_ratings.clear();
+        query.allowed_parental_ratings.clear();
+        query.block_unrated_items.clear();
+        query.blocked_tags.clear();
+        query.allowed_tags.clear();
+        query.enabled_folders.clear();
+        query.enable_all_folders = true;
+        query.blocked_media_folders = None;
+        Ok(self.items.query_facet(&query, facet).await?)
     }
 
     /// Computes latest-TV grouping for the top series under the target user's policy.

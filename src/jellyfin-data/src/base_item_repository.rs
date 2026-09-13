@@ -385,6 +385,38 @@ pub struct BaseItemPage {
     pub start_index: u64,
 }
 
+/// A distinct value projected from the set of items accepted by a
+/// [`BaseItemQuery`].
+///
+/// These facets back legacy Emby discovery endpoints. Keeping the facet
+/// projection in the repository makes the item filter and user-policy SQL
+/// exactly the same as an ordinary item query and avoids loading a library
+/// page merely to derive a small list of values.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BaseItemFacet {
+    ItemType,
+    AudioCodec,
+    AudioLayout,
+    Container,
+    ExtendedVideoType,
+    OfficialRating,
+    ItemPrefix,
+    ArtistPrefix,
+}
+
+/// One page of case-insensitively distinct item facet values.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BaseItemFacetPage {
+    pub values: Vec<String>,
+    pub total_record_count: u64,
+}
+
+#[derive(Debug, FromQueryResult)]
+struct BaseItemFacetRow {
+    value: Option<String>,
+    total_record_count: i64,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct ScoredBaseItem {
     pub item: base_item::Model,
@@ -3969,6 +4001,134 @@ impl BaseItemRepository {
         .into_iter()
         .map(|row| row.item_id)
         .collect())
+    }
+
+    /// Returns a bounded page of distinct values from policy-visible items.
+    ///
+    /// The `filtered` CTE is shared with [`Self::query`], so every item,
+    /// hierarchy, tag, parental-rating, playback, and user-library predicate
+    /// is applied before media-stream or item-value facets are projected. The
+    /// total and page are returned by one set-based PostgreSQL statement.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error when the facet query fails.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "all facet projections share one policy-filtered SQL builder"
+    )]
+    pub async fn query_facet(
+        &self,
+        query: &BaseItemQuery,
+        facet: BaseItemFacet,
+    ) -> Result<BaseItemFacetPage, BaseItemError> {
+        let (mut sql, mut values) = filtered_query_cte(query);
+        sql.push_str(", raw_facet_values AS MATERIALIZED (");
+        sql.push_str(match facet {
+            BaseItemFacet::ItemType => {
+                "SELECT item.item_type AS display_value FROM filtered AS item"
+            }
+            BaseItemFacet::AudioCodec => {
+                "SELECT stream.codec AS display_value \
+                 FROM filtered AS item \
+                 INNER JOIN jellyfin.media_streams AS stream ON stream.item_id = item.id \
+                 WHERE stream.stream_type = 0"
+            }
+            BaseItemFacet::AudioLayout => {
+                "SELECT stream.channel_layout AS display_value \
+                 FROM filtered AS item \
+                 INNER JOIN jellyfin.media_streams AS stream ON stream.item_id = item.id \
+                 WHERE stream.stream_type = 0"
+            }
+            BaseItemFacet::Container => {
+                "SELECT BTRIM(container.value) AS display_value \
+                 FROM filtered AS item \
+                 CROSS JOIN LATERAL regexp_split_to_table(\
+                     COALESCE(item.data ->> 'Container', item.data ->> 'container', ''), ','\
+                 ) AS container(value)"
+            }
+            BaseItemFacet::ExtendedVideoType => {
+                "SELECT video_type.display_value \
+                 FROM filtered AS item \
+                 INNER JOIN jellyfin.media_streams AS stream ON stream.item_id = item.id \
+                    AND stream.stream_type = 1 \
+                 CROSS JOIN LATERAL (VALUES \
+                     (CASE WHEN stream.dv_profile IS NOT NULL \
+                             OR stream.dv_version_major IS NOT NULL \
+                             OR stream.rpu_present_flag = 1 \
+                            THEN 'DolbyVision' END), \
+                     (CASE WHEN stream.hdr10_plus_present_flag = true \
+                            THEN 'Hdr10Plus' END), \
+                     (CASE WHEN lower(stream.color_transfer) = 'arib-std-b67' \
+                            THEN 'HyperLogGamma' END), \
+                     (CASE WHEN lower(stream.color_transfer) = 'smpte2084' \
+                            THEN 'Hdr10' END) \
+                 ) AS video_type(display_value)"
+            }
+            BaseItemFacet::OfficialRating => {
+                "SELECT item.official_rating AS display_value FROM filtered AS item"
+            }
+            BaseItemFacet::ItemPrefix => {
+                "SELECT upper(left(BTRIM(COALESCE(\
+                     NULLIF(item.sort_name, ''), item.name\
+                 )), 1)) AS display_value \
+                 FROM filtered AS item"
+            }
+            BaseItemFacet::ArtistPrefix => {
+                "SELECT upper(left(BTRIM(item_value.value), 1)) AS display_value \
+                 FROM filtered AS item \
+                 INNER JOIN jellyfin.item_value_map AS item_map ON item_map.item_id = item.id \
+                 INNER JOIN jellyfin.item_values AS item_value \
+                    ON item_value.item_value_id = item_map.item_value_id \
+                 WHERE item_value.\"type\" IN (0, 1)"
+            }
+        });
+        sql.push_str(
+            "), facet_values AS MATERIALIZED (\
+                 SELECT DISTINCT ON (lower(BTRIM(display_value))) \
+                        BTRIM(display_value) AS value \
+                 FROM raw_facet_values \
+                 WHERE NULLIF(BTRIM(display_value), '') IS NOT NULL \
+                 ORDER BY lower(BTRIM(display_value)), BTRIM(display_value)\
+             ), facet_total AS (\
+                 SELECT COUNT(*)::bigint AS total_record_count FROM facet_values\
+             ) ",
+        );
+        values.push(i64::try_from(query.start_index).unwrap_or(i64::MAX).into());
+        let offset_parameter = values.len();
+        let _ = write!(
+            sql,
+            "SELECT page.value, total.total_record_count \
+             FROM facet_total AS total \
+             LEFT JOIN LATERAL (\
+                 SELECT value FROM facet_values \
+                 ORDER BY lower(value), value \
+                 OFFSET ${offset_parameter}"
+        );
+        if let Some(limit) = query.limit {
+            values.push(i64::try_from(limit).unwrap_or(i64::MAX).into());
+            let limit_parameter = values.len();
+            let _ = write!(sql, " LIMIT ${limit_parameter}");
+        }
+        sql.push_str(
+            ") AS page ON true \
+             ORDER BY lower(page.value) NULLS LAST, page.value NULLS LAST",
+        );
+
+        let rows = BaseItemFacetRow::find_by_statement(Statement::from_sql_and_values(
+            DbBackend::Postgres,
+            sql,
+            values,
+        ))
+        .all(self.database.as_ref())
+        .await?;
+        let total_record_count = rows.first().map_or(0, |row| {
+            u64::try_from(row.total_record_count).unwrap_or_default()
+        });
+        Ok(BaseItemFacetPage {
+            values: rows.into_iter().filter_map(|row| row.value).collect(),
+            total_record_count,
+        })
     }
 
     /// Computes official 24-hour latest-TV grouping decisions for the top series.

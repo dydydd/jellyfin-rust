@@ -42,12 +42,12 @@ pub use base_item_image_repository::{
     BaseItemImageType, InvalidBaseItemImageType, NewBaseItemImage, StoredImageMutation,
 };
 pub use base_item_repository::{
-    BaseItemCounts, BaseItemDtoRelatedCounts, BaseItemError, BaseItemHierarchyEntry, BaseItemOrder,
-    BaseItemPage, BaseItemQuery, BaseItemRepository, DescendantScanCandidate, LatestTvGroup,
-    MediaStreamLanguageLists, MetadataRefreshCandidate, MovieSimilarityScore, NewBaseItem,
-    NewItemByNameEntity, PersonMovieRecommendationCandidate, PersonMovieRecommendationRequest,
-    ProductionYearOrder, ProductionYearPage, ScoredBaseItem, ScoredBaseItemPage,
-    TvHierarchyCandidate, USER_ROOT_FOLDER_ID,
+    BaseItemCounts, BaseItemDtoRelatedCounts, BaseItemError, BaseItemFacet, BaseItemFacetPage,
+    BaseItemHierarchyEntry, BaseItemOrder, BaseItemPage, BaseItemQuery, BaseItemRepository,
+    DescendantScanCandidate, LatestTvGroup, MediaStreamLanguageLists, MetadataRefreshCandidate,
+    MovieSimilarityScore, NewBaseItem, NewItemByNameEntity, PersonMovieRecommendationCandidate,
+    PersonMovieRecommendationRequest, ProductionYearOrder, ProductionYearPage, ScoredBaseItem,
+    ScoredBaseItemPage, TvHierarchyCandidate, USER_ROOT_FOLDER_ID,
 };
 pub use chapter_repository::{ChapterRecord, ChapterRepository, ChapterStoreError, NewChapter};
 pub use collection_repository::{CollectionRepository, CollectionStoreError};

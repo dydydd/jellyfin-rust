@@ -6,12 +6,15 @@ use std::{
 use axum::{
     Json,
     extract::{OriginalUri, Path, State},
-    http::HeaderMap,
+    http::{HeaderMap, Uri},
+    response::{IntoResponse, Response},
 };
 use axum_extra::extract::{Query, QueryRejection};
 use chrono::{DateTime, Utc};
 use jellyfin_controller::{SearchProviderQuery, UserError};
-use jellyfin_data::{BaseItemOrder, BaseItemPage, BaseItemQuery, entities::base_item};
+use jellyfin_data::{
+    BaseItemFacet, BaseItemOrder, BaseItemPage, BaseItemQuery, entities::base_item,
+};
 use jellyfin_model::{ImageType, SortOrder, UserConfiguration};
 use serde::{Deserialize, Serialize};
 use std::str::FromStr;
@@ -1260,6 +1263,76 @@ async fn get_for_identity(
         result,
         requested_start_index,
     )))
+}
+
+impl AppState {
+    /// Resolves an Emby discovery request through the ordinary Items binder,
+    /// target-user authorization, parent-view mapping, and stored library
+    /// policy before PostgreSQL derives a distinct facet.
+    pub async fn emby_library_facet_for_request(
+        &self,
+        headers: &HeaderMap,
+        uri: &Uri,
+        facet_name: &str,
+    ) -> Result<(Vec<String>, u64), Response> {
+        self.emby_library_facet(headers, uri, facet_name)
+            .await
+            .map(|page| (page.values, page.total_record_count))
+            .map_err(IntoResponse::into_response)
+    }
+
+    async fn emby_library_facet(
+        &self,
+        headers: &HeaderMap,
+        uri: &Uri,
+        facet_name: &str,
+    ) -> Result<jellyfin_data::BaseItemFacetPage, ApiError> {
+        let Query(mut query) =
+            Query::<ItemsQuery>::try_from_uri(uri).map_err(|_| ApiError::InvalidRequest)?;
+        let facet = match facet_name {
+            "ItemType" => BaseItemFacet::ItemType,
+            "AudioCodec" => BaseItemFacet::AudioCodec,
+            "AudioLayout" => BaseItemFacet::AudioLayout,
+            "Container" => BaseItemFacet::Container,
+            "ExtendedVideoType" => BaseItemFacet::ExtendedVideoType,
+            "OfficialRating" => BaseItemFacet::OfficialRating,
+            "ItemPrefix" => BaseItemFacet::ItemPrefix,
+            "ArtistPrefix" => BaseItemFacet::ArtistPrefix,
+            _ => return Err(ApiError::InvalidRequest),
+        };
+        let identity = authentication::authenticated_identity(self, headers, Some(uri)).await?;
+        let target_user_id = identity.target_user_id(query.user_id)?;
+        let target_user = match identity {
+            authentication::AuthenticatedIdentity::Device(authenticated) => {
+                Some(authenticated.user)
+            }
+            authentication::AuthenticatedIdentity::ApiKey(_) if target_user_id.is_nil() => None,
+            authentication::AuthenticatedIdentity::ApiKey(_) => {
+                Some(self.users.get(target_user_id).await?)
+            }
+        };
+
+        let Some(target_user) = target_user else {
+            resolve_official_rating_filters(self, &mut query).await?;
+            return Ok(self
+                .user_library
+                .query_item_facet_without_user(query.try_into()?, facet)
+                .await?);
+        };
+
+        let parent_scope =
+            resolve_user_view_parent_scope(self, &target_user, target_user_id, query.parent_id)
+                .await?;
+        query.parent_id = parent_scope.parent_id;
+        apply_items_controller_defaults(self, &target_user, target_user_id, &mut query).await?;
+        resolve_official_rating_filters(self, &mut query).await?;
+        let mut database_query: BaseItemQuery = query.try_into()?;
+        database_query.parent_ids = parent_scope.parent_ids;
+        Ok(self
+            .user_library
+            .query_item_facet(&target_user, target_user_id, database_query, facet)
+            .await?)
+    }
 }
 
 async fn suggestions_for(

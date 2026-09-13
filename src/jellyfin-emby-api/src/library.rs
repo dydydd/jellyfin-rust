@@ -11,7 +11,7 @@ use axum::{
     Json, Router,
     extract::{OriginalUri, State, rejection::JsonRejection},
     http::{HeaderMap, StatusCode},
-    response::Response,
+    response::{IntoResponse, Response},
     routing::{get, post},
 };
 use jellyfin_api::{AppState, EmbyItemAccessMutation};
@@ -224,22 +224,28 @@ struct NameValuePair {
 #[derive(Serialize)]
 #[serde(rename_all = "PascalCase")]
 struct TagResult {
-    total_record_count: usize,
-    items: Vec<NameValuePair>,
+    total_record_count: i32,
+    items: Vec<TagItem>,
 }
 
 #[derive(Serialize)]
 #[serde(rename_all = "PascalCase")]
-struct ItemType {
+struct TagItem {
+    name: String,
     id: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "PascalCase")]
+struct OfficialRatingItem {
     name: String,
 }
 
 #[derive(Serialize)]
 #[serde(rename_all = "PascalCase")]
-struct ItemTypeResult {
-    total_record_count: usize,
-    items: Vec<ItemType>,
+struct OfficialRatingResult {
+    total_record_count: i32,
+    items: Vec<OfficialRatingItem>,
 }
 
 #[derive(Serialize)]
@@ -250,87 +256,127 @@ struct FeatureInfo {
     name: String,
 }
 
-async fn item_prefixes(State(_state): State<Arc<AppState>>) -> Json<Vec<NameValuePair>> {
-    Json(Vec::new())
+async fn item_prefixes(
+    State(state): State<Arc<AppState>>,
+    OriginalUri(uri): OriginalUri,
+    headers: HeaderMap,
+) -> Result<Json<Vec<NameValuePair>>, Response> {
+    let (values, _) = state
+        .emby_library_facet_for_request(&headers, &uri, "ItemPrefix")
+        .await?;
+    Ok(Json(name_value_pairs(values)))
 }
 
-async fn artist_prefixes(State(_state): State<Arc<AppState>>) -> Json<Vec<NameValuePair>> {
-    Json(Vec::new())
+async fn artist_prefixes(
+    State(state): State<Arc<AppState>>,
+    OriginalUri(uri): OriginalUri,
+    headers: HeaderMap,
+) -> Result<Json<Vec<NameValuePair>>, Response> {
+    let (values, _) = state
+        .emby_library_facet_for_request(&headers, &uri, "ArtistPrefix")
+        .await?;
+    Ok(Json(name_value_pairs(values)))
 }
 
-async fn item_types(State(_state): State<Arc<AppState>>) -> Json<ItemTypeResult> {
-    let items = [
-        "Audio",
-        "AudioBook",
-        "Book",
-        "Episode",
-        "Folder",
-        "Genre",
-        "Movie",
-        "MusicAlbum",
-        "MusicArtist",
-        "MusicVideo",
-        "Person",
-        "Photo",
-        "Playlist",
-        "Season",
-        "Series",
-        "Studio",
-        "Trailer",
-        "Video",
-    ]
-    .into_iter()
-    .map(|name| ItemType {
-        id: name.to_owned(),
-        name: name.to_owned(),
-    })
-    .collect::<Vec<_>>();
-    Json(ItemTypeResult {
-        total_record_count: items.len(),
-        items,
-    })
+async fn item_types(
+    State(state): State<Arc<AppState>>,
+    OriginalUri(uri): OriginalUri,
+    headers: HeaderMap,
+) -> Result<Json<TagResult>, Response> {
+    tag_facet(&state, &headers, &uri, "ItemType").await
 }
 
-// The server's codec/container registry is not exposed by AppState.  Empty
-// arrays are the official no-capability result and are preferable to claiming
-// support for a codec that a deployment cannot actually play.
-async fn audio_codecs(State(_state): State<Arc<AppState>>) -> Json<TagResult> {
-    Json(TagResult {
-        total_record_count: 0,
-        items: Vec::new(),
-    })
+async fn audio_codecs(
+    State(state): State<Arc<AppState>>,
+    OriginalUri(uri): OriginalUri,
+    headers: HeaderMap,
+) -> Result<Json<TagResult>, Response> {
+    tag_facet(&state, &headers, &uri, "AudioCodec").await
 }
 
-async fn audio_layouts(State(_state): State<Arc<AppState>>) -> Json<TagResult> {
-    Json(TagResult {
-        total_record_count: 0,
-        items: Vec::new(),
-    })
+async fn audio_layouts(
+    State(state): State<Arc<AppState>>,
+    OriginalUri(uri): OriginalUri,
+    headers: HeaderMap,
+) -> Result<Json<TagResult>, Response> {
+    tag_facet(&state, &headers, &uri, "AudioLayout").await
 }
 
-async fn containers(State(_state): State<Arc<AppState>>) -> Json<TagResult> {
-    Json(TagResult {
-        total_record_count: 0,
-        items: Vec::new(),
-    })
+async fn containers(
+    State(state): State<Arc<AppState>>,
+    OriginalUri(uri): OriginalUri,
+    headers: HeaderMap,
+) -> Result<Json<TagResult>, Response> {
+    tag_facet(&state, &headers, &uri, "Container").await
 }
 
-async fn extended_video_types(State(_state): State<Arc<AppState>>) -> Json<TagResult> {
-    Json(TagResult {
-        total_record_count: 0,
-        items: Vec::new(),
-    })
+async fn extended_video_types(
+    State(state): State<Arc<AppState>>,
+    OriginalUri(uri): OriginalUri,
+    headers: HeaderMap,
+) -> Result<Json<TagResult>, Response> {
+    tag_facet(&state, &headers, &uri, "ExtendedVideoType").await
 }
 
-async fn official_ratings(State(_state): State<Arc<AppState>>) -> Json<TagResult> {
-    Json(TagResult {
-        total_record_count: 0,
-        items: Vec::new(),
-    })
+async fn official_ratings(
+    State(state): State<Arc<AppState>>,
+    OriginalUri(uri): OriginalUri,
+    headers: HeaderMap,
+) -> Result<Json<OfficialRatingResult>, Response> {
+    let (values, total_record_count) = state
+        .emby_library_facet_for_request(&headers, &uri, "OfficialRating")
+        .await?;
+    Ok(Json(OfficialRatingResult {
+        total_record_count: checked_total(total_record_count)?,
+        items: values
+            .into_iter()
+            .map(|name| OfficialRatingItem { name })
+            .collect(),
+    }))
 }
 
-async fn features(State(_state): State<Arc<AppState>>) -> Json<Vec<FeatureInfo>> {
-    Json(Vec::new())
+async fn features(
+    State(state): State<Arc<AppState>>,
+    OriginalUri(uri): OriginalUri,
+    headers: HeaderMap,
+) -> Result<Json<Vec<FeatureInfo>>, Response> {
+    state.require_emby_administrator(&headers, &uri).await?;
+    Ok(Json(Vec::new()))
+}
+
+async fn tag_facet(
+    state: &AppState,
+    headers: &HeaderMap,
+    uri: &axum::http::Uri,
+    facet: &str,
+) -> Result<Json<TagResult>, Response> {
+    let (values, total_record_count) = state
+        .emby_library_facet_for_request(headers, uri, facet)
+        .await?;
+    Ok(Json(TagResult {
+        total_record_count: checked_total(total_record_count)?,
+        items: values
+            .into_iter()
+            .map(|name| TagItem {
+                id: name.clone(),
+                name,
+            })
+            .collect(),
+    }))
+}
+
+fn name_value_pairs(values: Vec<String>) -> Vec<NameValuePair> {
+    values
+        .into_iter()
+        .map(|name| NameValuePair {
+            value: name.clone(),
+            name,
+        })
+        .collect()
+}
+
+fn checked_total(total: u64) -> Result<i32, Response> {
+    i32::try_from(total).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
 }
 
 #[cfg(test)]
@@ -343,25 +389,35 @@ mod tests {
     use sea_orm::DatabaseConnection;
     use tower::ServiceExt;
 
-    #[tokio::test]
-    async fn discovery_routes_keep_emby_array_shapes() {
-        let state = AppState::new(
-            DatabaseConnection::Disconnected,
-            "test".to_owned(),
-            "http://127.0.0.1:8096".to_owned(),
+    #[test]
+    fn discovery_dtos_match_generated_sdk_shapes() {
+        let tags = TagResult {
+            total_record_count: 1,
+            items: vec![TagItem {
+                name: "aac".to_owned(),
+                id: "aac".to_owned(),
+            }],
+        };
+        assert_eq!(
+            serde_json::to_value(tags).unwrap(),
+            serde_json::json!({
+                "TotalRecordCount": 1,
+                "Items": [{"Name": "aac", "Id": "aac"}]
+            })
         );
-        let app = routes().with_state(Arc::new(state));
-        let response = app
-            .oneshot(Request::get("/ItemTypes").body(Body::empty()).unwrap())
-            .await
-            .unwrap();
-        assert!(response.status().is_success());
-        let body = axum::body::to_bytes(response.into_body(), 64 * 1024)
-            .await
-            .unwrap();
-        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(value["TotalRecordCount"], 18);
-        assert_eq!(value["Items"][0]["Id"], "Audio");
+        assert_eq!(
+            serde_json::to_value(OfficialRatingResult {
+                total_record_count: 1,
+                items: vec![OfficialRatingItem {
+                    name: "PG-13".to_owned(),
+                }],
+            })
+            .unwrap(),
+            serde_json::json!({
+                "TotalRecordCount": 1,
+                "Items": [{"Name": "PG-13"}]
+            })
+        );
     }
 
     #[tokio::test]
