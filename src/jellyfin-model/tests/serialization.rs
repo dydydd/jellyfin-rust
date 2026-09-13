@@ -716,6 +716,14 @@ fn session_info_uses_official_wire_names_and_guid_format() {
         })),
         device_id: Some("device-id".to_owned()),
         application_version: Some("1.0".to_owned()),
+        transcoding_info: Some(jellyfin_model::TranscodingInfo {
+            is_video_direct: false,
+            is_audio_direct: true,
+            transcode_reasons: vec![
+                "VideoCodecNotSupported".to_owned(),
+                "AudioBitrateNotSupported".to_owned(),
+            ],
+        }),
         is_active: true,
         supports_media_control: true,
         supports_remote_control: true,
@@ -759,6 +767,10 @@ fn session_info_uses_official_wire_names_and_guid_format() {
     assert_eq!(value["NowPlayingItem"]["Name"], "Now Playing");
     assert_eq!(value["NowPlayingQueue"][0]["Id"], "queue-item");
     assert_eq!(value["NowViewingItem"]["Name"], "The Matrix");
+    assert_eq!(
+        value["TranscodingInfo"]["TranscodeReasons"],
+        json!(["VideoCodecNotSupported", "AudioBitrateNotSupported"])
+    );
     assert_eq!(value["LastActivityDate"], "2026-07-23T09:15:00.0000000Z");
     assert!(value.get("LastPausedDate").is_none());
     assert!(value.get("DeviceType").is_none());

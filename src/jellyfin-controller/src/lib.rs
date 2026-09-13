@@ -17,6 +17,7 @@ pub mod library;
 mod library_controller;
 mod library_scan;
 pub mod library_watcher;
+mod live_stream;
 mod localization;
 mod lyrics;
 mod media_attachments;
@@ -87,6 +88,7 @@ pub use library_scan::{
     LibraryScanError, LibraryScanService, LibraryScanSummary, MediaItemScanFailure,
     MediaItemScanFailureKind, MediaItemScanFailureStage,
 };
+pub use live_stream::{LiveStreamRegistry, LiveStreamRegistryError};
 pub use localization::LocalizationService;
 pub use lyrics::{
     LyricManager, LyricManagerError, LyricProvider, LyricProviderError, LyricProviderFuture,

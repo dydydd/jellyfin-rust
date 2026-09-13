@@ -13,8 +13,8 @@ use jellyfin_controller::{
     DashboardError, DashboardPage, DashboardService, EnvironmentError, EnvironmentService,
     GenreError, GenreService, InstalledPlugin, ItemByNameService, ItemImageError, ItemImageService,
     ItemLookupError, ItemLookupService, ItemUpdateError, ItemUpdateService, LibraryControllerError,
-    LibraryControllerService, LibraryScanError, LibraryScanService, LocalizationService,
-    MediaAttachmentService, MediaAttachmentServiceError, MediaSegmentError,
+    LibraryControllerService, LibraryScanError, LibraryScanService, LiveStreamRegistry,
+    LocalizationService, MediaAttachmentService, MediaAttachmentServiceError, MediaSegmentError,
     MediaSegmentManagerService, MediaStreamService, MediaStreamServiceError, MetadataEditorError,
     MetadataEditorService, MetadataRefreshService, MusicGenreError, MusicGenreService,
     PackageError, PackageService, PersonError, PersonService, PlaylistError, PlaylistService,
@@ -42,7 +42,7 @@ use jellyfin_live_tv::{
     tuner_hosts::{TunerHostError, TunerHostManager},
 };
 use jellyfin_media_encoding::encoder::EncoderCapabilities;
-use jellyfin_model::{PublicSystemInfo, UserConfiguration, UserDto, UserPolicy};
+use jellyfin_model::{PublicSystemInfo, TranscodeReason, UserConfiguration, UserDto, UserPolicy};
 use jellyfin_networking::{NetworkConfiguration, NetworkManager};
 use jellyfin_server_implementations::{
     AuthenticationError, DefaultAuthenticationProvider, PersistedDtoImageProjectionService,
@@ -76,6 +76,7 @@ mod configuration;
 mod dashboard;
 mod devices;
 mod display_preferences;
+mod encoding_runtime;
 mod environment;
 mod filters;
 mod genres;
@@ -107,6 +108,7 @@ mod scheduled_tasks;
 mod search;
 mod session;
 mod startup;
+mod stream_options;
 mod studios;
 mod subtitles;
 mod sync_play;
@@ -207,6 +209,7 @@ pub struct AppState {
     pub(crate) transcode_directory: Arc<std::path::Path>,
     pub(crate) ffmpeg_path: Arc<PathBuf>,
     pub(crate) encoder_capabilities: EncoderCapabilities,
+    pub(crate) live_streams: LiveStreamRegistry,
     pub(crate) transcode_jobs: Arc<TranscodeJobRegistry>,
     pub(crate) authentication: DefaultAuthenticationProvider,
     pub(crate) session_manager: SessionManager<PostgresSessionStore>,
@@ -361,6 +364,7 @@ impl AppState {
             ),
             ffmpeg_path: Arc::new(PathBuf::from("ffmpeg")),
             encoder_capabilities: EncoderCapabilities::default(),
+            live_streams: LiveStreamRegistry::new(),
             transcode_jobs: Arc::new(TranscodeJobRegistry::new()),
             authentication: DefaultAuthenticationProvider::new(),
             session_manager: SessionManager::new(session_store),
@@ -773,6 +777,22 @@ impl AppState {
     #[must_use]
     pub fn with_encoder_capabilities(mut self, capabilities: EncoderCapabilities) -> Self {
         self.encoder_capabilities = capabilities;
+        self
+    }
+
+    /// Seeds an active transcode job while constructing application state.
+    #[must_use]
+    pub fn with_transcode_job(
+        self,
+        job_id: impl Into<String>,
+        device_id: &str,
+        play_session_id: &str,
+        reasons: TranscodeReason,
+    ) -> Self {
+        let job_id = job_id.into();
+        self.transcode_jobs
+            .register_for_session(job_id.clone(), device_id, play_session_id);
+        self.transcode_jobs.set_transcode_reasons(&job_id, reasons);
         self
     }
 
@@ -3365,7 +3385,9 @@ fn collection_error_response(error: &CollectionError) -> (StatusCode, &'static s
         }
         CollectionError::CollectionStore(CollectionStoreError::Database(_))
         | CollectionError::LinkedChildStore(
-            LinkedChildStoreError::Database(_) | LinkedChildStoreError::CorruptChildType(_),
+            LinkedChildStoreError::MoveIndexOutOfBounds { .. }
+            | LinkedChildStoreError::Database(_)
+            | LinkedChildStoreError::CorruptChildType(_),
         )
         | CollectionError::BaseItem(_) => (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -3399,7 +3421,9 @@ fn playlist_error_response(error: &PlaylistError) -> (StatusCode, &'static str) 
             PlaylistStoreError::CorruptShares(_) | PlaylistStoreError::Database(_),
         )
         | PlaylistError::Links(
-            LinkedChildStoreError::CorruptChildType(_) | LinkedChildStoreError::Database(_),
+            LinkedChildStoreError::MoveIndexOutOfBounds { .. }
+            | LinkedChildStoreError::CorruptChildType(_)
+            | LinkedChildStoreError::Database(_),
         )
         | PlaylistError::Items(_) => (
             StatusCode::INTERNAL_SERVER_ERROR,

@@ -5,7 +5,9 @@ use axum::{
     extract::{OriginalUri, Path, State, rejection::JsonRejection},
     http::{HeaderMap, StatusCode},
 };
-use jellyfin_data::{ServerConfigurationUpdate, entities::server_configuration};
+use jellyfin_data::{
+    NamedConfigurationStoreError, ServerConfigurationUpdate, entities::server_configuration,
+};
 use jellyfin_model::{
     ImageSavingConvention, MetadataOptions, NameValuePair, RepositoryInfo, ServerConfiguration,
     TrickplayOptions,
@@ -13,6 +15,78 @@ use jellyfin_model::{
 use serde_json::Value;
 
 use crate::{ApiError, AppState, authentication, authorization};
+
+/// The encoding settings that affect request-time FFmpeg command generation.
+///
+/// Jellyfin keeps these values in the named `encoding` configuration rather
+/// than in `ServerConfiguration`.  Loading the small subset here keeps the
+/// progressive routes on the same configuration contract without coupling
+/// the API crate to the much larger dashboard model.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct EncodingRuntimeOptions {
+    pub(crate) encoding_thread_count: i32,
+    pub(crate) enable_audio_vbr: bool,
+}
+
+impl Default for EncodingRuntimeOptions {
+    fn default() -> Self {
+        Self {
+            // Official EncodingOptions uses -1 to request FFmpeg's automatic
+            // thread selection. EncodingHelper consequently emits 0.
+            encoding_thread_count: -1,
+            enable_audio_vbr: false,
+        }
+    }
+}
+
+pub(crate) async fn encoding_runtime_options(
+    state: &AppState,
+) -> Result<EncodingRuntimeOptions, ApiError> {
+    let Some(repository) = state.named_configurations.as_ref() else {
+        return Ok(EncodingRuntimeOptions::default());
+    };
+    let configuration = match repository.load("encoding").await {
+        Ok(configuration) => configuration.configuration,
+        Err(NamedConfigurationStoreError::NotFound(_)) => {
+            return Ok(EncodingRuntimeOptions::default());
+        }
+        Err(error) => return Err(error.into()),
+    };
+    parse_encoding_runtime_options(&configuration)
+}
+
+fn parse_encoding_runtime_options(value: &Value) -> Result<EncodingRuntimeOptions, ApiError> {
+    let object = value.as_object().ok_or(ApiError::Internal)?;
+    let mut options = EncodingRuntimeOptions::default();
+    for (name, value) in object {
+        if name.eq_ignore_ascii_case("EncodingThreadCount") {
+            options.encoding_thread_count = json_i32(value).ok_or(ApiError::Internal)?;
+        } else if name.eq_ignore_ascii_case("EnableAudioVbr") {
+            options.enable_audio_vbr = json_bool(value).ok_or(ApiError::Internal)?;
+        }
+    }
+    Ok(options)
+}
+
+fn json_i32(value: &Value) -> Option<i32> {
+    value
+        .as_i64()
+        .and_then(|value| i32::try_from(value).ok())
+        .or_else(|| value.as_str()?.trim().parse().ok())
+}
+
+fn json_bool(value: &Value) -> Option<bool> {
+    value.as_bool().or_else(|| {
+        let value = value.as_str()?.trim();
+        if value.eq_ignore_ascii_case("true") {
+            Some(true)
+        } else if value.eq_ignore_ascii_case("false") {
+            Some(false)
+        } else {
+            None
+        }
+    })
+}
 
 pub(crate) async fn get(
     State(state): State<Arc<AppState>>,
@@ -288,5 +362,43 @@ fn image_saving_convention(code: i16) -> Result<ImageSavingConvention, ApiError>
         0 => Ok(ImageSavingConvention::Legacy),
         IMAGE_SAVING_CONVENTION_COMPATIBLE => Ok(ImageSavingConvention::Compatible),
         _ => Err(ApiError::Internal),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::{EncodingRuntimeOptions, parse_encoding_runtime_options};
+
+    #[test]
+    fn encoding_runtime_options_match_official_defaults() {
+        assert_eq!(
+            parse_encoding_runtime_options(&json!({})).unwrap(),
+            EncodingRuntimeOptions {
+                encoding_thread_count: -1,
+                enable_audio_vbr: false,
+            }
+        );
+    }
+
+    #[test]
+    fn encoding_runtime_options_follow_json_defaults_value_semantics() {
+        assert_eq!(
+            parse_encoding_runtime_options(&json!({
+                "encodingthreadcount": "3",
+                "ENABLEAUDIOVBR": "TrUe",
+                "Unknown": "ignored",
+            }))
+            .unwrap(),
+            EncodingRuntimeOptions {
+                encoding_thread_count: 3,
+                enable_audio_vbr: true,
+            }
+        );
+        assert!(
+            parse_encoding_runtime_options(&json!({"EncodingThreadCount": 2_i64.pow(40)})).is_err()
+        );
+        assert!(parse_encoding_runtime_options(&json!({"EnableAudioVbr": "yes"})).is_err());
     }
 }

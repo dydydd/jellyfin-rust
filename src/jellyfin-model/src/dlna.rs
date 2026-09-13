@@ -398,6 +398,8 @@ pub struct MediaSourceInfo {
     pub requires_closing: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub live_stream_id: Option<String>,
+    #[serde(skip)]
+    pub transcode_reasons: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub buffer_ms: Option<i32>,
     pub requires_looping: bool,
@@ -461,6 +463,7 @@ impl Default for MediaSourceInfo {
             open_token: None,
             requires_closing: false,
             live_stream_id: None,
+            transcode_reasons: Vec::new(),
             buffer_ms: None,
             requires_looping: false,
             supports_probing: true,
@@ -665,11 +668,35 @@ impl TranscodeReason {
         self.0 & other.0 == other.0
     }
 
-    fn names(self) -> impl Iterator<Item = &'static str> {
+    pub fn names(self) -> impl Iterator<Item = &'static str> {
         Self::FLAGS
             .into_iter()
             .filter(move |(flag, _)| self.contains(*flag))
             .map(|(_, name)| name)
+    }
+
+    /// Parses the comma-delimited flag names emitted in transcoding URLs.
+    ///
+    /// This mirrors `Enum.TryParse<TranscodeReason>` in the official encoding
+    /// job: one unknown element invalidates the complete value, while a raw
+    /// numeric bitset remains accepted by the CLR enum parser.
+    #[must_use]
+    pub fn parse_names(value: &str) -> Option<Self> {
+        let value = value.trim();
+        if value.is_empty() {
+            return None;
+        }
+        if let Ok(bits) = value.parse::<u32>() {
+            return Some(Self::from_bits_retain(bits));
+        }
+        let mut reasons = Self::NONE;
+        for name in value.split(',').map(str::trim) {
+            let (reason, _) = Self::FLAGS
+                .iter()
+                .find(|(_, candidate)| *candidate == name)?;
+            reasons |= *reason;
+        }
+        Some(reasons)
     }
 }
 

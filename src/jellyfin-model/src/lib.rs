@@ -99,7 +99,7 @@ pub use search::{SearchHint, SearchHintResult};
 pub use session::{
     ClientCapabilitiesDto, GeneralCommand, GeneralCommandType, MediaType, MessageCommand,
     PlayCommand, PlayRequest, PlaybackOrder, PlayerStateInfo, PlaystateCommand, PlaystateRequest,
-    RepeatMode, SessionInfoDto, SessionUserInfo,
+    RepeatMode, SessionInfoDto, SessionUserInfo, TranscodingInfo,
 };
 pub use subtitles::FontFile;
 pub use sync_play::{

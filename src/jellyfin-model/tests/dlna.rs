@@ -5,6 +5,30 @@ use jellyfin_model::{
 use uuid::Uuid;
 
 #[test]
+fn transcode_reason_query_parser_matches_clr_flag_semantics() {
+    let reasons = TranscodeReason::parse_names("VideoCodecNotSupported, AudioBitrateNotSupported")
+        .expect("known flag names");
+    assert!(reasons.contains(TranscodeReason::VIDEO_CODEC_NOT_SUPPORTED));
+    assert!(reasons.contains(TranscodeReason::AUDIO_BITRATE_NOT_SUPPORTED));
+    assert!(TranscodeReason::parse_names("videoCodecNotSupported").is_none());
+    assert_eq!(
+        TranscodeReason::parse_names("3").map(TranscodeReason::bits),
+        Some(3)
+    );
+}
+
+#[test]
+fn media_source_transcode_reasons_remain_internal() {
+    let source = MediaSourceInfo {
+        transcode_reasons: vec!["VideoCodecNotSupported".to_owned()],
+        ..MediaSourceInfo::default()
+    };
+
+    let serialized = serde_json::to_value(source).unwrap();
+    assert!(serialized.get("TranscodeReasons").is_none());
+}
+
+#[test]
 fn empty_container_profile_accepts_every_container() {
     let profile = ContainerProfile::default();
 

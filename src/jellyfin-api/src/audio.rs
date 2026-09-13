@@ -16,9 +16,11 @@ use uuid::Uuid;
 
 use jellyfin_controller::transcode::TranscodeJobHandle;
 use jellyfin_controller::{FfmpegCommand, TranscodeJobRegistry, audio_command};
-use jellyfin_model::{EncodingContext, MediaStream, MediaStreamType, SubtitleDeliveryMethod};
+use jellyfin_model::{
+    EncodingContext, MediaStream, MediaStreamType, SubtitleDeliveryMethod, TranscodeReason,
+};
 
-use crate::{ApiError, AppState, authentication};
+use crate::{ApiError, AppState, authentication, encoding_runtime, stream_options::StreamOptions};
 
 #[derive(Debug, Default, Deserialize)]
 pub(crate) struct StreamQuery {
@@ -246,17 +248,18 @@ pub(crate) struct StreamQuery {
     )]
     _context: Option<EncodingContext>,
     #[serde(
+        default,
         rename = "streamOptions",
         alias = "StreamOptions",
         alias = "streamoptions"
     )]
-    _stream_options: Option<String>,
+    _stream_options: Vec<String>,
     #[serde(
         rename = "enableAudioVbrEncoding",
         alias = "EnableAudioVbrEncoding",
         alias = "enableaudiovbrencoding"
     )]
-    _enable_audio_vbr_encoding: Option<bool>,
+    enable_audio_vbr_encoding: Option<bool>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -353,7 +356,7 @@ pub(crate) struct UniversalQuery {
         alias = "EnableAudioVbrEncoding",
         alias = "enableaudiovbrencoding"
     )]
-    _enable_audio_vbr_encoding: Option<bool>,
+    enable_audio_vbr_encoding: Option<bool>,
     #[serde(
         rename = "enableRedirection",
         alias = "EnableRedirection",
@@ -509,6 +512,7 @@ pub(crate) async fn universal(
             query.max_audio_sample_rate,
             query.audio_stream_index,
             query.start_time_ticks,
+            query.enable_audio_vbr_encoding,
         );
         let hls_uri = hls_query.audio_master_uri(item_id, identity.access_token())?;
         return crate::hls_segment::ensure_master_playlist(
@@ -530,19 +534,57 @@ pub(crate) async fn universal(
     tokio::fs::create_dir_all(&state.transcode_directory)
         .await
         .map_err(|_| ApiError::Internal)?;
-    let command = audio_command(
+    let source_audio = streams.iter().find(|stream| {
+        stream.stream_type == MediaStreamType::Audio
+            && query
+                .audio_stream_index
+                .is_none_or(|index| stream.index == index)
+    });
+    let channels = source_audio.and_then(|source| {
+        encoding_runtime::output_audio_channels(
+            &codec,
+            source.channels,
+            None,
+            query.max_audio_channels,
+            None,
+            query.transcoding_audio_channels,
+        )
+    });
+    let requested_bitrate = query.audio_bitrate.or(query.max_streaming_bitrate);
+    let bitrate = encoding_runtime::output_audio_bitrate(
+        &codec,
+        source_audio.is_some(),
+        source_audio.and_then(|source| source.channels),
+        channels,
+        requested_bitrate,
+    );
+    let encoding_options = crate::configuration::encoding_runtime_options(&state).await?;
+    let mut command = audio_command(
         &state.ffmpeg_path,
         std::path::Path::new(path),
         &output,
         &codec,
-        query.audio_bitrate.or(query.max_streaming_bitrate),
-        query
-            .transcoding_audio_channels
-            .or(query.max_audio_channels),
+        bitrate,
+        channels,
         query.max_audio_sample_rate,
         query.audio_stream_index,
         query.start_time_ticks,
         true,
+    );
+    encoding_runtime::apply_audio_vbr(
+        &mut command,
+        &codec,
+        bitrate,
+        channels,
+        encoding_runtime::audio_vbr_enabled(
+            encoding_options.enable_audio_vbr,
+            query.enable_audio_vbr_encoding,
+        ),
+    );
+    encoding_runtime::apply_thread_count(
+        &mut command,
+        None,
+        encoding_options.encoding_thread_count,
     );
     serve_transcoded_path(
         command,
@@ -551,6 +593,9 @@ pub(crate) async fn universal(
         Arc::clone(&state.transcode_jobs),
         query.device_id,
         Some(play_session_id),
+        false,
+        codec.eq_ignore_ascii_case("copy"),
+        TranscodeReason::NONE,
     )
 }
 
@@ -779,6 +824,7 @@ async fn stream_file(
 ) -> Result<Response, ApiError> {
     let identity =
         authentication::authenticated_identity(&state, &headers, Some(request.uri())).await?;
+    let stream_options = StreamOptions::from_uri(request.uri());
     let Query(mut query) = query.map_err(|_| ApiError::InvalidRequest)?;
     validate_progressive_query(requested_container, &query)?;
     apply_legacy_params(&mut query)?;
@@ -806,7 +852,20 @@ async fn stream_file(
     if requested_item.item_type != "Audio" {
         return Err(ApiError::NotFound);
     }
-    let item = if let Some(media_source_id) = query
+    let opened_source = query
+        .live_stream_id
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+        .map(|live_stream_id| {
+            state
+                .live_streams
+                .get(item_id, live_stream_id)
+                .ok_or(ApiError::NotFound)
+        })
+        .transpose()?;
+    let item = if opened_source.is_some() {
+        requested_item
+    } else if let Some(media_source_id) = query
         .media_source_id
         .as_deref()
         .map(str::trim)
@@ -819,7 +878,11 @@ async fn stream_file(
     if item.item_type != "Audio" {
         return Err(ApiError::NotFound);
     }
-    let path = jellyfin_controller::media_source_path(&item).ok_or(ApiError::NotFound)?;
+    let path = opened_source
+        .as_ref()
+        .and_then(|source| source.path.clone())
+        .or_else(|| jellyfin_controller::media_source_path(&item).map(str::to_owned))
+        .ok_or(ApiError::NotFound)?;
     let requested_container = requested_stream_container(requested_container, &query)?;
     if query.static_stream.unwrap_or(false)
         && let Some(container) = requested_container
@@ -838,12 +901,12 @@ async fn stream_file(
                 &state.remote_stream_client,
                 &headers,
                 item.id,
-                path,
+                &path,
                 crate::videos::required_remote_user_agent(&item),
             )
             .await;
         }
-        return serve_path(headers, path, request).await;
+        return serve_path(headers, &path, request).await;
     }
 
     let (codec, container) = progressive_audio_target(requested_container, &query)?;
@@ -855,22 +918,68 @@ async fn stream_file(
     tokio::fs::create_dir_all(&state.transcode_directory)
         .await
         .map_err(|_| ApiError::Internal)?;
+    let streams = if let Some(source) = opened_source.as_ref() {
+        source.media_streams.clone()
+    } else {
+        state
+            .media_streams
+            .get_media_streams(jellyfin_controller::MediaStreamFilter::for_item(item.id))
+            .await?
+    };
+    let source_audio = streams.iter().find(|stream| {
+        stream.stream_type == MediaStreamType::Audio
+            && query
+                .audio_stream_index
+                .is_none_or(|index| stream.index == index)
+    });
+    let option_channels = stream_options
+        .get_request_option(&codec, "audiochannels")
+        .and_then(|value| value.parse().ok());
+    let channels = source_audio.and_then(|source| {
+        encoding_runtime::output_audio_channels(
+            &codec,
+            source.channels,
+            option_channels,
+            query.max_audio_channels,
+            query.audio_channels,
+            query.transcoding_max_audio_channels,
+        )
+    });
+    let bitrate = encoding_runtime::output_audio_bitrate(
+        &codec,
+        source_audio.is_some(),
+        source_audio.and_then(|source| source.channels),
+        channels,
+        query.audio_bitrate.map(i64::from),
+    );
+    let encoding_options = crate::configuration::encoding_runtime_options(&state).await?;
     let mut command = audio_command(
         &state.ffmpeg_path,
         std::path::Path::new(&path),
         &output,
         &codec,
-        query.audio_bitrate.map(i64::from),
-        query
-            .audio_channels
-            .or(query.max_audio_channels)
-            .or(query.transcoding_max_audio_channels),
+        bitrate,
+        channels,
         query.audio_sample_rate,
         query.audio_stream_index,
         query.start_time_ticks,
         query.copy_timestamps.unwrap_or(false),
     );
-    crate::videos::apply_cpu_core_limit(&mut command, query.cpu_core_limit);
+    encoding_runtime::apply_audio_vbr(
+        &mut command,
+        &codec,
+        bitrate,
+        channels,
+        encoding_runtime::audio_vbr_enabled(
+            encoding_options.enable_audio_vbr,
+            query.enable_audio_vbr_encoding,
+        ),
+    );
+    encoding_runtime::apply_thread_count(
+        &mut command,
+        query.cpu_core_limit,
+        encoding_options.encoding_thread_count,
+    );
     serve_transcoded_path(
         command,
         &output.to_string_lossy(),
@@ -878,6 +987,13 @@ async fn stream_file(
         Arc::clone(&state.transcode_jobs),
         query.device_id,
         query.play_session_id,
+        false,
+        codec.eq_ignore_ascii_case("copy"),
+        query
+            .transcode_reasons
+            .as_deref()
+            .and_then(TranscodeReason::parse_names)
+            .unwrap_or(TranscodeReason::NONE),
     )
 }
 
@@ -888,7 +1004,7 @@ mod tests {
     use axum::{body::to_bytes, http::Uri};
     use axum_extra::extract::Query;
     use jellyfin_controller::{FfmpegCommand, TranscodeJobRegistry};
-    use jellyfin_model::{EncodingContext, SubtitleDeliveryMethod};
+    use jellyfin_model::{EncodingContext, SubtitleDeliveryMethod, TranscodeReason};
 
     use super::{
         StreamQuery, UniversalQuery, apply_legacy_params, progressive_audio_target,
@@ -962,8 +1078,8 @@ mod tests {
             Some("ContainerNotSupported")
         );
         assert_eq!(query._context, Some(EncodingContext::Static));
-        assert_eq!(query._stream_options.as_deref(), Some("quality=high"));
-        assert_eq!(query._enable_audio_vbr_encoding, Some(false));
+        assert_eq!(query._stream_options, ["quality=high"]);
+        assert_eq!(query.enable_audio_vbr_encoding, Some(false));
     }
 
     #[test]
@@ -1245,6 +1361,10 @@ mod tests {
             std::sync::Arc::clone(&registry),
             Some("device-1".to_owned()),
             Some("play-session-1".to_owned()),
+            false,
+            true,
+            TranscodeReason::VIDEO_CODEC_NOT_SUPPORTED
+                | TranscodeReason::AUDIO_BITRATE_NOT_SUPPORTED,
         )
         .unwrap();
         let info = registry.get("PLAY-SESSION-1").expect("registered job");
@@ -1254,6 +1374,14 @@ mod tests {
             Some(output.to_string_lossy().as_ref())
         );
         assert!(!info.is_hls);
+        assert!(!info.is_video_direct);
+        assert!(info.is_audio_direct);
+        assert_eq!(
+            info.transcode_reasons.bits(),
+            (TranscodeReason::VIDEO_CODEC_NOT_SUPPORTED
+                | TranscodeReason::AUDIO_BITRATE_NOT_SUPPORTED)
+                .bits()
+        );
 
         let body = to_bytes(response.into_body(), 1024).await.unwrap();
 
@@ -1281,6 +1409,9 @@ mod tests {
             std::sync::Arc::clone(&registry),
             Some("device-1".to_owned()),
             Some("drop-session".to_owned()),
+            false,
+            false,
+            TranscodeReason::NONE,
         )
         .unwrap();
         assert!(registry.get("drop-session").is_some());
@@ -1311,6 +1442,9 @@ mod tests {
             std::sync::Arc::clone(&registry),
             Some("device-1".to_owned()),
             Some("stop-session".to_owned()),
+            false,
+            false,
+            TranscodeReason::NONE,
         )
         .unwrap();
 
@@ -1344,6 +1478,9 @@ mod tests {
             std::sync::Arc::clone(&registry),
             Some("device-1".to_owned()),
             Some("head-session".to_owned()),
+            false,
+            false,
+            TranscodeReason::NONE,
         )
         .unwrap();
 
@@ -1391,6 +1528,9 @@ pub(crate) fn serve_transcoded_path(
     transcode_jobs: Arc<TranscodeJobRegistry>,
     device_id: Option<String>,
     play_session_id: Option<String>,
+    is_video_direct: bool,
+    is_audio_direct: bool,
+    transcode_reasons: TranscodeReason,
 ) -> Result<Response, ApiError> {
     let content_type = jellyfin_model::MimeTypes::get_mime_type(output_path)
         .unwrap_or_else(|_| "application/octet-stream".to_owned());
@@ -1413,6 +1553,8 @@ pub(crate) fn serve_transcoded_path(
         play_session_id.as_deref(),
         output_path,
     );
+    transcode_jobs.set_direct_stream_flags(&job_id, is_video_direct, is_audio_direct);
+    transcode_jobs.set_transcode_reasons(&job_id, transcode_reasons);
     job.mark_running();
     let process_jobs = Arc::clone(&transcode_jobs);
     let process_job_id = job_id.clone();

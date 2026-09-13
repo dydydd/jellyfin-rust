@@ -1007,6 +1007,7 @@ mod tests {
             now_playing_item: None,
             device_id: None,
             application_version: None,
+            transcoding_info: None,
             is_active: true,
             supports_media_control: false,
             supports_remote_control: false,

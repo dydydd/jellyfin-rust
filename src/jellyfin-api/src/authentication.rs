@@ -212,6 +212,7 @@ async fn authentication_result_from_device(
         serde_json::from_value(session.additional_users.clone()).unwrap_or_default();
     let now_playing_queue =
         serde_json::from_value(session.now_playing_queue.clone()).unwrap_or_default();
+    let transcoding_info = crate::session::transcoding_info(state, &session.device_id);
     let session_info = SessionInfoDto {
         play_state,
         additional_users,
@@ -231,6 +232,7 @@ async fn authentication_result_from_device(
         now_playing_item: session.now_playing_item.clone(),
         device_id: Some(session.device_id.clone()),
         application_version: Some(session.app_version.clone()),
+        transcoding_info,
         is_active: session.is_active,
         supports_media_control: capabilities.supports_media_control,
         supports_remote_control: capabilities.supports_media_control,

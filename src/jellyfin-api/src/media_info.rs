@@ -225,6 +225,7 @@ pub(crate) struct PlaybackInfoDto {
 #[derive(Debug)]
 struct PlaybackOptions {
     media_source_id: Option<String>,
+    live_stream_id: Option<String>,
     max_streaming_bitrate: Option<i32>,
     start_time_ticks: i64,
     audio_stream_index: Option<i32>,
@@ -243,6 +244,7 @@ impl Default for PlaybackOptions {
     fn default() -> Self {
         Self {
             media_source_id: None,
+            live_stream_id: None,
             max_streaming_bitrate: None,
             start_time_ticks: 0,
             audio_stream_index: None,
@@ -775,10 +777,11 @@ pub(crate) async fn get_playback_info(
 ) -> Result<Json<PlaybackInfoResponse>, ApiError> {
     let Query(query) = query.map_err(|_| ApiError::InvalidRequest)?;
     let identity = playback_request_identity(&state, &headers, &uri, query.user_id).await?;
-    let _live_stream_id = query.live_stream_id;
+    let live_stream_id = query.live_stream_id;
     let _auto_open_live_stream = query.auto_open_live_stream.unwrap_or_default();
     let options = PlaybackOptions {
         media_source_id: query.media_source_id,
+        live_stream_id,
         max_streaming_bitrate: query.max_streaming_bitrate,
         start_time_ticks: query.start_time_ticks.unwrap_or_default(),
         audio_stream_index: query.audio_stream_index,
@@ -828,13 +831,14 @@ pub(crate) async fn post_playback_info(
     // These legacy parameters are relevant only to live sources. Parse and
     // merge them for wire compatibility, but do not synthesize Live TV state
     // for ordinary file playback.
-    let _live_stream_id = query.live_stream_id.or(body.live_stream_id);
+    let live_stream_id = query.live_stream_id.or(body.live_stream_id);
     let _auto_open_live_stream = query
         .auto_open_live_stream
         .or(body.auto_open_live_stream)
         .unwrap_or_default();
     let options = PlaybackOptions {
         media_source_id: query.media_source_id.or(body.media_source_id),
+        live_stream_id,
         max_streaming_bitrate: query.max_streaming_bitrate.or(body.max_streaming_bitrate),
         start_time_ticks: query
             .start_time_ticks
@@ -954,6 +958,16 @@ pub(crate) async fn open_live_stream(
         play_session_id.as_deref(),
         open_token.as_deref(),
     ));
+    // Register the provider-owned source before applying per-device playback
+    // projection. The official manager keeps the shared source pristine and
+    // returns a clone for each consumer.
+    media_source = state
+        .live_streams
+        .open(item_id, media_source)
+        .map_err(|error| {
+            tracing::warn!(?error, %item_id, "live-stream registry rejected opened source");
+            ApiError::Internal
+        })?;
 
     if let Some(device_profile) = device_profile {
         let selected_source_id = media_source.id.clone();
@@ -962,6 +976,7 @@ pub(crate) async fn open_live_stream(
             user_library::media_source_policy_for_user(&state, identity.target_user_id).await?;
         let options = PlaybackOptions {
             media_source_id: selected_source_id,
+            live_stream_id: None,
             max_streaming_bitrate,
             start_time_ticks,
             audio_stream_index,
@@ -1003,9 +1018,7 @@ pub(crate) async fn close_live_stream(
 ) -> Result<axum::http::StatusCode, ApiError> {
     authentication::authenticated_identity(&state, &headers, Some(&uri)).await?;
     let Query(query) = query.map_err(|_| ApiError::InvalidRequest)?;
-    if query.live_stream_id.trim().is_empty() {
-        return Err(ApiError::InvalidRequest);
-    }
+    state.live_streams.close(&query.live_stream_id);
     Ok(axum::http::StatusCode::NO_CONTENT)
 }
 
@@ -1097,14 +1110,33 @@ async fn playback_info(
 ) -> Result<PlaybackInfoResponse, ApiError> {
     let mut max_streaming_bitrate = options.max_streaming_bitrate;
     let has_device_profile = options.device_profile.is_some();
-    let mut media_sources = media_sources(
-        state,
-        authenticated_user,
-        target_user_id,
-        item_id,
-        options.media_source_id.as_deref(),
-    )
-    .await?;
+    let mut media_sources = if let Some(live_stream_id) = options
+        .live_stream_id
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        // The source item must retain its normal policy/error precedence even
+        // though the opened source itself comes from the in-memory registry.
+        state
+            .user_library
+            .item(authenticated_user, target_user_id, item_id)
+            .await?;
+        vec![
+            state
+                .live_streams
+                .get(item_id, live_stream_id)
+                .ok_or(ApiError::NotFound)?,
+        ]
+    } else {
+        media_sources(
+            state,
+            authenticated_user,
+            target_user_id,
+            item_id,
+            options.media_source_id.as_deref(),
+        )
+        .await?
+    };
     if media_sources.is_empty() {
         tracing::warn!(%item_id, %device_id, has_device_profile, "no compatible media source found");
         return Ok(PlaybackInfoResponse {
@@ -1439,6 +1471,11 @@ fn apply_selected_stream_metadata(
         source.supports_transcoding = supports_transcoding;
         source.default_audio_stream_index = stream.audio_stream_index;
         source.default_subtitle_stream_index = stream.subtitle_stream_index;
+        source.transcode_reasons = stream
+            .transcode_reasons
+            .names()
+            .map(str::to_owned)
+            .collect();
         for subtitle in source
             .media_streams
             .iter_mut()

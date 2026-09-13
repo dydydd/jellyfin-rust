@@ -10,7 +10,7 @@ use std::{
 };
 
 use jellyfin_media_encoding_hls::{HlsPlaylistError, compute_equal_length_segment_ticks};
-use jellyfin_model::{MediaStream, MediaStreamType};
+use jellyfin_model::{MediaStream, MediaStreamType, TranscodeReason};
 use tokio::{fs, process::Command};
 use uuid::Uuid;
 
@@ -731,6 +731,9 @@ pub struct TranscodingJobInfo {
     pub play_session_id: Option<String>,
     pub path: Option<String>,
     pub is_hls: bool,
+    pub is_video_direct: bool,
+    pub is_audio_direct: bool,
+    pub transcode_reasons: TranscodeReason,
     pub started_at: Instant,
     pub last_ping: Instant,
     pub is_user_paused: bool,
@@ -745,6 +748,9 @@ impl TranscodingJobInfo {
             play_session_id: None,
             path: None,
             is_hls: false,
+            is_video_direct: false,
+            is_audio_direct: false,
+            transcode_reasons: TranscodeReason::NONE,
             started_at: now,
             last_ping: now,
             is_user_paused: false,
@@ -921,6 +927,7 @@ impl TranscodeJobRegistry {
         {
             entry.info.device_id = Some(device_id.to_owned());
             entry.info.play_session_id = Some(play_session_id.to_owned());
+            entry.info.last_ping = Instant::now();
         }
         self.sessions
             .lock()
@@ -960,6 +967,36 @@ impl TranscodeJobRegistry {
             });
     }
 
+    /// Records the official transcode-reason flags carried by a stream URL.
+    pub fn set_transcode_reasons(&self, job_id: &str, reasons: TranscodeReason) {
+        if let Some(entry) = self
+            .jobs
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get_mut(job_id)
+        {
+            entry.info.transcode_reasons = reasons;
+        }
+    }
+
+    /// Records whether the actual output audio and video codecs use stream copy.
+    pub fn set_direct_stream_flags(
+        &self,
+        job_id: &str,
+        is_video_direct: bool,
+        is_audio_direct: bool,
+    ) {
+        if let Some(entry) = self
+            .jobs
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get_mut(job_id)
+        {
+            entry.info.is_video_direct = is_video_direct;
+            entry.info.is_audio_direct = is_audio_direct;
+        }
+    }
+
     /// Returns metadata for the active job in a playback session.
     #[must_use]
     pub fn get(&self, play_session_id: &str) -> Option<TranscodingJobInfo> {
@@ -973,6 +1010,30 @@ impl TranscodeJobRegistry {
                     .play_session_id
                     .as_deref()
                     .is_some_and(|session| session.eq_ignore_ascii_case(play_session_id))
+            })
+            .map(|entry| entry.info.clone())
+    }
+
+    /// Returns active transcode metadata for a device session.
+    #[must_use]
+    pub fn get_for_device(&self, device_id: &str) -> Option<TranscodingJobInfo> {
+        self.jobs
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .values()
+            .filter(|entry| {
+                entry
+                    .info
+                    .device_id
+                    .as_deref()
+                    .is_some_and(|candidate| candidate.eq_ignore_ascii_case(device_id))
+            })
+            .max_by(|left, right| {
+                left.info
+                    .last_ping
+                    .cmp(&right.info.last_ping)
+                    .then_with(|| left.info.started_at.cmp(&right.info.started_at))
+                    .then_with(|| left.info.id.cmp(&right.info.id))
             })
             .map(|entry| entry.info.clone())
     }
@@ -2179,6 +2240,32 @@ mod tests {
         let paused = registry.get("play-session-1").expect("job metadata");
         assert!(paused.is_user_paused);
         assert_eq!(registry.list().len(), 1);
+    }
+
+    #[test]
+    fn registry_selects_the_most_recently_active_job_for_a_device() {
+        let registry = TranscodeJobRegistry::new();
+        registry.register_for_session("older-job", "device-1", "older-session");
+        registry.register_for_session("newer-job", "device-1", "newer-session");
+        registry
+            .jobs
+            .lock()
+            .unwrap()
+            .get_mut("older-job")
+            .unwrap()
+            .info
+            .last_ping = Instant::now() - Duration::from_secs(1);
+
+        assert_eq!(
+            registry.get_for_device("DEVICE-1").map(|job| job.id),
+            Some("newer-job".to_owned())
+        );
+
+        registry.ping("older-session", None);
+        assert_eq!(
+            registry.get_for_device("device-1").map(|job| job.id),
+            Some("older-job".to_owned())
+        );
     }
 
     #[test]

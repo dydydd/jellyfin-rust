@@ -11,7 +11,7 @@ use jellyfin_data::{DeviceQuery, NewActivityLog, NewSessionCommand, entities::de
 use jellyfin_model::{
     ClientCapabilitiesDto, GeneralCommand, GeneralCommandType, MediaType, MessageCommand,
     NameIdPair, PlayCommand, PlayRequest, PlayerStateInfo, PlaystateCommand, PlaystateRequest,
-    SessionInfoDto, SessionUserInfo,
+    SessionInfoDto, SessionUserInfo, TranscodingInfo,
 };
 use md5::{Digest, Md5};
 use serde::{Deserialize, Serialize};
@@ -245,12 +245,14 @@ pub(crate) async fn list(
             .get(&device.user_id)
             .map(|(name, tag)| (Some(name.clone()), tag.clone()))
             .unwrap_or((None, None));
+        let transcoding_info = transcoding_info(&state, &device.device_id);
         sessions.push(session_info(
             device,
             user_name,
             primary_image_tag,
             state.server_id(),
             connected,
+            transcoding_info,
         ));
     }
     Ok(Json(sessions))
@@ -294,12 +296,14 @@ pub(crate) async fn all_session_infos(state: &AppState) -> Result<Vec<SessionInf
             .web_sockets
             .is_connected(&jellyfin_session_id(&device.app_name, &device.device_id))
             .await;
+        let transcoding_info = transcoding_info(state, &device.device_id);
         sessions.push(session_info(
             device,
             user_name,
             primary_image_tag,
             state.server_id(),
             connected,
+            transcoding_info,
         ));
     }
     Ok(sessions)
@@ -811,6 +815,7 @@ fn session_info(
     user_primary_image_tag: Option<String>,
     server_id: &str,
     has_open_websocket: bool,
+    transcoding_info: Option<TranscodingInfo>,
 ) -> SessionInfoDto {
     let capabilities = ClientCapabilitiesDto::from_stored_value(device.capabilities);
     let play_state: PlayerStateInfo = serde_json::from_value(device.play_state).unwrap_or_default();
@@ -833,6 +838,7 @@ fn session_info(
         now_playing_item: device.now_playing_item,
         device_id: Some(device.device_id),
         application_version: Some(device.app_version),
+        transcoding_info,
         is_active: device.is_active,
         supports_media_control: capabilities.supports_media_control && has_open_websocket,
         supports_remote_control: capabilities.supports_media_control && has_open_websocket,
@@ -846,6 +852,17 @@ fn session_info(
         supported_commands: capabilities.supported_commands.clone(),
         capabilities,
     }
+}
+
+pub(crate) fn transcoding_info(state: &AppState, device_id: &str) -> Option<TranscodingInfo> {
+    state
+        .transcode_jobs
+        .get_for_device(device_id)
+        .map(|job| TranscodingInfo {
+            is_video_direct: job.is_video_direct,
+            is_audio_direct: job.is_audio_direct,
+            transcode_reasons: job.transcode_reasons.names().map(str::to_owned).collect(),
+        })
 }
 
 async fn session_user_details(
@@ -1004,8 +1021,12 @@ pub(crate) fn jellyfin_session_id(app_name: &str, device_id: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{can_access_session_device, can_control_session, controlled_user_allows_session};
-    use jellyfin_model::UserPolicy;
+    use super::{
+        can_access_session_device, can_control_session, controlled_user_allows_session,
+        transcoding_info,
+    };
+    use crate::AppState;
+    use jellyfin_model::{TranscodeReason, UserPolicy};
     use serde_json::json;
     use uuid::Uuid;
 
@@ -1059,5 +1080,33 @@ mod tests {
         assert!(can_access_session_device(&policy, "mixed", true));
         policy.is_administrator = true;
         assert!(can_access_session_device(&policy, "other", true));
+    }
+
+    #[tokio::test]
+    async fn session_transcoding_info_exposes_registered_transcode_reasons() {
+        let state = AppState::new(
+            sea_orm::DatabaseConnection::Disconnected,
+            "Session Test".to_owned(),
+            "http://127.0.0.1:8096".to_owned(),
+        );
+        state
+            .transcode_jobs
+            .register_for_session("job-1", "device-1", "play-session-1");
+        state.transcode_jobs.set_transcode_reasons(
+            "job-1",
+            TranscodeReason::VIDEO_CODEC_NOT_SUPPORTED
+                | TranscodeReason::AUDIO_BITRATE_NOT_SUPPORTED,
+        );
+        state
+            .transcode_jobs
+            .set_direct_stream_flags("job-1", true, false);
+
+        let info = transcoding_info(&state, "DEVICE-1").expect("transcoding info");
+        assert!(info.is_video_direct);
+        assert!(!info.is_audio_direct);
+        assert_eq!(
+            info.transcode_reasons,
+            ["VideoCodecNotSupported", "AudioBitrateNotSupported"]
+        );
     }
 }

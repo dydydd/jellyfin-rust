@@ -921,6 +921,8 @@ pub struct SessionInfoDto {
     pub device_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub application_version: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub transcoding_info: Option<TranscodingInfo>,
     pub is_active: bool,
     pub supports_media_control: bool,
     pub supports_remote_control: bool,
@@ -935,6 +937,16 @@ pub struct SessionInfoDto {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub now_viewing_item: Option<Value>,
     pub supported_commands: Vec<GeneralCommandType>,
+}
+
+/// Public state for the transcode currently associated with a device session.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+#[cfg_attr(feature = "openapi", derive(schemars::JsonSchema))]
+#[serde(rename_all = "PascalCase")]
+pub struct TranscodingInfo {
+    pub is_video_direct: bool,
+    pub is_audio_direct: bool,
+    pub transcode_reasons: Vec<String>,
 }
 
 fn deserialize_enum_name<T>(value: &str) -> Result<T, serde_json::Error>

@@ -12,11 +12,17 @@ use jellyfin_controller::{
     FfmpegCommand, embedded_subtitle_filter_index, video_command, video_remux_command,
 };
 use jellyfin_data::BaseItemPage;
-use jellyfin_model::{EncodingContext, MediaStream, MediaStreamType, SubtitleDeliveryMethod};
+use jellyfin_model::{
+    EncodingContext, MediaStream, MediaStreamType, SubtitleDeliveryMethod, TranscodeReason,
+    VideoRangeType,
+};
 use serde::Deserialize;
 use uuid::Uuid;
 
-use crate::{ApiError, AppState, authentication, user_library};
+use crate::{
+    ApiError, AppState, authentication, encoding_runtime, stream_options::StreamOptions,
+    user_library,
+};
 
 #[derive(Debug, Default, Deserialize)]
 pub(crate) struct MergeVersionsQuery {
@@ -262,21 +268,19 @@ pub(crate) struct StreamQuery {
         deserialize_with = "crate::query::optional_encoding_context"
     )]
     context: Option<EncodingContext>,
-    // ASP.NET binds this as a string dictionary. The progressive path does
-    // not yet use its values, but model the input explicitly so the gap is
-    // visible when its streaming state gains those options.
     #[serde(
+        default,
         rename = "streamOptions",
         alias = "StreamOptions",
         alias = "streamoptions"
     )]
-    _stream_options: Option<String>,
+    _stream_options: Vec<String>,
     #[serde(
         rename = "enableAudioVbrEncoding",
         alias = "EnableAudioVbrEncoding",
         alias = "enableaudiovbrencoding"
     )]
-    _enable_audio_vbr_encoding: Option<bool>,
+    enable_audio_vbr_encoding: Option<bool>,
 }
 
 pub(crate) async fn stream(
@@ -309,6 +313,7 @@ async fn stream_file(
 ) -> Result<Response, ApiError> {
     let identity =
         authentication::authenticated_identity(&state, &headers, Some(request.uri())).await?;
+    let stream_options = StreamOptions::from_uri(request.uri());
     let Query(mut query) = query.map_err(|_| ApiError::InvalidRequest)?;
     validate_progressive_query(requested_container, &query)?;
     apply_legacy_params(&mut query)?;
@@ -351,7 +356,20 @@ async fn stream_file(
     ) {
         return Err(ApiError::NotFound);
     }
-    let item = if let Some(media_source_id) = query
+    let opened_source = query
+        .live_stream_id
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+        .map(|live_stream_id| {
+            state
+                .live_streams
+                .get(item_id, live_stream_id)
+                .ok_or(ApiError::NotFound)
+        })
+        .transpose()?;
+    let item = if opened_source.is_some() {
+        requested_item
+    } else if let Some(media_source_id) = query
         .media_source_id
         .as_deref()
         .map(str::trim)
@@ -370,8 +388,10 @@ async fn stream_file(
     } else {
         requested_item
     };
-    let path = jellyfin_controller::media_source_path(&item)
-        .map(str::to_owned)
+    let path = opened_source
+        .as_ref()
+        .and_then(|source| source.path.clone())
+        .or_else(|| jellyfin_controller::media_source_path(&item).map(str::to_owned))
         .ok_or(ApiError::NotFound)?;
     if let Some(container) = requested_container {
         let actual = std::path::Path::new(&path)
@@ -420,40 +440,47 @@ async fn stream_file(
         .audio_codec
         .as_deref()
         .unwrap_or_else(|| audio_codec_for_container(&container));
-    let subtitle_streams = if query.subtitle_stream_index.is_some() {
+    let media_streams = if let Some(source) = opened_source.as_ref() {
+        source.media_streams.clone()
+    } else {
         state
             .media_streams
             .get_media_streams(jellyfin_controller::MediaStreamFilter::for_item(item.id))
             .await?
-    } else {
-        Vec::new()
     };
     let selected_subtitle = query.subtitle_stream_index.and_then(|index| {
-        subtitle_streams
+        media_streams
             .iter()
             .find(|stream| stream.stream_type == MediaStreamType::Subtitle && stream.index == index)
     });
     let subtitle_method = effective_subtitle_method(&query, selected_subtitle);
     let burns_subtitle = query.subtitle_stream_index.is_some()
         && should_burn_subtitles(subtitle_method, query.legacy_subtitle_method_unknown);
-    let external_subtitle_filter = burns_subtitle
+    let external_text_subtitle_filter = burns_subtitle
         .then_some(selected_subtitle)
         .flatten()
-        .filter(|stream| stream.is_external)
+        .filter(|stream| stream.is_external && stream.is_text_subtitle_stream())
         .and_then(|stream| stream.path.as_deref());
-    let subtitle_filter_index = if burns_subtitle && external_subtitle_filter.is_none() {
+    let external_graphical_subtitle = external_graphical_subtitle_request(
+        &media_streams,
+        selected_subtitle,
+        burns_subtitle,
+        &query,
+    );
+    let burns_text_subtitle =
+        burns_subtitle && selected_subtitle.is_some_and(MediaStream::is_text_subtitle_stream);
+    let subtitle_filter_index = if burns_subtitle
+        && external_text_subtitle_filter.is_none()
+        && external_graphical_subtitle.is_none()
+    {
         query
             .subtitle_stream_index
-            .and_then(|index| embedded_subtitle_filter_index(&subtitle_streams, index))
+            .and_then(|index| embedded_subtitle_filter_index(&media_streams, index))
     } else {
         None
     };
-    let embedded_subtitle = embedded_subtitle_request(
-        &query,
-        &subtitle_streams,
-        selected_subtitle,
-        subtitle_method,
-    );
+    let embedded_subtitle =
+        embedded_subtitle_request(&query, &media_streams, selected_subtitle, subtitle_method);
     let output = state.transcode_directory.join(format!(
         "{item_id}-video-{}.{}",
         Uuid::new_v4().simple(),
@@ -463,15 +490,43 @@ async fn stream_file(
         .await
         .map_err(|_| ApiError::Internal)?;
     let copy_timestamps = query.copy_timestamps.unwrap_or(false);
+    let source_video = selected_stream(
+        &media_streams,
+        MediaStreamType::Video,
+        query.video_stream_index,
+    );
+    let source_audio = selected_stream(
+        &media_streams,
+        MediaStreamType::Audio,
+        query.audio_stream_index,
+    );
+    let requested_profile = query
+        .profile
+        .as_deref()
+        .filter(|value| !value.is_empty())
+        .or_else(|| stream_options.get_request_option(video_codec, "profile"));
+    let requested_level = query
+        .level
+        .as_deref()
+        .filter(|value| !value.is_empty())
+        .or_else(|| stream_options.get_request_option(video_codec, "level"));
+    let de_interlace = source_video.is_some_and(|stream| stream.is_interlaced)
+        && (query.de_interlace.unwrap_or(false)
+            || stream_options
+                .get_request_option(video_codec, "deinterlace")
+                .is_some_and(|value| value.eq_ignore_ascii_case("true")));
     let mut is_local_copy_remux = if subtitle_filter_index.is_none()
         && is_local_path(&path)
-        && copy_remux_has_no_transform(&query)
+        && copy_remux_has_no_transform_with_deinterlace(&query, de_interlace)
     {
-        let streams = state
-            .media_streams
-            .get_media_streams(jellyfin_controller::MediaStreamFilter::for_item(item.id))
-            .await?;
-        can_copy_remux(&query, &container, &streams, video_codec, audio_codec)
+        can_copy_remux_with_options(
+            &query,
+            &stream_options,
+            &container,
+            &media_streams,
+            video_codec,
+            audio_codec,
+        )
     } else {
         false
     };
@@ -490,6 +545,30 @@ async fn stream_file(
             return Err(ApiError::Forbidden);
         }
     }
+    let video_profile = output_video_profile(video_codec, requested_profile);
+    let video_level = output_video_level(video_codec, requested_level);
+    let option_channels = stream_options
+        .get_request_option(audio_codec, "audiochannels")
+        .and_then(|value| value.parse().ok());
+    let audio_channels = source_audio.and_then(|source| {
+        encoding_runtime::output_audio_channels(
+            audio_codec,
+            source.channels,
+            option_channels,
+            query.max_audio_channels,
+            query.audio_channels,
+            query.transcoding_max_audio_channels,
+        )
+    });
+    let audio_bitrate = encoding_runtime::output_audio_bitrate(
+        audio_codec,
+        source_audio.is_some(),
+        source_audio.and_then(|source| source.channels),
+        audio_channels,
+        query.audio_bitrate.map(i64::from),
+    );
+    let transcodes_audio = !audio_codec.eq_ignore_ascii_case("copy");
+    let encoding_options = crate::configuration::encoding_runtime_options(&state).await?;
     let mut command = if is_local_copy_remux {
         video_remux_command(
             &state.ffmpeg_path,
@@ -508,19 +587,18 @@ async fn stream_file(
             video_codec,
             audio_codec,
             query.video_bitrate.map(i64::from),
-            query.audio_bitrate.map(i64::from),
-            query
-                .audio_channels
-                .or(query.max_audio_channels)
-                .or(query.transcoding_max_audio_channels),
-            query.audio_sample_rate,
+            audio_bitrate,
+            transcodes_audio.then_some(audio_channels).flatten(),
+            transcodes_audio
+                .then_some(query.audio_sample_rate)
+                .flatten(),
             query.max_width.or(query.width),
             query.max_height.or(query.height),
             query.framerate.or(query.max_framerate),
-            query.de_interlace.unwrap_or(false),
+            de_interlace,
             query.require_non_anamorphic.unwrap_or(false),
-            output_video_profile(video_codec, query.profile.as_deref()).as_deref(),
-            output_video_level(video_codec, query.level.as_deref()).as_deref(),
+            video_profile.as_deref(),
+            video_level.as_deref(),
             query.audio_stream_index,
             query.video_stream_index,
             query.start_time_ticks,
@@ -528,17 +606,38 @@ async fn stream_file(
             copy_timestamps,
         )
     };
-    if let Some(path) = external_subtitle_filter {
-        apply_external_subtitle_burn(&mut command, std::path::Path::new(path));
+    if let Some(subtitle) = external_graphical_subtitle.as_ref() {
+        apply_external_graphical_subtitle_burn(
+            &mut command,
+            subtitle,
+            query.start_time_ticks,
+            copy_timestamps,
+        );
+    } else if let Some(path) = external_text_subtitle_filter {
+        apply_external_text_subtitle_burn(&mut command, std::path::Path::new(path));
     }
-    if burns_subtitle && !copy_timestamps {
+    if burns_text_subtitle && !copy_timestamps {
         apply_subtitle_time_offset(&mut command, query.start_time_ticks);
     }
     if let Some(subtitle) = embedded_subtitle.as_ref() {
         apply_embedded_subtitle(&mut command, subtitle, query.start_time_ticks);
     }
     apply_encoding_context(&mut command, query.context);
-    apply_cpu_core_limit(&mut command, query.cpu_core_limit);
+    encoding_runtime::apply_audio_vbr(
+        &mut command,
+        audio_codec,
+        audio_bitrate,
+        audio_channels,
+        encoding_runtime::audio_vbr_enabled(
+            encoding_options.enable_audio_vbr,
+            query.enable_audio_vbr_encoding,
+        ),
+    );
+    encoding_runtime::apply_thread_count(
+        &mut command,
+        query.cpu_core_limit,
+        encoding_options.encoding_thread_count,
+    );
     apply_mpegts_m2_ts_mode(
         &mut command,
         query.enable_mpegts_m2_ts_mode.unwrap_or(false),
@@ -550,26 +649,21 @@ async fn stream_file(
         Arc::clone(&state.transcode_jobs),
         query.device_id,
         query.play_session_id,
+        is_local_copy_remux || video_codec.eq_ignore_ascii_case("copy"),
+        is_local_copy_remux || audio_codec.eq_ignore_ascii_case("copy"),
+        query
+            .transcode_reasons
+            .as_deref()
+            .and_then(TranscodeReason::parse_names)
+            .unwrap_or(TranscodeReason::NONE),
     )
 }
 
+#[cfg(test)]
 pub(crate) fn apply_cpu_core_limit(command: &mut FfmpegCommand, requested: Option<i32>) {
-    let Some(requested) = requested else {
-        return;
-    };
-    let available = std::thread::available_parallelism()
-        .map(|count| i32::try_from(count.get()).unwrap_or(i32::MAX))
-        .unwrap_or(1);
-    let threads = if requested <= 0 {
-        0
-    } else {
-        requested.min(available)
-    };
-    let output_index = command.arguments.len().saturating_sub(1);
-    command.arguments.splice(
-        output_index..output_index,
-        ["-threads".to_owned(), threads.to_string()],
-    );
+    if requested.is_some() {
+        encoding_runtime::apply_thread_count(command, requested, -1);
+    }
 }
 
 fn apply_mpegts_m2_ts_mode(command: &mut FfmpegCommand, enabled: bool) {
@@ -738,6 +832,80 @@ struct EmbeddedSubtitleRequest {
     external_path: Option<String>,
 }
 
+#[derive(Debug, PartialEq, Eq)]
+struct ExternalGraphicalSubtitleRequest {
+    path: String,
+    stream_index: usize,
+    canvas_size: Option<(i32, i32)>,
+    preprocess_filter: Option<String>,
+}
+
+fn external_graphical_subtitle_request(
+    streams: &[MediaStream],
+    selected: Option<&MediaStream>,
+    burns_subtitle: bool,
+    query: &StreamQuery,
+) -> Option<ExternalGraphicalSubtitleRequest> {
+    // Official Jellyfin opens external graphical subtitles as FFmpeg input 1;
+    // text subtitles instead remain file-backed inputs to the libass filter.
+    let selected = selected.filter(|stream| {
+        burns_subtitle && stream.is_external && !stream.is_text_subtitle_stream()
+    })?;
+    let path = selected.path.as_deref()?;
+    let stream_index = streams
+        .iter()
+        .filter(|candidate| candidate.path.as_deref() == Some(path))
+        .take_while(|candidate| candidate.index != selected.index)
+        .count();
+    let canvas_size = match (selected.width, selected.height) {
+        (Some(width), Some(height))
+            if width > 0
+                && height > 0
+                && !selected
+                    .codec
+                    .as_deref()
+                    .is_some_and(|codec| codec.eq_ignore_ascii_case("dvbsub")) =>
+        {
+            Some((width, height))
+        }
+        _ => None,
+    };
+    let video = selected_stream(streams, MediaStreamType::Video, query.video_stream_index);
+    let output_size = fixed_output_size(
+        video.and_then(|stream| stream.width),
+        video.and_then(|stream| stream.height),
+        query.max_width.or(query.width),
+        query.max_height.or(query.height),
+    );
+    let preprocess_filter = output_size.map(|(width, height)| {
+        let same_aspect_ratio = selected
+            .width
+            .zip(selected.height)
+            .filter(|(subtitle_width, subtitle_height)| {
+                *subtitle_width > 0 && *subtitle_height > 0
+            })
+            .is_some_and(|(subtitle_width, subtitle_height)| {
+                let video_ratio = f64::from(width) / f64::from(height);
+                let subtitle_ratio = f64::from(subtitle_width) / f64::from(subtitle_height);
+                (video_ratio - subtitle_ratio).abs() < 0.01
+            });
+        if same_aspect_ratio {
+            format!("scale,scale={width}:{height}:fast_bilinear")
+        } else {
+            format!(
+                "scale,scale=-1:{height}:fast_bilinear,crop,pad=max({width}\\,iw):max({height}\\,ih):(ow-iw)/2:(oh-ih)/2:black@0,crop={width}:{height}"
+            )
+        }
+    });
+
+    Some(ExternalGraphicalSubtitleRequest {
+        path: preferred_vobsub_path(path),
+        stream_index,
+        canvas_size,
+        preprocess_filter,
+    })
+}
+
 fn embedded_subtitle_request(
     query: &StreamQuery,
     streams: &[MediaStream],
@@ -805,7 +973,7 @@ fn effective_subtitle_method(
     }
 }
 
-fn apply_external_subtitle_burn(command: &mut FfmpegCommand, path: &std::path::Path) {
+fn apply_external_text_subtitle_burn(command: &mut FfmpegCommand, path: &std::path::Path) {
     let escaped = escape_subtitle_filter_path(path);
     let filter = format!("subtitles='{escaped}'");
     if let Some(filter_index) = command
@@ -823,6 +991,85 @@ fn apply_external_subtitle_burn(command: &mut FfmpegCommand, path: &std::path::P
     command
         .arguments
         .splice(output_index..output_index, ["-vf".to_owned(), filter]);
+}
+
+fn apply_external_graphical_subtitle_burn(
+    command: &mut FfmpegCommand,
+    subtitle: &ExternalGraphicalSubtitleRequest,
+    start_time_ticks: Option<i64>,
+    copy_timestamps: bool,
+) {
+    let Some(video_map_index) = command
+        .arguments
+        .windows(2)
+        .position(|pair| pair[0] == "-map" && pair[1].starts_with("0:"))
+    else {
+        return;
+    };
+    let video_input = command.arguments[video_map_index + 1].clone();
+    let mut input = Vec::with_capacity(6);
+    // Seek the subtitle input independently to the same progressive start.
+    // Graphical streams already share the resulting zero-based timeline, so
+    // unlike text subtitles they must not receive an additional setpts shift.
+    if let Some(ticks) = start_time_ticks.filter(|ticks| *ticks > 0) {
+        input.extend(["-ss".to_owned(), format_ticks_as_seconds(ticks)]);
+    }
+    if let Some((width, height)) = subtitle.canvas_size {
+        input.extend(["-canvas_size".to_owned(), format!("{width}x{height}")]);
+    }
+    input.extend(["-i".to_owned(), format!("file:{}", subtitle.path)]);
+    command
+        .arguments
+        .splice(video_map_index..video_map_index, input);
+
+    let main_filter = command
+        .arguments
+        .iter()
+        .position(|argument| argument == "-vf")
+        .filter(|index| index + 1 < command.arguments.len())
+        .map(|index| {
+            let filter = command.arguments[index + 1].clone();
+            command.arguments.drain(index..=index + 1);
+            filter
+        });
+    let subtitle_input = format!("1:{}", subtitle.stream_index);
+    let subtitle_chain = subtitle
+        .preprocess_filter
+        .as_deref()
+        .map(|filter| format!("[{subtitle_input}]{filter}[sub];"));
+    let graph = match (main_filter, subtitle.preprocess_filter.as_ref()) {
+        (Some(main), Some(_)) => format!(
+            "[{video_input}]{main}[main];{}[main][sub]overlay=eof_action=pass:repeatlast=0[v]",
+            subtitle_chain.as_deref().unwrap_or_default()
+        ),
+        (Some(main), None) => format!(
+            "[{video_input}]{main}[main];[main][{subtitle_input}]overlay=eof_action=pass:repeatlast=0[v]"
+        ),
+        (None, Some(_)) => format!(
+            "{}[{video_input}][sub]overlay=eof_action=pass:repeatlast=0[v]",
+            subtitle_chain.as_deref().unwrap_or_default()
+        ),
+        (None, None) => {
+            format!("[{video_input}][{subtitle_input}]overlay=eof_action=pass:repeatlast=0[v]")
+        }
+    };
+    let output_index = command.arguments.len().saturating_sub(1);
+    command.arguments.splice(
+        output_index..output_index,
+        ["-filter_complex".to_owned(), graph],
+    );
+    if let Some(index) = command
+        .arguments
+        .windows(2)
+        .position(|pair| pair[0] == "-map" && pair[1] == video_input)
+    {
+        command.arguments[index + 1] = "[v]".to_owned();
+    }
+    if copy_timestamps {
+        command
+            .arguments
+            .retain(|argument| argument != "-start_at_zero");
+    }
 }
 
 fn apply_subtitle_time_offset(command: &mut FfmpegCommand, start_time_ticks: Option<i64>) {
@@ -882,6 +1129,43 @@ fn escape_subtitle_filter_path(path: &std::path::Path) -> String {
         .replace('"', "\\\"")
 }
 
+fn preferred_vobsub_path(path: &str) -> String {
+    let path = std::path::Path::new(path);
+    if path
+        .extension()
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("sub"))
+    {
+        let index_path = path.with_extension("idx");
+        if index_path.exists() {
+            return index_path.to_string_lossy().into_owned();
+        }
+    }
+    path.to_string_lossy().into_owned()
+}
+
+fn fixed_output_size(
+    video_width: Option<i32>,
+    video_height: Option<i32>,
+    maximum_width: Option<i32>,
+    maximum_height: Option<i32>,
+) -> Option<(i32, i32)> {
+    let (mut width, mut height) = (video_width?, video_height?);
+    if width <= 0 || height <= 0 {
+        return None;
+    }
+    let maximum_width = maximum_width.unwrap_or(width).min(4096);
+    let maximum_height = maximum_height.unwrap_or(height).min(4096);
+    if width > maximum_width || height > maximum_height {
+        let scale = (f64::from(maximum_width) / f64::from(width))
+            .min(f64::from(maximum_height) / f64::from(height));
+        width = (f64::from(width) * scale).round_ties_even() as i32;
+        height = (f64::from(height) * scale).round_ties_even() as i32;
+    }
+    width = 2 * (width / 2);
+    height = 2 * (height / 2);
+    (width > 0 && height > 0).then_some((width, height))
+}
+
 fn format_ticks_as_seconds(ticks: i64) -> String {
     let milliseconds = ticks / 10_000;
     let rounded_milliseconds = milliseconds + i64::from(ticks % 10_000 >= 5_000);
@@ -913,19 +1197,43 @@ fn progressive_codecs_allowed(
         && (audio_codec.eq_ignore_ascii_case("copy") || allow_audio_transcoding)
 }
 
-fn copy_remux_has_no_transform(query: &StreamQuery) -> bool {
+fn copy_remux_has_no_transform_with_deinterlace(query: &StreamQuery, de_interlace: bool) -> bool {
     query.enable_auto_stream_copy.unwrap_or(true)
         && query.allow_video_stream_copy.unwrap_or(true)
         && query.allow_audio_stream_copy.unwrap_or(true)
         && query.width.is_none()
         && query.height.is_none()
-        && query.de_interlace != Some(true)
+        && !de_interlace
         && !(query.subtitle_stream_index.is_some()
             && should_burn_subtitles(query.subtitle_method, query.legacy_subtitle_method_unknown))
 }
 
+#[cfg(test)]
+fn copy_remux_has_no_transform(query: &StreamQuery) -> bool {
+    copy_remux_has_no_transform_with_deinterlace(query, query.de_interlace == Some(true))
+}
+
+#[cfg(test)]
 fn can_copy_remux(
     query: &StreamQuery,
+    container: &str,
+    streams: &[MediaStream],
+    requested_video_codec: &str,
+    requested_audio_codec: &str,
+) -> bool {
+    can_copy_remux_with_options(
+        query,
+        &StreamOptions::default(),
+        container,
+        streams,
+        requested_video_codec,
+        requested_audio_codec,
+    )
+}
+
+fn can_copy_remux_with_options(
+    query: &StreamQuery,
+    stream_options: &StreamOptions,
     container: &str,
     streams: &[MediaStream],
     requested_video_codec: &str,
@@ -966,36 +1274,64 @@ fn can_copy_remux(
         && video_profile_allows_copy(
             video_codec,
             video_stream.profile.as_deref(),
-            query.profile.as_deref(),
+            query
+                .profile
+                .as_deref()
+                .filter(|value| !value.is_empty())
+                .or_else(|| stream_options.get_request_option(video_codec, "profile")),
         )
-        && video_level_allows_copy(video_stream.level, query.level.as_deref())
+        && video_level_allows_copy(
+            video_stream.level,
+            query
+                .level
+                .as_deref()
+                .filter(|value| !value.is_empty())
+                .or_else(|| stream_options.get_request_option(video_codec, "level")),
+        )
+        && video_range_allows_copy(
+            video_stream.video_range_type,
+            stream_options.get_request_option(video_codec, "rangetype"),
+        )
+        && video_rotation_allows_copy(
+            video_stream.rotation,
+            stream_options.get_request_option(video_codec, "rotation"),
+        )
         && video_dimensions_allow_copy(video_stream, query.max_width, query.max_height)
         && video_framerate_allows_copy(
             video_stream,
             query.max_framerate.or(query.framerate),
         )
         && video_bitrate_allows_copy(video_stream, query.video_bitrate)
-        && !query.max_ref_frames.is_some_and(|maximum| {
+        && !query
+            .max_ref_frames
+            .or_else(|| stream_option_i32(stream_options, video_codec, "maxrefframes"))
+            .is_some_and(|maximum| {
             video_stream
                 .ref_frames
                 .is_some_and(|actual| actual > maximum)
         })
-        && !query.max_video_bit_depth.is_some_and(|maximum| {
+        && !query
+            .max_video_bit_depth
+            .or_else(|| stream_option_i32(stream_options, video_codec, "videobitdepth"))
+            .is_some_and(|maximum| {
             video_stream
                 .bit_depth
                 .is_some_and(|actual| actual > maximum)
         })
         // EncodingHelper.CanStreamCopyAudio applies this constraint only
         // when stream probing supplied an audio bit depth.
-        && !query.max_audio_bit_depth.is_some_and(|maximum| {
+        && !query
+            .max_audio_bit_depth
+            .or_else(|| stream_option_i32(stream_options, audio_codec, "audiobitdepth"))
+            .is_some_and(|maximum| {
             audio_stream
                 .bit_depth
                 .is_some_and(|actual| actual > maximum)
         })
         && audio_channels_allow_copy(
             audio_stream,
-            query
-                .max_audio_channels
+            stream_option_i32(stream_options, audio_codec, "audiochannels")
+                .or(query.max_audio_channels)
                 .or(query.audio_channels)
                 .or(query.transcoding_max_audio_channels),
         )
@@ -1004,6 +1340,73 @@ fn can_copy_remux(
         && codecs_match(video_codec, requested_video_codec)
         && codecs_match(audio_codec, requested_audio_codec)
         && copy_remux_container_supports(container, video_codec, audio_codec)
+}
+
+fn stream_option_i32(stream_options: &StreamOptions, qualifier: &str, name: &str) -> Option<i32> {
+    stream_options
+        .get_request_option(qualifier, name)
+        .and_then(|value| value.parse().ok())
+}
+
+fn video_rotation_allows_copy(actual: Option<i32>, requested: Option<&str>) -> bool {
+    let actual = actual.unwrap_or(0);
+    actual == 0
+        || requested.is_none_or(|requested| {
+            requested
+                .split(',')
+                .filter(|value| !value.is_empty())
+                .any(|value| value == actual.to_string())
+        })
+}
+
+fn video_range_allows_copy(actual: VideoRangeType, requested: Option<&str>) -> bool {
+    let requested = requested
+        .into_iter()
+        .flat_map(|value| value.split(','))
+        .filter(|value| !value.is_empty())
+        .collect::<Vec<_>>();
+    if requested.is_empty() {
+        return true;
+    }
+    if actual == VideoRangeType::Unknown {
+        return false;
+    }
+    let contains = |name: &str| {
+        requested
+            .iter()
+            .any(|value| value.eq_ignore_ascii_case(name))
+    };
+    let actual_name = video_range_type_name(actual);
+    if contains(actual_name) {
+        return true;
+    }
+    match actual {
+        VideoRangeType::Sdr => true,
+        VideoRangeType::Hdr10Plus => contains("HDR10"),
+        VideoRangeType::DoviWithHdr10 => contains("HDR10") || contains("DOVI"),
+        VideoRangeType::DoviWithHlg => contains("HLG") || contains("DOVI"),
+        VideoRangeType::DoviWithSdr => contains("SDR") || contains("DOVI"),
+        VideoRangeType::DoviWithEl => contains("DOVI"),
+        _ => false,
+    }
+}
+
+const fn video_range_type_name(range: VideoRangeType) -> &'static str {
+    match range {
+        VideoRangeType::Unknown => "Unknown",
+        VideoRangeType::Sdr => "SDR",
+        VideoRangeType::Hdr10 => "HDR10",
+        VideoRangeType::Hlg => "HLG",
+        VideoRangeType::Dovi => "DOVI",
+        VideoRangeType::DoviWithHdr10 => "DOVIWithHDR10",
+        VideoRangeType::DoviWithHlg => "DOVIWithHLG",
+        VideoRangeType::DoviWithSdr => "DOVIWithSDR",
+        VideoRangeType::DoviWithEl => "DOVIWithEL",
+        VideoRangeType::DoviWithHdr10Plus => "DOVIWithHDR10Plus",
+        VideoRangeType::DoviWithElHdr10Plus => "DOVIWithELHDR10Plus",
+        VideoRangeType::DoviInvalid => "DOVIInvalid",
+        VideoRangeType::Hdr10Plus => "HDR10Plus",
+    }
 }
 
 fn video_dimensions_allow_copy(
@@ -1388,6 +1791,7 @@ pub(crate) async fn additional_parts(
 #[cfg(test)]
 mod tests {
     use std::{
+        fs,
         io::{Read, Write},
         net::TcpListener,
         sync::mpsc,
@@ -1397,6 +1801,7 @@ mod tests {
     use axum::{
         body::to_bytes,
         http::{Uri, header},
+        response::IntoResponse,
     };
     use axum_extra::extract::Query;
 
@@ -1458,8 +1863,8 @@ mod tests {
             Some("ContainerNotSupported")
         );
         assert_eq!(query.context, Some(EncodingContext::Streaming));
-        assert_eq!(query._stream_options.as_deref(), Some("quality=high"));
-        assert_eq!(query._enable_audio_vbr_encoding, Some(false));
+        assert_eq!(query._stream_options, ["quality=high"]);
+        assert_eq!(query.enable_audio_vbr_encoding, Some(false));
         assert_eq!(video_codec_for_container("mp4"), "h264");
         assert_eq!(audio_codec_for_container("webm"), "opus");
         assert!(should_burn_subtitles(
@@ -1514,6 +1919,48 @@ mod tests {
                 .unwrap();
             assert!(
                 Query::<StreamQuery>::try_from_uri(&uri).is_err(),
+                "{query_string}"
+            );
+        }
+    }
+
+    #[test]
+    fn progressive_video_binds_subtitle_seek_casing_and_rejects_malformed_values() {
+        for query_string in [
+            "SubtitleStreamIndex=4&SubtitleMethod=Encode&StartTimeTicks=105000000",
+            "subtitleStreamIndex=4&subtitleMethod=Encode&startTimeTicks=105000000",
+            "subtitlestreamindex=4&subtitlemethod=Encode&starttimeticks=105000000",
+        ] {
+            let uri: Uri = format!("/videos/item/stream.mp4?{query_string}")
+                .parse()
+                .unwrap();
+            let query = Query::<StreamQuery>::try_from_uri(&uri).unwrap().0;
+            assert_eq!(query.subtitle_stream_index, Some(4), "{query_string}");
+            assert_eq!(
+                query.subtitle_method,
+                Some(SubtitleDeliveryMethod::Encode),
+                "{query_string}"
+            );
+            assert_eq!(query.start_time_ticks, Some(105_000_000), "{query_string}");
+        }
+
+        for query_string in [
+            "SubtitleStreamIndex=pgs",
+            "subtitleStreamIndex=pgs",
+            "subtitlestreamindex=pgs",
+            "StartTimeTicks=ten",
+            "startTimeTicks=ten",
+            "starttimeticks=ten",
+            "subtitlemethod=invalid",
+        ] {
+            let uri: Uri = format!("/videos/item/stream.mp4?{query_string}")
+                .parse()
+                .unwrap();
+            let result =
+                Query::<StreamQuery>::try_from_uri(&uri).map_err(|_| ApiError::InvalidRequest);
+            assert_eq!(
+                result.unwrap_err().into_response().status(),
+                StatusCode::BAD_REQUEST,
                 "{query_string}"
             );
         }
@@ -1856,7 +2303,7 @@ mod tests {
                 "output.mp4".into(),
             ],
         };
-        apply_external_subtitle_burn(
+        apply_external_text_subtitle_burn(
             &mut command,
             std::path::Path::new("/media/Movie: English.srt"),
         );
@@ -1869,6 +2316,236 @@ mod tests {
             escape_subtitle_filter_path(std::path::Path::new("C:\\Movie's.srt")),
             r#"C\:/Movie'\\\''s.srt"#
         );
+    }
+
+    #[test]
+    fn progressive_video_burns_external_pgs_from_a_sought_overlay_input() {
+        let video = MediaStream {
+            codec: Some("h264".to_owned()),
+            index: 0,
+            stream_type: MediaStreamType::Video,
+            width: Some(1920),
+            height: Some(1080),
+            ..MediaStream::default()
+        };
+        let subtitle = MediaStream {
+            codec: Some("PGSSUB".to_owned()),
+            index: 4,
+            stream_type: MediaStreamType::Subtitle,
+            is_external: true,
+            path: Some("/media/movie.sup".to_owned()),
+            width: Some(1920),
+            height: Some(1080),
+            ..MediaStream::default()
+        };
+        let streams = vec![video, subtitle.clone()];
+        let query = StreamQuery {
+            video_stream_index: Some(0),
+            subtitle_stream_index: Some(4),
+            subtitle_method: Some(SubtitleDeliveryMethod::Encode),
+            max_width: Some(1280),
+            max_height: Some(720),
+            ..StreamQuery::default()
+        };
+        let request =
+            external_graphical_subtitle_request(&streams, Some(&subtitle), true, &query).unwrap();
+        assert_eq!(request.path, "/media/movie.sup");
+        assert_eq!(request.stream_index, 0);
+
+        let mut command = video_command(
+            std::path::Path::new("/usr/bin/ffmpeg"),
+            std::path::Path::new("/media/movie.mkv"),
+            std::path::Path::new("/tmp/out.mp4"),
+            "h264",
+            "aac",
+            None,
+            None,
+            None,
+            None,
+            Some(1280),
+            Some(720),
+            None,
+            false,
+            false,
+            None,
+            None,
+            None,
+            Some(0),
+            Some(105_000_000),
+            None,
+            false,
+        );
+        apply_external_graphical_subtitle_burn(&mut command, &request, Some(105_000_000), false);
+
+        assert_eq!(
+            command
+                .arguments
+                .windows(2)
+                .filter(|pair| *pair == ["-ss", "10.500"])
+                .count(),
+            2
+        );
+        assert!(command.arguments.windows(4).any(|arguments| {
+            arguments == ["-canvas_size", "1920x1080", "-i", "file:/media/movie.sup"]
+        }));
+        assert!(
+            command
+                .arguments
+                .windows(2)
+                .any(|pair| pair == ["-map", "[v]"])
+        );
+        let graph = command
+            .arguments
+            .windows(2)
+            .find(|pair| pair[0] == "-filter_complex")
+            .map(|pair| pair[1].as_str())
+            .unwrap();
+        assert!(
+            graph.contains("[1:0]scale,scale=1280:720:fast_bilinear[sub]"),
+            "{graph}"
+        );
+        assert!(
+            graph.contains("[main][sub]overlay=eof_action=pass:repeatlast=0[v]"),
+            "{graph}"
+        );
+        assert!(!graph.contains("setpts"), "{graph}");
+        assert!(
+            command
+                .arguments
+                .iter()
+                .all(|argument| !argument.contains("subtitles="))
+        );
+    }
+
+    #[test]
+    fn progressive_video_uses_the_selected_external_graphical_stream_specifier() {
+        let video = MediaStream {
+            index: 0,
+            stream_type: MediaStreamType::Video,
+            ..MediaStream::default()
+        };
+        let first = MediaStream {
+            codec: Some("pgssub".to_owned()),
+            index: 3,
+            stream_type: MediaStreamType::Subtitle,
+            is_external: true,
+            path: Some("/media/movie.mks".to_owned()),
+            ..MediaStream::default()
+        };
+        let second = MediaStream {
+            index: 4,
+            ..first.clone()
+        };
+        let streams = vec![video, first, second.clone()];
+        let query = StreamQuery {
+            subtitle_stream_index: Some(4),
+            subtitle_method: Some(SubtitleDeliveryMethod::Encode),
+            ..StreamQuery::default()
+        };
+        let request =
+            external_graphical_subtitle_request(&streams, Some(&second), true, &query).unwrap();
+        assert_eq!(request.stream_index, 1);
+
+        let mut command = FfmpegCommand {
+            program: "/usr/bin/ffmpeg".into(),
+            arguments: vec![
+                "-i".into(),
+                "/media/movie.mkv".into(),
+                "-map".into(),
+                "0:v:0".into(),
+                "/tmp/out.mp4".into(),
+            ],
+        };
+        apply_external_graphical_subtitle_burn(&mut command, &request, None, false);
+        let graph = command
+            .arguments
+            .windows(2)
+            .find(|pair| pair[0] == "-filter_complex")
+            .map(|pair| pair[1].as_str())
+            .unwrap();
+        assert_eq!(graph, "[0:v:0][1:1]overlay=eof_action=pass:repeatlast=0[v]");
+    }
+
+    #[test]
+    fn progressive_video_uses_vobsub_idx_and_preserves_copy_timestamps() {
+        let temporary = std::env::temp_dir().join(format!(
+            "jellyfin-progressive-vobsub-{}",
+            Uuid::new_v4().simple()
+        ));
+        fs::create_dir(&temporary).unwrap();
+        let sub_path = temporary.join("movie.SUB");
+        let idx_path = temporary.join("movie.idx");
+        fs::write(&sub_path, "subtitle data").unwrap();
+        assert_eq!(
+            preferred_vobsub_path(&sub_path.to_string_lossy()),
+            sub_path.to_string_lossy()
+        );
+        fs::write(&idx_path, "subtitle index").unwrap();
+        let subtitle = MediaStream {
+            codec: Some("VoBsUb".to_owned()),
+            index: 2,
+            stream_type: MediaStreamType::Subtitle,
+            is_external: true,
+            path: Some(sub_path.to_string_lossy().into_owned()),
+            ..MediaStream::default()
+        };
+        let query = StreamQuery {
+            subtitle_stream_index: Some(2),
+            subtitle_method: Some(SubtitleDeliveryMethod::Encode),
+            ..StreamQuery::default()
+        };
+        let request = external_graphical_subtitle_request(
+            std::slice::from_ref(&subtitle),
+            Some(&subtitle),
+            true,
+            &query,
+        )
+        .unwrap();
+        assert_eq!(request.path, idx_path.to_string_lossy());
+
+        let mut command = video_command(
+            std::path::Path::new("/usr/bin/ffmpeg"),
+            std::path::Path::new("/media/movie.mkv"),
+            std::path::Path::new("/tmp/out.mp4"),
+            "h264",
+            "aac",
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            false,
+            false,
+            None,
+            None,
+            None,
+            None,
+            Some(10_000_000),
+            None,
+            true,
+        );
+        apply_external_graphical_subtitle_burn(&mut command, &request, Some(10_000_000), true);
+        assert!(command.arguments.windows(2).any(|pair| {
+            pair[0] == "-i" && pair[1] == format!("file:{}", idx_path.to_string_lossy())
+        }));
+        assert!(
+            !command
+                .arguments
+                .iter()
+                .any(|argument| argument == "-start_at_zero")
+        );
+        let graph = command
+            .arguments
+            .windows(2)
+            .find(|pair| pair[0] == "-filter_complex")
+            .map(|pair| pair[1].as_str())
+            .unwrap();
+        assert!(graph.contains("[1:0]overlay="), "{graph}");
+        assert!(!graph.contains("setpts"), "{graph}");
+
+        fs::remove_dir_all(temporary).unwrap();
     }
 
     #[test]
@@ -2146,6 +2823,88 @@ mod tests {
         assert!(!is_local_path("https://media.example/video.mkv"));
         assert!(!is_local_path("rtsp://media.example/video.mkv"));
         assert!(is_local_path("/library/video.mkv"));
+    }
+
+    #[test]
+    fn progressive_copy_uses_codec_qualified_stream_option_constraints() {
+        let streams = vec![
+            MediaStream {
+                index: 0,
+                stream_type: MediaStreamType::Video,
+                codec: Some("h264".to_owned()),
+                profile: Some("High".to_owned()),
+                level: Some(41.0),
+                ref_frames: Some(4),
+                bit_depth: Some(10),
+                rotation: Some(90),
+                video_range_type: VideoRangeType::Hdr10,
+                ..MediaStream::default()
+            },
+            MediaStream {
+                index: 1,
+                stream_type: MediaStreamType::Audio,
+                codec: Some("aac".to_owned()),
+                channels: Some(6),
+                bit_depth: Some(24),
+                ..MediaStream::default()
+            },
+        ];
+        let query = StreamQuery {
+            video_codec: Some("h264".to_owned()),
+            audio_codec: Some("aac".to_owned()),
+            ..StreamQuery::default()
+        };
+
+        for query_string in [
+            "h264-profile=Baseline",
+            "h264-level=40",
+            "h264-maxrefframes=3",
+            "h264-videobitdepth=8",
+            "aac-audiobitdepth=16",
+            "aac-audiochannels=2",
+            "h264-rangetype=SDR",
+            "h264-rotation=0",
+        ] {
+            let uri: Uri = format!("/Videos/id/stream?{query_string}").parse().unwrap();
+            let options = StreamOptions::from_uri(&uri);
+            assert!(
+                !can_copy_remux_with_options(&query, &options, "mp4", &streams, "h264", "aac",),
+                "{query_string}"
+            );
+        }
+    }
+
+    #[test]
+    fn empty_declared_profile_falls_back_to_qualified_stream_option() {
+        let streams = vec![
+            MediaStream {
+                index: 0,
+                stream_type: MediaStreamType::Video,
+                codec: Some("h264".to_owned()),
+                profile: Some("High".to_owned()),
+                ..MediaStream::default()
+            },
+            MediaStream {
+                index: 1,
+                stream_type: MediaStreamType::Audio,
+                codec: Some("aac".to_owned()),
+                ..MediaStream::default()
+            },
+        ];
+        let query = StreamQuery {
+            profile: Some(String::new()),
+            video_codec: Some("h264".to_owned()),
+            audio_codec: Some("aac".to_owned()),
+            ..StreamQuery::default()
+        };
+        let uri: Uri = "/Videos/id/stream?profile=&h264-profile=Baseline"
+            .parse()
+            .unwrap();
+        let options = StreamOptions::from_uri(&uri);
+
+        assert!(!can_copy_remux_with_options(
+            &query, &options, "mp4", &streams, "h264", "aac",
+        ));
     }
 
     #[test]

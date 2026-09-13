@@ -1117,11 +1117,18 @@ async fn record_device_playback_stop(
     mut info: PlaybackStopInfo,
 ) -> Result<(), ApiError> {
     let item_id = info.item_id;
+    let live_stream_id = info.live_stream_id.clone();
     if let Some(play_session_id) = info.play_session_id.as_deref() {
         state
             .transcode_jobs
             .stop_for_session(&session.device.device_id, play_session_id)
             .await;
+    }
+    if let Some(live_stream_id) = live_stream_id
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        state.live_streams.close(live_stream_id);
     }
     let now_playing_queue = info.now_playing_queue.take().map(|queue| json!(queue));
     let playlist_item_id = info.playlist_item_id.take();
