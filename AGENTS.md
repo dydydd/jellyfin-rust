@@ -337,6 +337,10 @@
   different default.
 - Keep `/Users/Public` available as `/users/public`; otherwise Axum's dynamic `/users/{id}` route
   treats the SDK's lowercase public-user request as a UUID binding failure.
+- Normalize canonical, lowercase, and mixed-case `/emby/Users/Public` requests inside the Emby
+  route tree before authorization and shared-fallback dispatch. All three forms must remain
+  anonymously accessible and return the raw SDK-decodable `UserDto[]`; do not broaden or otherwise
+  change the unprefixed Jellyfin route while adding this Emby compatibility adapter.
 - Keep login case-insensitive through both static segments: `/users/authenticatebyname` must retain
   the canonical route's public authorization policy as well as its handler.
 - Keep Startup, external library-update reports, elevated Person remote search, and elevated remote

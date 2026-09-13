@@ -56,8 +56,10 @@ pub fn router(state: AppState) -> Router {
 // cannot be captured by a shared dynamic route (for example, `Updates` as a
 // package name). Dynamic segments are copied from the request unchanged.
 //
-// This list deliberately contains only protocol-owned routes. The shared
-// Jellyfin fallback remains untouched, as does the unprefixed Jellyfin tree.
+// This list contains only paths whose casing must be normalized inside the
+// Emby tree. Most are protocol-owned; a small number deliberately reuse a
+// shared handler after normalization. The shared Jellyfin fallback and the
+// unprefixed Jellyfin tree remain untouched.
 const DEDICATED_ROUTE_TEMPLATES: &[&str] = &[
     "/AudioBooks/NextUp",
     "/AudioCodecs",
@@ -110,6 +112,10 @@ const DEDICATED_ROUTE_TEMPLATES: &[&str] = &[
     "/Users/ItemAccess",
     "/Users/CopyDataOptions",
     "/Users/Prefixes",
+    // The shared handler is intentionally reused, but mixed-case Emby login
+    // bootstrap requests must be normalized before the shared fallback and
+    // route-policy matcher run.
+    "/Users/Public",
     "/Users/Query",
     "/Videos/{item_id}/index.bif",
     "/VideoCodecs",
