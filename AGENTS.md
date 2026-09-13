@@ -421,6 +421,10 @@
   API keys may target another existing user; preserve target authorization/404 precedence over an
   invalid case-insensitive `TrackType`, return 200 on success, and do not expose either alias from
   the Jellyfin root router.
+- Keep Emby's legacy `POST /emby/Videos/{Id}/AlternateSources/Delete` administrator-only and return
+  200 after applying the real alternate-version unlink operation. Preserve typed-video 404 behavior,
+  media rows and metadata while removing both linked-child and primary-version relationships; do
+  not expose the POST alias from Jellyfin's root router or change its existing DELETE route's 204.
 - Bind target `UserId` as `userId`, `UserId`, and fully lowercase `userid` on UserData, Rating, and
   DisplayPreferences operations; bind DisplayPreferences `ItemId` equivalently. A lowercase target
   id must never be ignored and silently redirected to the authenticated user: foreign targets keep

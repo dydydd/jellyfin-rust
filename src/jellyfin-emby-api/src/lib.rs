@@ -16,6 +16,7 @@ use jellyfin_api::AppState;
 use serde::Serialize;
 use tower::{ServiceExt, service_fn};
 
+mod alternate_sources;
 mod auth_user;
 mod backup;
 mod bif;
@@ -129,6 +130,7 @@ const DEDICATED_ROUTE_TEMPLATES: &[&str] = &[
     "/Videos/{item_id}/index.bif",
     "/Videos/{item_id}/Subtitles/{index}",
     "/Videos/{item_id}/Subtitles/{index}/Delete",
+    "/Videos/{item_id}/AlternateSources/Delete",
     "/VideoCodecs",
     "/Videos/{item_id}/live_subtitles.m3u8",
     "/Videos/{item_id}/subtitles.m3u8",
@@ -201,6 +203,7 @@ fn dedicated_routes() -> Router<Arc<AppState>> {
         .merge(jellyfin_api::emby_legacy_subtitle_delete_routes())
         .merge(jellyfin_api::emby_legacy_subtitle_hls_routes())
         .merge(auth_user::routes())
+        .merge(alternate_sources::routes())
         .merge(backup::routes())
         .merge(bif::routes())
         .merge(encoding::routes())

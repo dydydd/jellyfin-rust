@@ -96,7 +96,6 @@ POST /Sync/JobItems/{Id}/UnmarkForRemoval
 POST /Users/{Id}/RecentlySearched/Delete
 POST /Users/{Id}/Connect/Link
 DELETE /Users/{Id}/Connect/Link
-POST /Videos/{Id}/AlternateSources/Delete
 GET /GameGenres/{Name}/Images/{Type}/{Index}
 HEAD /GameGenres/{Name}/Images/{Type}/{Index}
 POST /Users/{Id}/Connect/Link/Delete

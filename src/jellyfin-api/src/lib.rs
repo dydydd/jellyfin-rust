@@ -1042,6 +1042,31 @@ impl AppState {
             .map_err(IntoResponse::into_response)
     }
 
+    /// Clears a video's real alternate-source relationships for an Emby
+    /// protocol adapter while retaining the shared elevated authorization and
+    /// typed-video not-found semantics.
+    #[allow(clippy::result_large_err)]
+    pub async fn delete_emby_alternate_sources_for_request(
+        &self,
+        headers: &HeaderMap,
+        uri: &Uri,
+        item_id: &str,
+    ) -> Result<(), Response> {
+        authentication::authenticated_identity(self, headers, Some(uri))
+            .await
+            .map_err(ApiError::from)
+            .map_err(IntoResponse::into_response)?
+            .require_administrator()
+            .map_err(IntoResponse::into_response)?;
+        let item_id =
+            Uuid::parse_str(item_id).map_err(|_| ApiError::InvalidRequest.into_response())?;
+        self.videos
+            .clear_alternate_sources(true, item_id)
+            .await
+            .map_err(ApiError::from)
+            .map_err(IntoResponse::into_response)
+    }
+
     /// Applies Emby's reversible continue-watching suppression flag while
     /// retaining the shared authentication, target-user, visibility, and
     /// user-data projection behavior.
