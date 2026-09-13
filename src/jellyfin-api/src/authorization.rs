@@ -317,6 +317,17 @@ fn route_policy(method: &Method, path: &str) -> RoutePolicy {
     {
         return RoutePolicy::Elevated;
     }
+    // Package update discovery is administrator-only in the generated Emby
+    // contract. Match both static segments case-insensitively because the
+    // protocol router normalizes dispatch without rewriting OriginalUri,
+    // which is the source used for authorization policy selection.
+    if is_emby_protocol
+        && matches!(segments.as_slice(), [packages, updates]
+            if packages.eq_ignore_ascii_case("Packages")
+                && updates.eq_ignore_ascii_case("Updates"))
+    {
+        return RoutePolicy::Elevated;
+    }
     // Emby's generated contract requires an authenticated user for discovery
     // and branding routes that Jellyfin deliberately exposes publicly. Keep
     // these overrides protocol-local so the root and `/api` trees retain
@@ -1021,7 +1032,14 @@ mod tests {
             );
         }
 
-        for route in ["/emby/Features", "/emby/features", "/emby/fEaTuReS"] {
+        for route in [
+            "/emby/Features",
+            "/emby/features",
+            "/emby/fEaTuReS",
+            "/emby/Packages/Updates",
+            "/emby/packages/updates",
+            "/emby/pAcKaGeS/uPdAtEs",
+        ] {
             assert_eq!(
                 route_policy(&Method::GET, route),
                 RoutePolicy::Elevated,

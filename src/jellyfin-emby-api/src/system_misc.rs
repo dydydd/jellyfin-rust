@@ -33,12 +33,8 @@ pub(crate) fn routes() -> Router<Arc<AppState>> {
             "/system/logs/{name}/lines",
             get(jellyfin_api::emby_log_file_lines),
         )
-        .route("/Packages/Updates", get(package_updates))
-        .route("/packages/updates", get(package_updates))
         .route("/Shows/Missing", get(shows_missing))
         .route("/shows/missing", get(shows_missing))
-        .route("/AudioBooks/NextUp", get(empty_items))
-        .route("/audiobooks/nextup", get(empty_items))
         .route("/StreamLanguages", get(stream_languages))
         .route("/streamlanguages", get(stream_languages))
         .route("/SubtitleCodecs", get(subtitle_codecs))
@@ -85,10 +81,6 @@ async fn release_note_versions() -> Json<Vec<PackageVersionInfo>> {
 struct QueryResult<T> {
     items: Vec<T>,
     total_record_count: usize,
-}
-
-async fn package_updates() -> Json<Vec<PackageVersionInfo>> {
-    Json(Vec::new())
 }
 
 async fn shows_missing(
@@ -186,13 +178,6 @@ const fn hex_value(byte: u8) -> Option<u8> {
     }
 }
 
-async fn empty_items() -> Json<QueryResult<()>> {
-    Json(QueryResult {
-        items: Vec::new(),
-        total_record_count: 0,
-    })
-}
-
 async fn stream_languages() -> Json<QueryResult<String>> {
     strings()
 }
@@ -234,9 +219,7 @@ mod tests {
             "/System/ReleaseNotes",
             "/System/ReleaseNotes/Versions",
             "/System/WakeOnLanInfo",
-            "/Packages/Updates",
             "/Shows/Missing",
-            "/AudioBooks/NextUp",
             "/StreamLanguages",
             "/SubtitleCodecs",
             "/VideoCodecs",

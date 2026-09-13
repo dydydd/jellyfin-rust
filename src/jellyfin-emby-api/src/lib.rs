@@ -17,6 +17,7 @@ use serde::Serialize;
 use tower::{ServiceExt, service_fn};
 
 mod alternate_sources;
+mod audiobooks;
 mod auth_user;
 mod backup;
 mod bif;
@@ -30,6 +31,7 @@ mod library;
 mod live_stream_media_info;
 mod metadata_reset;
 mod notifications;
+mod package_updates;
 mod packages;
 mod plugins;
 mod recent_searches;
@@ -372,6 +374,7 @@ fn dedicated_routes() -> Router<Arc<AppState>> {
         .merge(jellyfin_api::emby_game_routes())
         .merge(auth_user::routes())
         .merge(alternate_sources::routes())
+        .merge(audiobooks::routes())
         .merge(backup::routes())
         .merge(bif::routes())
         .merge(dlna::routes())
@@ -384,6 +387,7 @@ fn dedicated_routes() -> Router<Arc<AppState>> {
         .merge(live_stream_media_info::routes())
         .merge(metadata_reset::routes())
         .merge(notifications::routes())
+        .merge(package_updates::routes())
         .merge(packages::routes())
         .merge(plugins::routes())
         .merge(recent_searches::routes())

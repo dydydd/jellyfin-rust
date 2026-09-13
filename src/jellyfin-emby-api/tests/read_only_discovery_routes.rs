@@ -65,6 +65,7 @@ async fn exercise(database_name: &str) {
     assert_protocol_specific_authentication(&fixture).await;
     assert_sync_discovery(&fixture).await;
     assert_dlna_administrator_boundary(&fixture).await;
+    assert_package_updates_administrator_boundary(&fixture).await;
     assert_protocol_isolation(&fixture).await;
     database.close().await.expect("database pool cleanup");
 }
@@ -260,6 +261,38 @@ async fn assert_dlna_administrator_boundary(fixture: &Fixture) {
     }
 }
 
+async fn assert_package_updates_administrator_boundary(fixture: &Fixture) {
+    let path = "/emby/pAcKaGeS/uPdAtEs?pAcKaGeTyPe=System&PACKAGETYPE=UserInstalled";
+    assert_eq!(
+        request(&fixture.emby, path, None).await.status(),
+        StatusCode::UNAUTHORIZED,
+        "authorization must precede package query binding",
+    );
+    assert_eq!(
+        request(&fixture.emby, path, Some(&fixture.user_token))
+            .await
+            .status(),
+        StatusCode::FORBIDDEN,
+    );
+    for token in [&fixture.admin_token, &fixture.api_key_token] {
+        let response = request(&fixture.emby, path, Some(token)).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response_json(response).await, json!([]));
+    }
+
+    assert_eq!(
+        request(
+            &fixture.emby,
+            "/emby/Packages/Updates",
+            Some(&fixture.admin_token),
+        )
+        .await
+        .status(),
+        StatusCode::BAD_REQUEST,
+        "PackageType is required after administrator authorization",
+    );
+}
+
 async fn assert_protocol_isolation(fixture: &Fixture) {
     for path in [
         "/swagger",
@@ -274,6 +307,8 @@ async fn assert_protocol_isolation(fixture: &Fixture) {
         "/api/Sync/Items/Ready?TargetId=device",
         "/Dlna/ProfileInfos",
         "/api/Dlna/ProfileInfos",
+        "/Packages/Updates?PackageType=System",
+        "/api/Packages/Updates?PackageType=System",
     ] {
         assert_eq!(
             request(&fixture.jellyfin, path, Some(&fixture.admin_token))
