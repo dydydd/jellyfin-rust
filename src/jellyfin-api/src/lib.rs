@@ -347,6 +347,26 @@ pub struct EmbyItemAccessMutation {
     pub access_level: Option<i16>,
 }
 
+/// Protocol-neutral values used by Emby's legacy Person credits adapter.
+///
+/// The generated Emby response is owned by `jellyfin-emby-api`; this record
+/// only carries policy-filtered PostgreSQL values across the crate boundary.
+#[derive(Debug, Clone, PartialEq)]
+pub struct EmbyPersonCreditRecord {
+    pub name: Option<String>,
+    pub original_title: Option<String>,
+    pub provider_ids: HashMap<String, String>,
+    pub production_year: Option<i32>,
+    pub index_number: Option<i32>,
+    pub index_number_end: Option<i32>,
+    pub parent_index_number: Option<i32>,
+    pub premiere_date: Option<String>,
+    pub person_type: String,
+    pub role: Option<String>,
+    pub item_type: String,
+    pub overview: Option<String>,
+}
+
 /// Parsed fields for Emby's protocol-private shared-item leave mutation.
 #[derive(Debug)]
 pub struct EmbyLeaveSharedItemsMutation {

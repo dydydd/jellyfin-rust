@@ -3672,7 +3672,7 @@ fn metadata_value(data: Option<&Value>, keys: &[&str]) -> Option<Value> {
     keys.iter().find_map(|key| object.get(*key)).cloned()
 }
 
-fn metadata_string(data: Option<&Value>, keys: &[&str]) -> Option<String> {
+pub(crate) fn metadata_string(data: Option<&Value>, keys: &[&str]) -> Option<String> {
     metadata_value(data, keys).and_then(|value| value.as_str().map(str::to_owned))
 }
 
@@ -3788,7 +3788,7 @@ fn metadata_normalization_gain(data: Option<&Value>) -> Option<f32> {
     .filter(|value| value.is_finite())
 }
 
-fn metadata_i32(data: Option<&Value>, keys: &[&str]) -> Option<i32> {
+pub(crate) fn metadata_i32(data: Option<&Value>, keys: &[&str]) -> Option<i32> {
     metadata_value(data, keys)
         .and_then(|value| value.as_i64().and_then(|value| i32::try_from(value).ok()))
 }
@@ -3943,7 +3943,7 @@ fn metadata_enum_strings(data: Option<&Value>, keys: &[&str], variants: &[&str])
         .collect()
 }
 
-fn metadata_provider_ids(data: Option<&Value>) -> Option<HashMap<String, String>> {
+pub(crate) fn metadata_provider_ids(data: Option<&Value>) -> Option<HashMap<String, String>> {
     metadata_value(data, &["ProviderIds", "provider_ids"])
         .as_ref()
         .and_then(provider_ids_from_value)

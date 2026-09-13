@@ -33,6 +33,7 @@ mod metadata_reset;
 mod notifications;
 mod package_updates;
 mod packages;
+mod person_credits;
 mod plugins;
 mod recent_searches;
 mod section_items;
@@ -390,6 +391,7 @@ fn dedicated_routes() -> Router<Arc<AppState>> {
         .merge(notifications::routes())
         .merge(package_updates::routes())
         .merge(packages::routes())
+        .merge(person_credits::routes())
         .merge(plugins::routes())
         .merge(recent_searches::routes())
         .merge(section_items::routes())

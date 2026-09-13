@@ -49,6 +49,15 @@ pub struct PersonCredit {
     pub list_order: i32,
 }
 
+/// One persisted credit connecting a canonical public Person item to a base item.
+#[derive(Debug, Clone, PartialEq, Eq, FromQueryResult)]
+pub struct PersonItemCredit {
+    pub item_id: Uuid,
+    pub person_type: String,
+    pub role: String,
+    pub list_order: i32,
+}
+
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct PersonQuery {
     pub ids: Vec<Uuid>,
@@ -554,6 +563,48 @@ impl PersonRepository {
             .order_by_asc(base_item::Column::Id)
             .all(self.database.as_ref())
             .await?)
+    }
+
+    /// Loads the credits for one exact canonical Person item and a bounded item set.
+    ///
+    /// The public Person id is translated through its exact persisted name in
+    /// the same PostgreSQL statement that resolves the internal people row.
+    /// This keeps protocol-facing ids distinct from the internal credit key and
+    /// avoids a per-item relationship lookup after policy filtering.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error when the set-based lookup fails.
+    pub async fn credits_for_person_items(
+        &self,
+        canonical_person_id: Uuid,
+        item_ids: &[Uuid],
+    ) -> Result<Vec<PersonItemCredit>, PersonError> {
+        if item_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let item_ids = serde_json::json!(item_ids);
+        Ok(
+            PersonItemCredit::find_by_statement(Statement::from_sql_and_values(
+                DbBackend::Postgres,
+                "SELECT credit.item_id, credit.person_type, credit.role, credit.list_order \
+             FROM jellyfin.base_items AS public_person \
+             JOIN jellyfin.people AS person ON person.name = public_person.name \
+             JOIN jellyfin.people_base_item_map AS credit ON credit.person_id = person.id \
+             WHERE public_person.id = $1 \
+               AND public_person.item_type IN (\
+                   'Person', 'MediaBrowser.Controller.Entities.Person'\
+               ) \
+               AND credit.item_id IN (\
+                   SELECT value::uuid FROM jsonb_array_elements_text($2::jsonb)\
+               ) \
+             ORDER BY credit.item_id, credit.list_order, \
+                      lower(credit.person_type), lower(credit.role)",
+                [canonical_person_id.into(), item_ids.into()],
+            ))
+            .all(self.database.as_ref())
+            .await?,
+        )
     }
 
     /// Lists distinct people credited to filtered base items.

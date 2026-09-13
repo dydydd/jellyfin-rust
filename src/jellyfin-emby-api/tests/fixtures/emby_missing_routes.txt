@@ -33,7 +33,6 @@ GET /Dlna/Profiles/Default
 POST /Notifications/Services/Test
 GET /Notifications/Services/Defaults
 POST /Parties/{Id}/Join
-GET /Persons/{Id}/Credits
 POST /Sync/{ItemId}/Status
 GET /Sync/Jobs/{Id}
 POST /Sync/Jobs/{Id}

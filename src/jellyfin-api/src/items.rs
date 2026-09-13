@@ -20,7 +20,7 @@ use serde::{Deserialize, Serialize};
 use std::str::FromStr;
 use uuid::Uuid;
 
-use crate::{ApiError, AppState, authentication, user_library};
+use crate::{ApiError, AppState, EmbyPersonCreditRecord, authentication, user_library};
 
 const ITEM_TYPES: &[&str] = &[
     "AggregateFolder",
@@ -1333,6 +1333,145 @@ impl AppState {
             .query_item_facet(&target_user, target_user_id, database_query, facet)
             .await?)
     }
+
+    /// Resolves one Emby Person credit request against policy-visible items.
+    ///
+    /// The generated operation has no `UserId` query. Device authentication
+    /// therefore uses that session's user as the target, while an API key has
+    /// the same explicit user-less global semantics as shared Items queries.
+    /// The relationship lookup is one set-based query over the already
+    /// filtered item identifiers rather than one query per result.
+    pub async fn emby_person_credits_for_request(
+        &self,
+        headers: &HeaderMap,
+        uri: &Uri,
+        person_id: Uuid,
+    ) -> Result<Vec<EmbyPersonCreditRecord>, Response> {
+        self.emby_person_credits(headers, uri, person_id)
+            .await
+            .map_err(IntoResponse::into_response)
+    }
+
+    async fn emby_person_credits(
+        &self,
+        headers: &HeaderMap,
+        uri: &Uri,
+        person_id: Uuid,
+    ) -> Result<Vec<EmbyPersonCreditRecord>, ApiError> {
+        let identity = authentication::authenticated_identity(self, headers, Some(uri)).await?;
+        let person = self
+            .base_items
+            .get(person_id)
+            .await?
+            .filter(|item| {
+                ["Person", "MediaBrowser.Controller.Entities.Person"]
+                    .iter()
+                    .any(|kind| item.item_type.eq_ignore_ascii_case(kind))
+            })
+            .ok_or(ApiError::NotFound)?;
+        // An empty/missing exact name cannot map a public canonical item onto
+        // the private people credit key and is therefore not a valid Person.
+        let person_name = person
+            .name
+            .as_deref()
+            .filter(|name| !name.is_empty())
+            .ok_or(ApiError::NotFound)?;
+        let canonical_person = self
+            .persons
+            .image_item(person_name)
+            .await?
+            .filter(|canonical| canonical.id == person_id)
+            .ok_or(ApiError::NotFound)?;
+        debug_assert_eq!(canonical_person.id, person_id);
+
+        let query = BaseItemQuery {
+            person_ids: vec![person_id],
+            recursive: true,
+            ..BaseItemQuery::default()
+        };
+        let page = match identity {
+            authentication::AuthenticatedIdentity::Device(authenticated) => {
+                self.user_library
+                    .query_items(&authenticated.user, authenticated.user.id, query)
+                    .await?
+            }
+            authentication::AuthenticatedIdentity::ApiKey(_) => {
+                self.user_library.query_items_without_user(query).await?
+            }
+        };
+        let item_positions = page
+            .items
+            .iter()
+            .enumerate()
+            .map(|(position, item)| (item.id, position))
+            .collect::<HashMap<_, _>>();
+        let by_id = page
+            .items
+            .into_iter()
+            .map(|item| (item.id, item))
+            .collect::<HashMap<_, _>>();
+        let item_ids = by_id.keys().copied().collect::<Vec<_>>();
+        let mut credits = self
+            .people
+            .credits_for_person_items(person_id, &item_ids)
+            .await
+            // This lookup has no validation branch after the canonical Person
+            // and non-empty id set were established; its only possible error
+            // is PostgreSQL persistence failure.
+            .map_err(|_| ApiError::Internal)?;
+        credits.sort_by(|left, right| {
+            item_positions
+                .get(&left.item_id)
+                .cmp(&item_positions.get(&right.item_id))
+                .then_with(|| left.list_order.cmp(&right.list_order))
+                .then_with(|| {
+                    left.person_type
+                        .to_lowercase()
+                        .cmp(&right.person_type.to_lowercase())
+                })
+                .then_with(|| left.role.to_lowercase().cmp(&right.role.to_lowercase()))
+        });
+
+        Ok(credits
+            .into_iter()
+            .filter_map(|credit| {
+                let item = by_id.get(&credit.item_id)?;
+                Some(EmbyPersonCreditRecord {
+                    name: item.name.clone(),
+                    original_title: user_library::metadata_string(
+                        item.data.as_ref(),
+                        &["OriginalTitle", "original_title", "originalTitle"],
+                    ),
+                    provider_ids: user_library::metadata_provider_ids(item.data.as_ref())
+                        .unwrap_or_default(),
+                    production_year: item.production_year,
+                    index_number: item.index_number,
+                    index_number_end: user_library::metadata_i32(
+                        item.data.as_ref(),
+                        &["IndexNumberEnd", "index_number_end", "indexNumberEnd"],
+                    ),
+                    parent_index_number: item.parent_index_number,
+                    premiere_date: item.premiere_date.map(|date| date.to_rfc3339()),
+                    person_type: credit.person_type,
+                    role: (!credit.role.is_empty()).then_some(credit.role),
+                    item_type: canonical_item_type(&item.item_type),
+                    overview: item.overview.clone(),
+                })
+            })
+            .collect())
+    }
+}
+
+fn canonical_item_type(item_type: &str) -> String {
+    jellyfin_data::OFFICIAL_ITEM_TYPE_ALIASES
+        .iter()
+        .find(|(canonical, persisted)| {
+            item_type.eq_ignore_ascii_case(canonical) || item_type.eq_ignore_ascii_case(persisted)
+        })
+        .map_or_else(
+            || item_type.to_owned(),
+            |(canonical, _)| (*canonical).to_owned(),
+        )
 }
 
 async fn suggestions_for(

@@ -22,6 +22,7 @@ uuid.workspace = true
 jellyfin-controller = { path = "../jellyfin-controller" }
 jellyfin-data = { path = "../jellyfin-data" }
 jellyfin-server-implementations = { path = "../jellyfin-server-implementations" }
+md-5 = "0.10"
 sea-orm.workspace = true
 tokio.workspace = true
 
