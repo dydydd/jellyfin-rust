@@ -86,8 +86,9 @@ def check_date(value):
     # `datetime.fromisoformat` alone is too broad (it accepts date-only and
     # timezone-less values that the generated client's formatter rejects).
     if not re.fullmatch(
-            r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})",
-            value):
+        r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})",
+        value,
+    ):
         return False
     try:
         datetime.datetime.fromisoformat(value.replace("Z", "+00:00"))

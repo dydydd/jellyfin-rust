@@ -1679,6 +1679,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "jellyfin-emby-api"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "chrono",
+ "jellyfin-api",
+ "jellyfin-model",
+ "sea-orm",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tower",
+ "tower-http",
+ "uuid",
+]
+
+[[package]]
 name = "jellyfin-extensions"
 version = "0.1.0"
 dependencies = [
@@ -1800,6 +1817,7 @@ dependencies = [
  "jellyfin-api",
  "jellyfin-controller",
  "jellyfin-data",
+ "jellyfin-emby-api",
  "jellyfin-live-tv",
  "jellyfin-media-encoding",
  "jellyfin-model",

@@ -1053,6 +1053,28 @@ async fn live_stream_routes_open_postgres_media_sources_and_close_by_required_id
             .expect("other scoped item cleanup");
     }
 
+    let lowercase_body = body_json(
+        fixture
+            .post(
+                "/livestreams/open",
+                Some(&fixture.user_token),
+                Some(&json!({
+                    "itemid": fixture.item_id,
+                    "userid": fixture.user_id,
+                    "playsessionid": "lowercase-session",
+                    "opentoken": "lowercase-token"
+                })),
+            )
+            .await,
+    )
+    .await;
+    assert_live_stream(
+        &lowercase_body,
+        &fixture,
+        "lowercase-session",
+        "lowercase-token",
+    );
+
     let query_wins = body_json(
         fixture
             .post(

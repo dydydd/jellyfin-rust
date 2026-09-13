@@ -838,6 +838,20 @@ async fn artist_image_route_resolves_public_base_item_owner() {
         .unwrap();
     let decoded = image::load_from_memory(&bytes).unwrap();
     assert_eq!((decoded.width(), decoded.height()), (4, 2));
+    let default_route = format!(
+        "/Artists/{}/Images/Primary?tag=artist-tag&format=3",
+        encoded(&image_name)
+    );
+    let response = fixture
+        .request(Method::GET, &default_route, Credential::None)
+        .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers()[header::CONTENT_TYPE], "image/png");
+    let bytes = to_bytes(response.into_body(), MAX_RESPONSE_SIZE)
+        .await
+        .unwrap();
+    let decoded = image::load_from_memory(&bytes).unwrap();
+    assert_eq!((decoded.width(), decoded.height()), (4, 2));
     let head = fixture
         .request(Method::HEAD, &route, Credential::None)
         .await;

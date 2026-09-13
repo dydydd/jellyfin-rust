@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Focused regressions for the Kotlin serialization validator."""
+"""Focused regressions for the static Kotlin serialization validator."""
 
 import os
 import sys
@@ -80,6 +80,9 @@ class KotlinValidatorTests(unittest.TestCase):
         playback_stop["PositionTicks"] = 2 ** 63
         long_errors = validate("PlaybackStopInfo", playback_stop)
         self.assertTrue(any("signed 64-bit range" in error for error in long_errors))
+
+    def test_accepts_a_primitive_root_response(self):
+        self.assertEqual(validate("Boolean", True), [])
 
 
 if __name__ == "__main__":

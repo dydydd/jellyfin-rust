@@ -299,6 +299,12 @@ fn normalize_library_options(options: Value) -> Value {
             .find(|candidate| candidate.eq_ignore_ascii_case(name))
             .cloned()
             .unwrap_or_else(|| name.clone());
+        // Legacy rows may contain explicit nulls for constructor-backed
+        // properties. Keep the official non-null default in that case while
+        // still preserving null-valued extension properties verbatim.
+        if value.is_null() && normalized.contains_key(&canonical_name) {
+            continue;
+        }
         normalized.insert(canonical_name, value.clone());
     }
 
@@ -407,6 +413,62 @@ async fn canonicalize_path_info(
         ancestors,
         path_info,
     })
+}
+
+#[cfg(test)]
+mod library_options_tests {
+    use super::*;
+
+    #[test]
+    fn normalized_library_options_preserve_values_and_supply_sdk_defaults() {
+        let options = normalize_library_options(json!({
+            "Enabled": false,
+            "EnablePhotos": null,
+            "FutureOption": null
+        }));
+        assert_eq!(options["Enabled"], false);
+        assert_eq!(options["EnablePhotos"], true);
+        assert!(options["FutureOption"].is_null());
+        for key in [
+            "Enabled",
+            "EnablePhotos",
+            "EnableRealtimeMonitor",
+            "EnableLUFSScan",
+            "EnableChapterImageExtraction",
+            "ExtractChapterImagesDuringLibraryScan",
+            "EnableTrickplayImageExtraction",
+            "ExtractTrickplayImagesDuringLibraryScan",
+            "PathInfos",
+            "SaveLocalMetadata",
+            "EnableInternetProviders",
+            "EnableAutomaticSeriesGrouping",
+            "EnableEmbeddedTitles",
+            "EnableEmbeddedExtrasTitles",
+            "EnableEmbeddedEpisodeInfos",
+            "AutomaticRefreshIntervalDays",
+            "SeasonZeroDisplayName",
+            "DisabledLocalMetadataReaders",
+            "DisabledSubtitleFetchers",
+            "SubtitleFetcherOrder",
+            "DisabledMediaSegmentProviders",
+            "MediaSegmentProviderOrder",
+            "SkipSubtitlesIfEmbeddedSubtitlesPresent",
+            "SkipSubtitlesIfAudioTrackMatches",
+            "RequirePerfectSubtitleMatch",
+            "SaveSubtitlesWithMedia",
+            "DisabledLyricFetchers",
+            "LyricFetcherOrder",
+            "CustomTagDelimiters",
+            "DelimiterWhitelist",
+            "AutomaticallyAddToCollection",
+            "AllowEmbeddedSubtitles",
+            "TypeOptions",
+        ] {
+            assert!(!options[key].is_null(), "LibraryOptions.{key}");
+        }
+        assert_eq!(options["AllowEmbeddedSubtitles"], "AllowAll");
+        assert_eq!(options["TypeOptions"], json!([]));
+    }
 }
 
 async fn canonical_directory(path: &str) -> Result<String, VirtualFolderServiceError> {

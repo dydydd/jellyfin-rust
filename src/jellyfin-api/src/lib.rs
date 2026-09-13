@@ -3,7 +3,7 @@ use std::{collections::HashMap, path::PathBuf, sync::Arc};
 use axum::{
     Json, Router,
     extract::State,
-    http::StatusCode,
+    http::{HeaderMap, StatusCode, Uri},
     middleware,
     response::{IntoResponse, Response},
     routing::{delete, get, post},
@@ -42,7 +42,10 @@ use jellyfin_live_tv::{
     tuner_hosts::{TunerHostError, TunerHostManager},
 };
 use jellyfin_media_encoding::encoder::EncoderCapabilities;
-use jellyfin_model::{PublicSystemInfo, TranscodeReason, UserConfiguration, UserDto, UserPolicy};
+use jellyfin_model::{
+    DisplayPreferencesDto, FileSystemEntryInfo, PublicSystemInfo, SystemInfo, TranscodeReason,
+    UserConfiguration, UserDto, UserPolicy,
+};
 use jellyfin_networking::{NetworkConfiguration, NetworkManager};
 use jellyfin_server_implementations::{
     AuthenticationError, DefaultAuthenticationProvider, PersistedDtoImageProjectionService,
@@ -67,7 +70,7 @@ mod artists;
 mod audio;
 mod authentication;
 mod authorization;
-mod backup;
+pub mod backup;
 mod branding;
 mod channels;
 mod client_log;
@@ -129,6 +132,7 @@ mod years;
 
 pub use backup::restore_backup_at_startup;
 pub use branding::BrandingOptions;
+pub use system::emby_log_file_lines;
 
 /// Host lifecycle commands exposed by the system API.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -137,6 +141,20 @@ pub enum SystemCommand {
     Shutdown,
     /// Restart the server and restore the validated archive before serving requests.
     Restore(PathBuf),
+}
+
+/// Applies the shared route authorization policy to another protocol's route
+/// tree. Protocol crates can own their wire contracts without duplicating
+/// token, API-key, and user-policy checks.
+pub async fn protocol_route_auth(
+    State(state): State<Arc<AppState>>,
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    match authorization::require_route_auth(State(state), request, next).await {
+        Ok(response) => response,
+        Err(error) => error.into_response(),
+    }
 }
 
 #[derive(Clone)]
@@ -225,6 +243,56 @@ pub struct AppState {
 }
 
 impl AppState {
+    /// Returns the encoder snapshot captured during server startup.
+    ///
+    /// Protocol adapters use this rather than inventing a static codec list.
+    #[must_use]
+    pub fn encoder_codec_names(&self) -> (Vec<String>, Vec<String>) {
+        (
+            self.encoder_capabilities.encoders.clone(),
+            self.encoder_capabilities.decoders.clone(),
+        )
+    }
+
+    /// Executes a protocol adapter's directory request through the shared
+    /// Jellyfin environment service.
+    pub fn environment_directory_contents(
+        &self,
+        path: &str,
+        include_files: bool,
+        include_directories: bool,
+    ) -> Result<Vec<FileSystemEntryInfo>, Response> {
+        self.environment
+            .directory_contents(path, include_files, include_directories)
+            .map_err(ApiError::from)
+            .map_err(IntoResponse::into_response)
+    }
+
+    /// Returns the server's current filesystem roots for protocol adapters.
+    #[must_use]
+    pub fn environment_drives(&self) -> Vec<FileSystemEntryInfo> {
+        self.environment.drives()
+    }
+
+    /// Resolves a path through the shared platform-aware parent-path logic.
+    #[must_use]
+    pub fn environment_parent_path(&self, path: &str) -> Option<String> {
+        self.environment.parent_path(path)
+    }
+
+    /// Validates a protocol adapter's filesystem path request.
+    pub fn environment_validate_path(
+        &self,
+        path: Option<&str>,
+        is_file: Option<bool>,
+        validate_writable: bool,
+    ) -> Result<(), Response> {
+        self.environment
+            .validate_path(path, is_file, validate_writable)
+            .map_err(ApiError::from)
+            .map_err(IntoResponse::into_response)
+    }
+
     #[allow(clippy::too_many_lines)]
     pub fn new(
         database: impl Into<jellyfin_data::SharedDatabase>,
@@ -854,19 +922,190 @@ impl AppState {
     pub(crate) fn server_id(&self) -> &str {
         self.system_info.id.as_deref().unwrap_or_default()
     }
+
+    /// Loads public server state for protocol-specific API projections.
+    pub async fn public_system_info(&self) -> Result<PublicSystemInfo, StatusCode> {
+        system::public_system_info(self)
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+    }
+
+    /// Loads authorized server state for protocol-specific API projections.
+    pub async fn system_info(
+        &self,
+        headers: &HeaderMap,
+        uri: &Uri,
+    ) -> Result<SystemInfo, Response> {
+        system::system_info(self, headers, uri)
+            .await
+            .map_err(IntoResponse::into_response)
+    }
+
+    /// Loads branding state for protocol-specific API projections.
+    pub async fn branding_options(&self) -> Result<BrandingOptions, StatusCode> {
+        branding::branding_options(self)
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+    }
+
+    /// Loads display preferences for a protocol-specific wire projection.
+    pub async fn display_preferences_for_request(
+        &self,
+        headers: &HeaderMap,
+        uri: &Uri,
+        display_preferences_id: &str,
+        user_id: Option<&str>,
+        item_id: Option<&str>,
+        client: Option<String>,
+    ) -> Result<DisplayPreferencesDto, Response> {
+        let user_id = parse_optional_uuid(user_id)?;
+        let item_id = parse_optional_uuid(item_id)?;
+        display_preferences::get_for_request(
+            self,
+            headers,
+            uri,
+            display_preferences_id,
+            user_id,
+            item_id,
+            client,
+        )
+        .await
+        .map_err(IntoResponse::into_response)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    /// Saves display preferences submitted through a protocol-specific DTO.
+    pub async fn update_display_preferences_for_request(
+        &self,
+        headers: &HeaderMap,
+        uri: &Uri,
+        display_preferences_id: &str,
+        user_id: Option<&str>,
+        item_id: Option<&str>,
+        client: Option<String>,
+        preferences: DisplayPreferencesDto,
+    ) -> Result<StatusCode, Response> {
+        let user_id = parse_optional_uuid(user_id)?;
+        let item_id = parse_optional_uuid(item_id)?;
+        display_preferences::update_for_request(
+            self,
+            headers,
+            uri,
+            display_preferences_id,
+            user_id,
+            item_id,
+            client,
+            preferences,
+        )
+        .await
+        .map_err(IntoResponse::into_response)
+    }
+
+    /// Returns user DTOs for protocol adapters that expose Emby's paged user
+    /// queries.  Keep the database lookup and image-tag projection batched.
+    pub async fn emby_users(
+        &self,
+        is_hidden: Option<bool>,
+        is_disabled: Option<bool>,
+    ) -> Result<Vec<UserDto>, Response> {
+        let users = self
+            .users
+            .list_filtered(is_hidden, is_disabled)
+            .await
+            .map_err(ApiError::from)
+            .map_err(IntoResponse::into_response)?;
+        for user in &users {
+            authentication::stored_user_policy(user)
+                .map_err(ApiError::from)
+                .map_err(IntoResponse::into_response)?;
+        }
+        users_to_dtos_with_server_id(self, users)
+            .await
+            .map_err(IntoResponse::into_response)
+    }
+
+    /// Enforces Emby's administrator-only user query boundary after the
+    /// shared protocol middleware has authenticated the request.
+    pub async fn require_emby_administrator(
+        &self,
+        headers: &HeaderMap,
+        uri: &Uri,
+    ) -> Result<(), Response> {
+        authentication::authenticated_identity(self, headers, Some(uri))
+            .await
+            .map_err(ApiError::from)
+            .map_err(IntoResponse::into_response)?
+            .require_administrator()
+            .map_err(ApiError::from)
+            .map_err(IntoResponse::into_response)
+    }
+
+    /// Snapshot plugin/package data for the Emby protocol adapter.
+    pub fn emby_plugins(&self) -> Vec<jellyfin_model::PluginInfo> {
+        self.plugins.plugins()
+    }
+
+    pub fn emby_plugin_image(
+        &self,
+        plugin_id: uuid::Uuid,
+    ) -> Option<jellyfin_controller::PluginImage> {
+        self.plugins.image_for_plugin(plugin_id)
+    }
+
+    pub fn emby_plugin_configuration(
+        &self,
+        plugin_id: uuid::Uuid,
+    ) -> Result<Option<serde_json::Value>, jellyfin_controller::PluginRegistryError> {
+        self.plugins.configuration(plugin_id)
+    }
+
+    pub fn emby_packages(&self) -> std::sync::Arc<[std::sync::Arc<jellyfin_model::PackageInfo>]> {
+        self.packages.list()
+    }
+
+    pub fn emby_package(
+        &self,
+        name: &str,
+        assembly_guid: Option<uuid::Uuid>,
+    ) -> Result<std::sync::Arc<jellyfin_model::PackageInfo>, jellyfin_controller::PackageError>
+    {
+        self.packages.get(name, assembly_guid)
+    }
+
+    pub async fn require_emby_user(&self, headers: &HeaderMap, uri: &Uri) -> Result<(), Response> {
+        authentication::authenticated_identity(self, headers, Some(uri))
+            .await
+            .map(|_| ())
+            .map_err(ApiError::from)
+            .map_err(IntoResponse::into_response)
+    }
+}
+
+fn parse_optional_uuid(value: Option<&str>) -> Result<Option<Uuid>, Response> {
+    value
+        .filter(|value| !value.is_empty())
+        .map(Uuid::parse_str)
+        .transpose()
+        .map_err(|_| StatusCode::BAD_REQUEST.into_response())
 }
 
 #[allow(clippy::too_many_lines)]
 #[allow(clippy::needless_pass_by_value)]
 pub fn router(state: AppState) -> Router {
+    let base = unprefixed_router(state);
+
+    Router::new().nest("/api", base.clone()).merge(base)
+}
+
+/// Builds only Jellyfin's unprefixed routes so another protocol crate can
+/// reuse the business handlers without inheriting Jellyfin's route prefixes.
+#[allow(clippy::too_many_lines)]
+#[allow(clippy::needless_pass_by_value)]
+pub fn unprefixed_router(state: AppState) -> Router {
     let state = Arc::new(state);
     let base = base_router(Arc::clone(&state));
 
-    Router::new()
-        .nest("/api", base.clone())
-        .nest("/emby", base.clone())
-        .merge(base)
-        .with_state(state)
+    base.with_state(state)
 }
 
 #[allow(clippy::too_many_lines)]
@@ -929,8 +1168,16 @@ fn base_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
             get(artists::get_image),
         )
         .route(
+            "/Artists/{name}/Images/{image_type}",
+            get(artists::get_image_default),
+        )
+        .route(
             "/artists/{name}/images/{image_type}/{image_index}",
             get(artists::get_image),
+        )
+        .route(
+            "/artists/{name}/images/{image_type}",
+            get(artists::get_image_default),
         )
         .route("/Search/Hints", get(search::hints))
         .route("/search/hints", get(search::hints))
@@ -957,6 +1204,14 @@ fn base_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
                 .delete(item_images::delete),
         )
         .route(
+            "/Items/{item_id}/Images/{image_type}/Delete",
+            post(item_images::delete),
+        )
+        .route(
+            "/items/{item_id}/images/{image_type}/delete",
+            post(item_images::delete),
+        )
+        .route(
             "/Items/{item_id}/Images/{image_type}/{image_index}",
             get(item_images::get_by_index)
                 .post(item_images::upload_by_index)
@@ -967,6 +1222,22 @@ fn base_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
             get(item_images::get_by_index)
                 .post(item_images::upload_by_index)
                 .delete(item_images::delete_by_index),
+        )
+        .route(
+            "/Items/{item_id}/Images/{image_type}/{image_index}/Delete",
+            post(item_images::delete_by_index),
+        )
+        .route(
+            "/items/{item_id}/images/{image_type}/{image_index}/delete",
+            post(item_images::delete_by_index),
+        )
+        .route(
+            "/Items/{item_id}/Images/{image_type}/{image_index}/Url",
+            post(item_images::upload_url),
+        )
+        .route(
+            "/items/{item_id}/images/{image_type}/{image_index}/url",
+            post(item_images::upload_url),
         )
         .route(
             "/Items/{item_id}/Images/{image_type}/{image_index}/Index",
@@ -984,8 +1255,42 @@ fn base_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
             "/items/{item_id}/images/{image_type}/{image_index}/{tag}/{format}/{max_width}/{max_height}/{percent_played}/{unplayed_count}",
             get(item_images::get_legacy_path),
         )
+        .route(
+            "/Items/{item_id}/Subtitles/{index}",
+            axum::routing::delete(subtitles::delete_subtitle),
+        )
+        .route(
+            "/items/{item_id}/subtitles/{index}",
+            axum::routing::delete(subtitles::delete_subtitle),
+        )
+        .route(
+            "/Items/{item_id}/Subtitles/{index}/Delete",
+            post(subtitles::delete_subtitle),
+        )
+        .route(
+            "/items/{item_id}/subtitles/{index}/delete",
+            post(subtitles::delete_subtitle),
+        )
+        .route(
+            "/Items/{item_id}/{media_source_id}/Subtitles/{index}/Stream.{format}",
+            get(subtitles::get_subtitle),
+        )
+        .route(
+            "/items/{item_id}/{media_source_id}/subtitles/{index}/stream.{format}",
+            get(subtitles::get_subtitle),
+        )
+        .route(
+            "/Items/{item_id}/{media_source_id}/Subtitles/{index}/{start_position_ticks}/Stream.{format}",
+            get(subtitles::get_subtitle_with_ticks),
+        )
+        .route(
+            "/items/{item_id}/{media_source_id}/subtitles/{index}/{start_position_ticks}/stream.{format}",
+            get(subtitles::get_subtitle_with_ticks),
+        )
         .route("/Items/{item_id}/RemoteImages", get(remote_images::images))
         .route("/items/{item_id}/remoteimages", get(remote_images::images))
+        .route("/Images/Remote", get(remote_images::fetch))
+        .route("/images/remote", get(remote_images::fetch))
         .route(
             "/Items/{item_id}/RemoteImages/Providers",
             get(remote_images::providers),
@@ -1010,6 +1315,8 @@ fn base_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
             "/system/configuration",
             get(configuration::get).post(configuration::update),
         )
+        .route("/System/Configuration/Partial", post(configuration::partial))
+        .route("/system/configuration/partial", post(configuration::partial))
         .route(
             "/System/Configuration/MetadataOptions/Default",
             get(configuration::default_metadata_options),
@@ -1035,8 +1342,13 @@ fn base_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
             get(configuration::get_named).post(configuration::update_named),
         )
         .route("/web/ConfigurationPage", get(dashboard::configuration_page))
+        .route("/web/configurationpage", get(dashboard::configuration_page))
         .route(
             "/web/ConfigurationPages",
+            get(dashboard::configuration_pages),
+        )
+        .route(
+            "/web/configurationpages",
             get(dashboard::configuration_pages),
         )
         .route("/Playback/BitrateTest", get(media_info::bitrate_test))
@@ -1093,8 +1405,16 @@ fn base_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
             get(audio::stream_with_container).head(audio::stream_with_container),
         )
         .route(
+            "/Audio/{item_id}/{stream_file_name}",
+            get(audio::stream_with_file_name).head(audio::stream_with_file_name),
+        )
+        .route(
             "/Audio/{item_id}/universal",
             get(audio::universal).head(audio::universal),
+        )
+        .route(
+            "/Audio/{item_id}/universal.{container}",
+            get(audio::universal_with_container).head(audio::universal_with_container),
         )
         // ASP.NET routing is case-insensitive and Jellyfin-generated playback
         // URLs use lowercase collection segments. Keep lowercase aliases for
@@ -1124,8 +1444,16 @@ fn base_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
             get(audio::stream_with_container).head(audio::stream_with_container),
         )
         .route(
+            "/audio/{item_id}/{stream_file_name}",
+            get(audio::stream_with_file_name).head(audio::stream_with_file_name),
+        )
+        .route(
             "/audio/{item_id}/universal",
             get(audio::universal).head(audio::universal),
+        )
+        .route(
+            "/audio/{item_id}/universal.{container}",
+            get(audio::universal_with_container).head(audio::universal_with_container),
         )
         .route(
             "/Videos/{item_id}/hls/{*legacy_path}",
@@ -1152,6 +1480,10 @@ fn base_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
             axum::routing::delete(hls_segment::stop_active_encoding),
         )
         .route(
+            "/Videos/ActiveEncodings/Delete",
+            post(hls_segment::stop_active_encoding),
+        )
+        .route(
             "/videos/ActiveEncodings",
             axum::routing::delete(hls_segment::stop_active_encoding),
         )
@@ -1160,12 +1492,20 @@ fn base_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
             axum::routing::delete(hls_segment::stop_active_encoding),
         )
         .route(
+            "/videos/activeencodings/delete",
+            post(hls_segment::stop_active_encoding),
+        )
+        .route(
             "/Videos/{item_id}/stream",
             get(videos::stream).head(videos::stream),
         )
         .route(
             "/Videos/{item_id}/stream.{container}",
             get(videos::stream_with_container).head(videos::stream_with_container),
+        )
+        .route(
+            "/Videos/{item_id}/{stream_file_name}",
+            get(videos::stream_with_file_name).head(videos::stream_with_file_name),
         )
         .route(
             "/videos/{item_id}/hls/{*legacy_path}",
@@ -1195,9 +1535,18 @@ fn base_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
             "/videos/{item_id}/stream.{container}",
             get(videos::stream_with_container).head(videos::stream_with_container),
         )
+        .route(
+            "/videos/{item_id}/{stream_file_name}",
+            get(videos::stream_with_file_name).head(videos::stream_with_file_name),
+        )
         .route("/Plugins", get(plugins::list))
+        .route("/plugins", get(plugins::list))
         .route(
             "/Plugins/{plugin_id}/{version}/Enable",
+            post(plugins::enable),
+        )
+        .route(
+            "/plugins/{plugin_id}/{version}/enable",
             post(plugins::enable),
         )
         .route(
@@ -1205,17 +1554,35 @@ fn base_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
             post(plugins::disable),
         )
         .route(
+            "/plugins/{plugin_id}/{version}/disable",
+            post(plugins::disable),
+        )
+        .route(
             "/Plugins/{plugin_id}/{version}",
             delete(plugins::uninstall_version),
         )
+        .route(
+            "/plugins/{plugin_id}/{version}",
+            delete(plugins::uninstall_version),
+        )
         .route("/Plugins/{plugin_id}", delete(plugins::uninstall))
+        .route("/plugins/{plugin_id}", delete(plugins::uninstall))
+        .route("/Plugins/{plugin_id}/Delete", post(plugins::uninstall))
+        .route("/plugins/{plugin_id}/delete", post(plugins::uninstall))
         .route(
             "/Plugins/{plugin_id}/Configuration",
             get(plugins::get_configuration).post(plugins::update_configuration),
         )
+        .route(
+            "/plugins/{plugin_id}/configuration",
+            get(plugins::get_configuration).post(plugins::update_configuration),
+        )
         .route("/Plugins/{plugin_id}/Manifest", post(plugins::manifest))
+        .route("/plugins/{plugin_id}/manifest", post(plugins::manifest))
         .route("/Plugins/{plugin_id}/{version}/Image", get(plugins::image))
         .route("/plugins/{plugin_id}/{version}/image", get(plugins::image))
+        .route("/Plugins/{plugin_id}/Thumb", get(plugins::thumb))
+        .route("/plugins/{plugin_id}/thumb", get(plugins::thumb))
         .merge(package_routes())
         .merge(environment_routes())
         .merge(localization_routes())
@@ -1387,7 +1754,17 @@ fn base_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
                 .delete(virtual_folders::delete),
         )
         .route(
+            "/library/virtualfolders",
+            get(virtual_folders::list)
+                .post(virtual_folders::create)
+                .delete(virtual_folders::delete),
+        )
+        .route(
             "/Library/VirtualFolders/Name",
+            post(virtual_folders::rename),
+        )
+        .route(
+            "/library/virtualfolders/name",
             post(virtual_folders::rename),
         )
         .route(
@@ -1395,30 +1772,44 @@ fn base_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
             post(virtual_folders::add_path).delete(virtual_folders::remove_path),
         )
         .route(
-            "/Library/VirtualFolders/Paths/Update",
-            post(virtual_folders::update_path),
-        )
-        .route(
-            "/Library/VirtualFolders/LibraryOptions",
-            post(virtual_folders::update_options),
-        )
-        .route(
-            "/library/virtualfolders",
-            get(virtual_folders::list)
-                .post(virtual_folders::create)
-                .delete(virtual_folders::delete),
-        )
-        .route(
-            "/library/virtualfolders/name",
-            post(virtual_folders::rename),
-        )
-        .route(
             "/library/virtualfolders/paths",
             post(virtual_folders::add_path).delete(virtual_folders::remove_path),
         )
         .route(
+            "/Library/VirtualFolders/Paths/Update",
+            post(virtual_folders::update_path),
+        )
+        .route(
             "/library/virtualfolders/paths/update",
             post(virtual_folders::update_path),
+        )
+        .route(
+            "/Library/VirtualFolders/Query",
+            get(virtual_folders::query),
+        )
+        .route(
+            "/library/virtualfolders/query",
+            get(virtual_folders::query),
+        )
+        .route(
+            "/Library/VirtualFolders/Delete",
+            post(virtual_folders::delete_legacy),
+        )
+        .route(
+            "/library/virtualfolders/delete",
+            post(virtual_folders::delete_legacy),
+        )
+        .route(
+            "/Library/VirtualFolders/Paths/Delete",
+            post(virtual_folders::remove_path_legacy),
+        )
+        .route(
+            "/library/virtualfolders/paths/delete",
+            post(virtual_folders::remove_path_legacy),
+        )
+        .route(
+            "/Library/VirtualFolders/LibraryOptions",
+            post(virtual_folders::update_options),
         )
         .route(
             "/library/virtualfolders/libraryoptions",
@@ -1445,8 +1836,12 @@ fn system_routes() -> Router<Arc<AppState>> {
         .route("/system/activitylog/entries", get(activity_log::entries))
         .route("/System/Logs", get(system::get_logs))
         .route("/system/logs", get(system::get_logs))
+        .route("/System/Logs/Query", get(system::query_logs))
+        .route("/system/logs/query", get(system::query_logs))
         .route("/System/Logs/Log", get(system::get_log_file))
         .route("/system/logs/log", get(system::get_log_file))
+        .route("/System/Logs/{name}", get(system::get_log_file_by_name))
+        .route("/system/logs/{name}", get(system::get_log_file_by_name))
         .route("/System/Info", get(system::info))
         .route("/system/info", get(system::info))
         .route("/System/Info/Storage", get(system::storage))
@@ -1474,6 +1869,14 @@ fn system_routes() -> Router<Arc<AppState>> {
         .route(
             "/scheduledtasks/running/{task_id}",
             post(scheduled_tasks::start).delete(scheduled_tasks::stop),
+        )
+        .route(
+            "/ScheduledTasks/Running/{task_id}/Delete",
+            post(scheduled_tasks::stop),
+        )
+        .route(
+            "/scheduledtasks/running/{task_id}/delete",
+            post(scheduled_tasks::stop),
         )
         .route(
             "/ScheduledTasks/{task_id}/Triggers",
@@ -1632,20 +2035,47 @@ fn api_key_routes() -> Router<Arc<AppState>> {
         .route("/Auth/Keys", get(api_keys::list).post(api_keys::create))
         .route("/auth/keys", get(api_keys::list).post(api_keys::create))
         .route("/Auth/Keys/{key}", axum::routing::delete(api_keys::revoke))
+        .route(
+            "/Auth/Keys/{key}/Delete",
+            post(api_keys::revoke).delete(api_keys::revoke),
+        )
         .route("/auth/keys/{key}", axum::routing::delete(api_keys::revoke))
+        .route(
+            "/auth/keys/{key}/delete",
+            post(api_keys::revoke).delete(api_keys::revoke),
+        )
 }
 
 fn package_routes() -> Router<Arc<AppState>> {
     Router::new()
         .route("/Packages", get(packages::list))
+        .route("/packages", get(packages::list))
         .route("/Packages/Installed/{name}", post(packages::install))
+        .route("/packages/installed/{name}", post(packages::install))
         .route(
             "/Packages/Installing/{package_id}",
             axum::routing::delete(packages::cancel_installation),
         )
+        .route(
+            "/packages/installing/{package_id}",
+            axum::routing::delete(packages::cancel_installation),
+        )
+        .route(
+            "/Packages/Installing/{package_id}/Delete",
+            post(packages::cancel_installation),
+        )
+        .route(
+            "/packages/installing/{package_id}/delete",
+            post(packages::cancel_installation),
+        )
         .route("/Packages/{name}", get(packages::get))
+        .route("/packages/{name}", get(packages::get))
         .route(
             "/Repositories",
+            get(packages::repositories).post(packages::set_repositories),
+        )
+        .route(
+            "/repositories",
             get(packages::repositories).post(packages::set_repositories),
         )
 }
@@ -1656,23 +2086,23 @@ fn startup_routes() -> Router<Arc<AppState>> {
             "/Startup/Configuration",
             get(startup::get_configuration).post(startup::update_configuration),
         )
-        .route("/Startup/RemoteAccess", post(startup::update_remote_access))
-        .route(
-            "/Startup/User",
-            get(startup::get_user).post(startup::update_user),
-        )
-        .route("/Startup/FirstUser", get(startup::get_user))
-        .route("/Startup/Complete", post(startup::complete))
         .route(
             "/startup/configuration",
             get(startup::get_configuration).post(startup::update_configuration),
         )
+        .route("/Startup/RemoteAccess", post(startup::update_remote_access))
         .route("/startup/remoteaccess", post(startup::update_remote_access))
+        .route(
+            "/Startup/User",
+            get(startup::get_user).post(startup::update_user),
+        )
         .route(
             "/startup/user",
             get(startup::get_user).post(startup::update_user),
         )
+        .route("/Startup/FirstUser", get(startup::get_user))
         .route("/startup/firstuser", get(startup::get_user))
+        .route("/Startup/Complete", post(startup::complete))
         .route("/startup/complete", post(startup::complete))
 }
 
@@ -1695,7 +2125,15 @@ fn authentication_routes() -> Router<Arc<AppState>> {
             post(authentication::authenticate_with_quick_connect),
         )
         .route(
+            "/users/authenticatewithquickconnect",
+            post(authentication::authenticate_with_quick_connect),
+        )
+        .route(
             "/Users/{user_id}/Authenticate",
+            post(authentication::authenticate),
+        )
+        .route(
+            "/users/{user_id}/authenticate",
             post(authentication::authenticate),
         )
         .route("/Users/Me", get(authentication::current_user))
@@ -1705,15 +2143,21 @@ fn authentication_routes() -> Router<Arc<AppState>> {
 fn quick_connect_routes() -> Router<Arc<AppState>> {
     Router::new()
         .route("/QuickConnect/Enabled", get(quick_connect::enabled))
+        .route("/quickconnect/enabled", get(quick_connect::enabled))
         .route("/QuickConnect/Initiate", post(quick_connect::initiate))
+        .route("/quickconnect/initiate", post(quick_connect::initiate))
         .route("/QuickConnect/Connect", get(quick_connect::connect))
+        .route("/quickconnect/connect", get(quick_connect::connect))
         .route("/QuickConnect/Authorize", post(quick_connect::authorize))
+        .route("/quickconnect/authorize", post(quick_connect::authorize))
 }
 
 fn device_routes() -> Router<Arc<AppState>> {
     Router::new()
         .route("/Devices", get(devices::list).delete(devices::delete))
         .route("/devices", get(devices::list).delete(devices::delete))
+        .route("/Devices/Delete", post(devices::delete))
+        .route("/devices/delete", post(devices::delete))
         .route("/Devices/Info", get(devices::info))
         .route("/devices/info", get(devices::info))
         .route(
@@ -1782,6 +2226,8 @@ fn user_routes() -> Router<Arc<AppState>> {
                 .post(users::update_legacy)
                 .delete(users::delete),
         )
+        .route("/Users/{id}/Delete", post(users::delete))
+        .route("/users/{id}/delete", post(users::delete))
         .route("/User/{id}", axum::routing::delete(users::delete))
         .route("/Users/Password", post(users::update_password_query))
         .route("/users/password", post(users::update_password_query))
@@ -1794,10 +2240,22 @@ fn user_routes() -> Router<Arc<AppState>> {
             post(users::update_configuration_legacy),
         )
         .route(
+            "/Users/{id}/Configuration/Partial",
+            post(users::update_configuration_partial),
+        )
+        .route(
+            "/users/{id}/configuration/partial",
+            post(users::update_configuration_partial),
+        )
+        .route(
             "/Users/{id}/Images/{image_type}",
             get(users::get_user_image_legacy)
                 .post(users::post_user_image_legacy)
                 .delete(users::delete_user_image_legacy),
+        )
+        .route(
+            "/Users/{id}/Images/{image_type}/Delete",
+            post(users::delete_user_image_legacy),
         )
         .route(
             "/users/{id}/images/{image_type}",
@@ -1806,16 +2264,28 @@ fn user_routes() -> Router<Arc<AppState>> {
                 .delete(users::delete_user_image_legacy),
         )
         .route(
+            "/users/{id}/images/{image_type}/delete",
+            post(users::delete_user_image_legacy),
+        )
+        .route(
             "/Users/{id}/Images/{image_type}/{index}",
             get(users::get_user_image_index_legacy)
                 .post(users::post_user_image_index_legacy)
                 .delete(users::delete_user_image_index_legacy),
         )
         .route(
+            "/Users/{id}/Images/{image_type}/{index}/Delete",
+            post(users::delete_user_image_index_legacy),
+        )
+        .route(
             "/users/{id}/images/{image_type}/{index}",
             get(users::get_user_image_index_legacy)
                 .post(users::post_user_image_index_legacy)
                 .delete(users::delete_user_image_index_legacy),
+        )
+        .route(
+            "/users/{id}/images/{image_type}/{index}/delete",
+            post(users::delete_user_image_index_legacy),
         )
         .route("/Users/{id}/Password", post(users::update_password))
         .route("/users/{id}/password", post(users::update_password))
@@ -1841,12 +2311,18 @@ fn user_view_routes() -> Router<Arc<AppState>> {
             "/Users/{user_id}/GroupingOptions",
             get(user_views::grouping_options_legacy),
         )
+        .route(
+            "/users/{user_id}/groupingoptions",
+            get(user_views::grouping_options_legacy),
+        )
 }
 
 fn session_routes() -> Router<Arc<AppState>> {
     Router::new()
         .route("/Sessions", get(session::list))
         .route("/sessions", get(session::list))
+        .route("/Sessions/PlayQueue", get(session::play_queue))
+        .route("/sessions/playqueue", get(session::play_queue))
         .route(
             "/Sessions/{session_id}/System/{command}",
             post(session::send_system_command),
@@ -1908,8 +2384,24 @@ fn session_routes() -> Router<Arc<AppState>> {
             post(session::add_user_to_session).delete(session::remove_user_from_session),
         )
         .route(
+            "/Sessions/{session_id}/Users/{user_id}",
+            post(session::add_user_to_session).delete(session::remove_user_from_session),
+        )
+        .route(
             "/sessions/{session_id}/user/{user_id}",
             post(session::add_user_to_session).delete(session::remove_user_from_session),
+        )
+        .route(
+            "/sessions/{session_id}/users/{user_id}",
+            post(session::add_user_to_session).delete(session::remove_user_from_session),
+        )
+        .route(
+            "/Sessions/{session_id}/Users/{user_id}/Delete",
+            post(session::remove_user_from_session),
+        )
+        .route(
+            "/sessions/{session_id}/users/{user_id}/delete",
+            post(session::remove_user_from_session),
         )
         .route("/Sessions/Viewing", post(session::report_viewing))
         .route("/sessions/viewing", post(session::report_viewing))
@@ -2016,8 +2508,24 @@ fn playstate_routes() -> Router<Arc<AppState>> {
             post(playstate::mark_played).delete(playstate::mark_unplayed),
         )
         .route(
+            "/Users/{user_id}/PlayedItems/{item_id}/Delete",
+            post(playstate::mark_unplayed),
+        )
+        .route(
             "/users/{user_id}/playeditems/{item_id}",
             post(playstate::mark_played).delete(playstate::mark_unplayed),
+        )
+        .route(
+            "/users/{user_id}/playeditems/{item_id}/delete",
+            post(playstate::mark_unplayed),
+        )
+        .route(
+            "/Users/{user_id}/PlayingItems/{item_id}/Delete",
+            post(playstate::report_playback_stopped_legacy_for_user),
+        )
+        .route(
+            "/users/{user_id}/playingitems/{item_id}/delete",
+            post(playstate::report_playback_stopped_legacy_for_user),
         )
 }
 
@@ -2056,6 +2564,14 @@ fn user_data_routes() -> Router<Arc<AppState>> {
             post(user_data::mark_favorite_legacy).delete(user_data::unmark_favorite_legacy),
         )
         .route(
+            "/Users/{user_id}/FavoriteItems/{item_id}/Delete",
+            post(user_data::unmark_favorite_legacy),
+        )
+        .route(
+            "/users/{user_id}/favoriteitems/{item_id}/delete",
+            post(user_data::unmark_favorite_legacy),
+        )
+        .route(
             "/UserItems/{item_id}/Rating",
             post(user_data::set_rating_modern).delete(user_data::delete_rating_modern),
         )
@@ -2071,12 +2587,22 @@ fn user_data_routes() -> Router<Arc<AppState>> {
             "/users/{user_id}/items/{item_id}/rating",
             post(user_data::set_rating_legacy).delete(user_data::delete_rating_legacy),
         )
+        .route(
+            "/Users/{user_id}/Items/{item_id}/Rating/Delete",
+            post(user_data::delete_rating_legacy),
+        )
+        .route(
+            "/users/{user_id}/items/{item_id}/rating/delete",
+            post(user_data::delete_rating_legacy),
+        )
 }
 
 fn item_query_routes() -> Router<Arc<AppState>> {
     Router::new()
         .route("/Items", get(items::get).delete(library::delete_items))
         .route("/items", get(items::get).delete(library::delete_items))
+        .route("/Items/Delete", post(library::delete_items))
+        .route("/items/delete", post(library::delete_items))
         .route("/Items/Suggestions", get(items::suggestions))
         .route("/items/suggestions", get(items::suggestions))
         .route("/Items/Latest", get(items::latest))
@@ -2112,8 +2638,16 @@ fn collection_routes() -> Router<Arc<AppState>> {
             post(collections::add_items).delete(collections::remove_items),
         )
         .route(
+            "/Collections/{collection_id}/Items/Delete",
+            post(collections::remove_items),
+        )
+        .route(
             "/collections/{collection_id}/items",
             post(collections::add_items).delete(collections::remove_items),
+        )
+        .route(
+            "/collections/{collection_id}/items/delete",
+            post(collections::remove_items),
         )
         .route("/Playlists", post(playlists::create))
         .route("/playlists", post(playlists::create))
@@ -2146,10 +2680,26 @@ fn collection_routes() -> Router<Arc<AppState>> {
                 .delete(playlists::remove_items),
         )
         .route(
+            "/Playlists/{playlist_id}/Items/Delete",
+            post(playlists::remove_items),
+        )
+        .route(
             "/playlists/{playlist_id}/items",
             get(playlists::get_items)
                 .post(playlists::add_items)
                 .delete(playlists::remove_items),
+        )
+        .route(
+            "/playlists/{playlist_id}/items/delete",
+            post(playlists::remove_items),
+        )
+        .route(
+            "/Playlists/{playlist_id}/AddToPlaylistInfo",
+            get(playlists::add_to_playlist_info),
+        )
+        .route(
+            "/playlists/{playlist_id}/addtoplaylistinfo",
+            get(playlists::add_to_playlist_info),
         )
         .route(
             "/Playlists/{playlist_id}/Items/{item_id}/Move/{new_index}",
@@ -2201,6 +2751,8 @@ fn library_controller_routes() -> Router<Arc<AppState>> {
         .route("/items/counts", get(library::item_counts))
         .route("/Items/{item_id}/File", get(library::file))
         .route("/items/{item_id}/file", get(library::file))
+        .route("/Items/{item_id}/DeleteInfo", get(library::delete_info))
+        .route("/items/{item_id}/deleteinfo", get(library::delete_info))
         .route("/Items/{item_id}/ThemeSongs", get(library::theme_songs))
         .route("/items/{item_id}/themesongs", get(library::theme_songs))
         .route("/Items/{item_id}/ThemeVideos", get(library::theme_videos))
@@ -2219,15 +2771,23 @@ fn library_controller_routes() -> Router<Arc<AppState>> {
         .route("/library/physicalpaths", get(library::physical_paths))
         .route("/Library/MediaFolders", get(library::media_folders))
         .route("/library/mediafolders", get(library::media_folders))
+        .route(
+            "/Library/SelectableMediaFolders",
+            get(library::media_folders),
+        )
+        .route(
+            "/library/selectablemediafolders",
+            get(library::media_folders),
+        )
         .route("/Library/Series/Added", post(library::updated_series))
-        .route("/Library/Series/Updated", post(library::updated_series))
-        .route("/Library/Movies/Added", post(library::updated_movies))
-        .route("/Library/Movies/Updated", post(library::updated_movies))
-        .route("/Library/Media/Updated", post(library::updated_media))
         .route("/library/series/added", post(library::updated_series))
+        .route("/Library/Series/Updated", post(library::updated_series))
         .route("/library/series/updated", post(library::updated_series))
+        .route("/Library/Movies/Added", post(library::updated_movies))
         .route("/library/movies/added", post(library::updated_movies))
+        .route("/Library/Movies/Updated", post(library::updated_movies))
         .route("/library/movies/updated", post(library::updated_movies))
+        .route("/Library/Media/Updated", post(library::updated_media))
         .route("/library/media/updated", post(library::updated_media))
         .route(
             "/Libraries/AvailableOptions",
@@ -2271,12 +2831,24 @@ fn user_library_routes() -> Router<Arc<AppState>> {
                 .post(item_update::update)
                 .delete(library::delete_item),
         )
+        .route("/Items/{item_id}/Tags/Add", post(item_update::add_tags))
+        .route(
+            "/Items/{item_id}/Tags/Delete",
+            post(item_update::delete_tags),
+        )
+        .route("/Items/{item_id}/Delete", post(library::delete_item))
         .route(
             "/items/{item_id}",
             get(user_library::get_item)
                 .post(item_update::update)
                 .delete(library::delete_item),
         )
+        .route("/items/{item_id}/tags/add", post(item_update::add_tags))
+        .route(
+            "/items/{item_id}/tags/delete",
+            post(item_update::delete_tags),
+        )
+        .route("/items/{item_id}/delete", post(library::delete_item))
         .route(
             "/Items/{item_id}/ContentType",
             post(item_update::update_content_type),
@@ -2302,6 +2874,16 @@ fn user_library_routes() -> Router<Arc<AppState>> {
         .route(
             "/items/{item_id}/externalidinfos",
             get(item_lookup::external_id_infos),
+        )
+        .route("/Items/{item_id}/MakePublic", post(playlists::make_public))
+        .route("/items/{item_id}/makepublic", post(playlists::make_public))
+        .route(
+            "/Items/{item_id}/MakePrivate",
+            post(playlists::make_private),
+        )
+        .route(
+            "/items/{item_id}/makeprivate",
+            post(playlists::make_private),
         )
         .route(
             "/Items/RemoteSearch/Movie",
@@ -2369,6 +2951,8 @@ fn user_library_routes() -> Router<Arc<AppState>> {
         )
         .route("/Items/RemoteSearch/Book", post(item_lookup::remote_search))
         .route("/items/remotesearch/book", post(item_lookup::remote_search))
+        .route("/Items/RemoteSearch/Image", get(remote_images::fetch))
+        .route("/items/remotesearch/image", get(remote_images::fetch))
         .route(
             "/Items/RemoteSearch/Apply/{item_id}",
             post(item_lookup::apply_remote_search),
@@ -2514,7 +3098,15 @@ fn video_routes() -> Router<Arc<AppState>> {
             get(video_attachments::get),
         )
         .route(
+            "/Videos/{item_id}/{media_source_id}/Attachments/{index}/Stream",
+            get(video_attachments::get),
+        )
+        .route(
             "/videos/{item_id}/{media_source_id}/attachments/{index}",
+            get(video_attachments::get),
+        )
+        .route(
+            "/videos/{item_id}/{media_source_id}/attachments/{index}/stream",
             get(video_attachments::get),
         )
         .route(

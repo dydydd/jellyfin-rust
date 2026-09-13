@@ -45,6 +45,12 @@ pub struct PlaylistItemPage {
     pub start_index: usize,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct AddToPlaylistInfo {
+    pub item_count: usize,
+    pub contains_duplicates: bool,
+}
+
 impl PlaylistService {
     #[must_use]
     pub fn new(database: impl Into<jellyfin_data::SharedDatabase>) -> Self {
@@ -244,6 +250,28 @@ impl PlaylistService {
             .add_manual_at(playlist_id, item_ids, position)
             .await?;
         Ok(())
+    }
+
+    /// Reports which requested items are already present in a playlist.
+    pub async fn add_to_playlist_info(
+        &self,
+        playlist_id: Uuid,
+        user_id: Uuid,
+        item_ids: &[Uuid],
+    ) -> Result<AddToPlaylistInfo, PlaylistError> {
+        self.get_for_user(playlist_id, user_id).await?;
+        let existing = self
+            .links
+            .list(playlist_id)
+            .await?
+            .into_iter()
+            .map(|link| link.child_id)
+            .collect::<std::collections::HashSet<_>>();
+        let item_count = item_ids.iter().filter(|id| existing.contains(id)).count();
+        Ok(AddToPlaylistInfo {
+            item_count,
+            contains_duplicates: item_count > 0,
+        })
     }
 
     /// Moves an entry for an owner or editable share.

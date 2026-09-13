@@ -98,20 +98,27 @@ async fn api_key_routes_match_official_elevated_persisted_contract() {
     for app_name in &fixture.created_key_names {
         assert!(find_key_optional(&api_key_list, app_name).is_some());
     }
+    let extra_direct_key = ApiKeyRepository::new(fixture.database.clone())
+        .create(&format!("api-key-extra-direct-delete-{}", Uuid::new_v4()))
+        .await
+        .expect("extra direct-delete API key creation")
+        .access_token;
+    created_tokens.push(fixture.seed_api_key_token.clone());
+    created_tokens.push(extra_direct_key);
 
     for (index, created_token) in created_tokens.into_iter().enumerate() {
-        let route = if index == 0 {
-            "/Auth/Keys"
+        let (method, uri) = if index == 0 {
+            ("POST", format!("/Auth/Keys/{created_token}/Delete"))
+        } else if index == 1 {
+            ("DELETE", format!("/auth/keys/{created_token}/delete"))
+        } else if index == 2 {
+            ("DELETE", format!("/Auth/Keys/{created_token}"))
         } else {
-            "/auth/keys"
+            ("DELETE", format!("/auth/keys/{created_token}"))
         };
         assert_eq!(
             fixture
-                .request(
-                    "DELETE",
-                    &format!("{route}/{created_token}"),
-                    Some(&fixture.admin_token),
-                )
+                .request(method, &uri, Some(&fixture.admin_token))
                 .await
                 .status(),
             StatusCode::NO_CONTENT

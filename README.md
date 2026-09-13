@@ -1,6 +1,8 @@
-# Jellyfin Rust
+# Jellyfin / Emby Rust
 
-Jellyfin 服务端的 Rust 重实现。项目以兼容官方 Jellyfin API 和 Web 客户端为目标，
+Jellyfin 服务端的 Rust 重实现。服务器同时提供 Jellyfin API（根路径及 `/api`）和
+Emby API（`/emby`），分别兼容对应的 Android/iOS 客户端；两套 HTTP contract 共享
+领域服务和 PostgreSQL 数据。项目以兼容官方 Jellyfin API 和 Web 客户端为目标，
 使用 Axum、SeaORM、PostgreSQL 构建，当前处于持续开发阶段，尚未达到生产可用级别。
 
 ## 当前能力
@@ -24,7 +26,8 @@ Jellyfin 服务端的 Rust 重实现。项目以兼容官方 Jellyfin API 和 We
 
 | Crate | 职责 |
 | --- | --- |
-| `jellyfin-api` | Axum 路由、HTTP 接口、OpenAPI 文档 |
+| `jellyfin-api` | Jellyfin Axum 路由、HTTP contract、OpenAPI 文档 |
+| `jellyfin-emby-api` | Emby `/emby` 路由及差异化 HTTP contract |
 | `jellyfin-controller` | 领域服务、元数据刷新、图片、SyncPlay 等 |
 | `jellyfin-data` | PostgreSQL 仓储与实体 |
 | `jellyfin-migration` | SeaORM 数据库迁移 |
@@ -72,6 +75,7 @@ cargo run -p jellyfin-server
 | 环境变量 | 说明 | 默认值 |
 | --- | --- | --- |
 | `DATABASE_URL` | PostgreSQL 连接串 | `postgres://postgres:123456@127.0.0.1:5432/postgres` |
+| `JELLYFIN_DATABASE_MAX_CONNECTIONS` | PostgreSQL 连接池上限；未设置时按可用 CPU 的 4 倍计算，限制在 4–32 | 自动计算 |
 | `JELLYFIN_BIND_ADDRESS` | HTTP 监听地址 | `127.0.0.1:8096` |
 | `JELLYFIN_WEB_DIR` | Web 前端静态目录 | `jellyfin-web/dist` |
 | `JELLYFIN_INITIAL_USER` | 首次启动创建的管理员用户名 | `jellyfin` |

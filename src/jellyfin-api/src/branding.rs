@@ -265,7 +265,7 @@ async fn write_atomic(
         .map_err(|_| ApiError::Internal)
 }
 
-async fn branding_options(state: &AppState) -> Result<BrandingOptions, ApiError> {
+pub(crate) async fn branding_options(state: &AppState) -> Result<BrandingOptions, ApiError> {
     if let Some(repository) = &state.named_configurations {
         return match repository.load(BRANDING_CONFIGURATION_KEY).await {
             Ok(configuration) => {

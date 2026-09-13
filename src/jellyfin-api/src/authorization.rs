@@ -279,6 +279,13 @@ async fn require_elevated_with_remote(
 #[allow(clippy::match_same_arms)]
 #[allow(clippy::too_many_lines)]
 fn route_policy(method: &Method, path: &str) -> RoutePolicy {
+    // Protocol routers (currently `/emby`) run this shared middleware before
+    // Axum's nested service strips their prefix. Apply the same policy to the
+    // protocol path so public/setup routes do not become authenticated-only.
+    let path = path
+        .strip_prefix("/emby/")
+        .or_else(|| (path == "/emby").then_some(""))
+        .unwrap_or(path);
     let segments = path
         .split('/')
         .filter(|segment| !segment.is_empty())
@@ -303,9 +310,9 @@ fn route_policy(method: &Method, path: &str) -> RoutePolicy {
     }
 
     match segments.as_slice() {
-        ["health" | "GetUtcTime" | "getutctime" | "metrics"] | ["api-docs", "openapi.json"] => {
-            RoutePolicy::Public
-        }
+        ["health" | "GetUtcTime" | "getutctime" | "metrics"]
+        | ["api-docs", "openapi.json"]
+        | ["openapi" | "openapi.json" | "swagger.json"] => RoutePolicy::Public,
         ["System", "Info", "Public"]
         | ["system", "info", "public"]
         | ["System", "Ping"]
@@ -325,14 +332,26 @@ fn route_policy(method: &Method, path: &str) -> RoutePolicy {
             | "ForgotPassword",
         ]
         | ["Users", "ForgotPassword", "Pin"]
-        | ["users", "public" | "authenticatebyname" | "forgotpassword"]
+        | [
+            "users",
+            "public" | "authenticatebyname" | "authenticatewithquickconnect" | "forgotpassword",
+        ]
         | ["users", "forgotpassword", "pin"] => RoutePolicy::Public,
-        ["Users", _, "Authenticate"] => RoutePolicy::Public,
-        ["QuickConnect", "Enabled" | "Initiate" | "Connect"] => RoutePolicy::Public,
+        ["Users" | "users", _, "Authenticate" | "authenticate"] => RoutePolicy::Public,
+        [
+            "QuickConnect" | "quickconnect",
+            "Enabled" | "enabled" | "Initiate" | "initiate" | "Connect" | "connect",
+        ] => RoutePolicy::Public,
         ["Startup" | "startup" | "Environment" | "environment", ..]
-        | ["Library", "VirtualFolders", ..]
-        | ["library", "virtualfolders", ..]
-        | ["Libraries", "AvailableOptions"] => RoutePolicy::FirstTimeSetupOrElevated,
+        | [
+            "Library" | "library",
+            "VirtualFolders" | "virtualfolders",
+            ..,
+        ]
+        | [
+            "Libraries" | "libraries",
+            "AvailableOptions" | "availableoptions",
+        ] => RoutePolicy::FirstTimeSetupOrElevated,
         ["Localization" | "localization", ..] => RoutePolicy::FirstTimeSetupOrDefault,
         ["System", "Info"] | ["system", "info"] => {
             RoutePolicy::FirstTimeSetupOrIgnoreParentalControl
@@ -346,26 +365,27 @@ fn route_policy(method: &Method, path: &str) -> RoutePolicy {
         | ["system", "info", "storage"]
         | ["System", "Shutdown"]
         | ["system", "shutdown"] => RoutePolicy::Elevated,
-        ["ScheduledTasks", ..] | ["scheduledtasks", ..] => RoutePolicy::Elevated,
-        ["Auth", "Keys", ..] | ["Auth", "Providers" | "PasswordResetProviders"] => {
-            RoutePolicy::Elevated
-        }
-        ["auth", "keys", ..] | ["auth", "providers" | "passwordresetproviders"] => {
-            RoutePolicy::Elevated
-        }
+        ["ScheduledTasks" | "scheduledtasks", ..] => RoutePolicy::Elevated,
+        ["Auth" | "auth", "Keys" | "keys", ..]
+        | [
+            "Auth" | "auth",
+            "Providers" | "providers" | "PasswordResetProviders" | "passwordresetproviders",
+        ] => RoutePolicy::Elevated,
         ["Devices" | "devices" | "Packages" | "Backup" | "backup", ..] | ["Repositories"] => {
             RoutePolicy::Elevated
         }
-        ["web", "ConfigurationPages"] => RoutePolicy::Elevated,
-        ["web", "ConfigurationPage"] | ["web", ..] => RoutePolicy::Public,
+        ["web", "ConfigurationPages"] | ["web", "configurationpages"] => RoutePolicy::Elevated,
+        ["web", "ConfigurationPage"] | ["web", "configurationpage"] | ["web", ..] => {
+            RoutePolicy::Public
+        }
         ["System", "Configuration", "MetadataOptions", "Default"]
         | ["system", "configuration", "metadataoptions", "default"] => RoutePolicy::Elevated,
         ["System", "Configuration", ..] | ["system", "configuration", ..] if is_write(method) => {
             RoutePolicy::Elevated
         }
         ["System", "Configuration"]
-        | ["System", "Configuration", _]
         | ["system", "configuration"]
+        | ["System", "Configuration", _]
         | ["system", "configuration", _] => RoutePolicy::Default,
         ["Users", "New"] | ["users", "new"] => RoutePolicy::Elevated,
         ["Users", _, "Policy"] | ["users", _, "policy"] => RoutePolicy::Elevated,
@@ -376,10 +396,23 @@ fn route_policy(method: &Method, path: &str) -> RoutePolicy {
         ["Users", _] => RoutePolicy::Default,
         ["LiveTv", "TunerHosts"] => RoutePolicy::Elevated,
         ["LiveTv", "ListingProviders", ..] => RoutePolicy::Elevated,
-        ["Library", "MediaFolders" | "PhysicalPaths" | "Refresh"]
-        | ["library", "mediafolders" | "physicalpaths" | "refresh"] => RoutePolicy::Elevated,
-        ["Items", _, "Refresh" | "MetadataEditor" | "ExternalIdInfos"]
-        | ["items", _, "refresh" | "metadataeditor" | "externalidinfos"] => RoutePolicy::Elevated,
+        [
+            "Library" | "library",
+            "MediaFolders"
+            | "PhysicalPaths"
+            | "Refresh"
+            | "SelectableMediaFolders"
+            | "mediafolders"
+            | "physicalpaths"
+            | "refresh"
+            | "selectablemediafolders",
+        ] => RoutePolicy::Elevated,
+        [
+            "Items" | "items",
+            _,
+            "Refresh" | "MetadataEditor" | "ExternalIdInfos" | "refresh" | "metadataeditor"
+            | "externalidinfos",
+        ] => RoutePolicy::Elevated,
         ["Items", "RemoteSearch", "Person"] | ["Items", "RemoteSearch", "Apply", _] => {
             RoutePolicy::Elevated
         }
@@ -448,8 +481,16 @@ fn route_policy(method: &Method, path: &str) -> RoutePolicy {
         {
             RoutePolicy::Elevated
         }
-        ["Videos", _, _, "Attachments", _] if is_get_or_head(method) => RoutePolicy::Public,
-        ["videos", _, _, "attachments", _] if is_get_or_head(method) => RoutePolicy::Public,
+        ["Videos", _, _, "Attachments", _] | ["Videos", _, _, "Attachments", _, "Stream"]
+            if is_get_or_head(method) =>
+        {
+            RoutePolicy::Public
+        }
+        ["videos", _, _, "attachments", _] | ["videos", _, _, "attachments", _, "stream"]
+            if is_get_or_head(method) =>
+        {
+            RoutePolicy::Public
+        }
         ["Audio", _, "hls", ..] => RoutePolicy::Public,
         ["Videos", _, "hls", ..] if hls_path_is_playlist(&segments) => RoutePolicy::Default,
         ["Videos", _, "hls", ..] => RoutePolicy::Public,
@@ -477,7 +518,7 @@ fn route_policy(method: &Method, path: &str) -> RoutePolicy {
         ["persons", _, "images", ..] if is_get_or_head(method) => RoutePolicy::Optional,
         ["Plugins", _, _, "Image"] => RoutePolicy::Optional,
         ["plugins", _, _, "image"] => RoutePolicy::Optional,
-        ["Plugins", ..] => RoutePolicy::Elevated,
+        ["Plugins" | "plugins", ..] => RoutePolicy::Elevated,
         _ => RoutePolicy::Default,
     }
 }
@@ -543,6 +584,9 @@ fn is_known_api_path(segments: &[&str]) -> bool {
             | "clientlog"
             | "scheduledtasks"
             | "api-docs"
+            | "openapi"
+            | "openapi.json"
+            | "swagger.json"
             | "repositories"
             | "robots.txt"
     )
@@ -608,12 +652,28 @@ mod tests {
             route_policy(&Method::GET, "/System/Logs"),
             RoutePolicy::Elevated
         );
+        assert_eq!(
+            route_policy(&Method::GET, "/system/activitylog/entries"),
+            RoutePolicy::Elevated
+        );
+        assert_eq!(
+            route_policy(&Method::POST, "/system/configuration/branding"),
+            RoutePolicy::Elevated
+        );
+        assert_eq!(
+            route_policy(&Method::POST, "/system/restart"),
+            RoutePolicy::LocalOrElevated
+        );
     }
 
     #[test]
     fn route_policy_preserves_anonymous_and_optional_endpoints() {
         assert_eq!(
             route_policy(&Method::GET, "/System/Info/Public"),
+            RoutePolicy::Public
+        );
+        assert_eq!(
+            route_policy(&Method::GET, "/System/Ping"),
             RoutePolicy::Public
         );
         assert_eq!(
@@ -631,6 +691,14 @@ mod tests {
         assert_eq!(
             route_policy(&Method::GET, "/api-docs/openapi.json"),
             RoutePolicy::Public
+        );
+        assert_eq!(
+            route_policy(&Method::GET, "/emby/Branding/Configuration"),
+            RoutePolicy::Public
+        );
+        assert_eq!(
+            route_policy(&Method::GET, "/emby/Localization/Cultures"),
+            RoutePolicy::FirstTimeSetupOrDefault
         );
         assert_eq!(
             route_policy(&Method::GET, "/api-docs/missing.json"),
@@ -662,6 +730,14 @@ mod tests {
         assert_eq!(
             route_policy(&Method::POST, "/System/Restart"),
             RoutePolicy::LocalOrElevated
+        );
+        assert_eq!(
+            route_policy(&Method::GET, "/auth/providers"),
+            RoutePolicy::Elevated
+        );
+        assert_eq!(
+            route_policy(&Method::GET, "/auth/keys"),
+            RoutePolicy::Elevated
         );
         assert_eq!(
             route_policy(&Method::GET, "/Items/{item_id}/Images/Primary"),
@@ -728,6 +804,18 @@ mod tests {
             route_policy(&Method::GET, "/Localization/Cultures"),
             RoutePolicy::FirstTimeSetupOrDefault
         );
+        for route in [
+            "/localization/cultures",
+            "/localization/countries",
+            "/localization/parentalratings",
+            "/localization/options",
+        ] {
+            assert_eq!(
+                route_policy(&Method::GET, route),
+                RoutePolicy::FirstTimeSetupOrDefault,
+                "{route}"
+            );
+        }
         assert_eq!(
             route_policy(&Method::GET, "/Videos/{item_id}/hls/playlist/seg1.ts"),
             RoutePolicy::Public

@@ -24,8 +24,9 @@ use jellyfin_controller::{
 };
 use jellyfin_data::{
     BaseItemImageRepository, BaseItemImageType, BaseItemRepository, ChapterRepository,
-    DatabaseConfig, DeviceRepository, NewBaseItem, NewBaseItemImage, NewChapter, NewDevice,
-    NewPerson, NewPersonCredit, NewTrickplayInfo, PersonRepository, TrickplayInfoRepository,
+    DatabaseConfig, DeviceOptionsRepository, DeviceRepository, NewBaseItem, NewBaseItemImage,
+    NewChapter, NewDevice, NewPerson, NewPersonCredit, NewTrickplayInfo, PersonRepository,
+    TrickplayInfoRepository,
 };
 use jellyfin_model::{
     AccessSchedule, DynamicDayOfWeek, MediaStream, MediaStreamType, TranscodeReason, UserPolicy,
@@ -54,24 +55,25 @@ const READS: &[(&str, &str, &str)] = &[
     ("/System/Info", "SystemInfo", "user"),
     ("/System/Info/Public", "PublicSystemInfo", "none"),
     ("/System/Configuration", "ServerConfiguration", "admin"),
+    (
+        "/System/Configuration/MetadataOptions/Default",
+        "MetadataOptions",
+        "admin",
+    ),
+    ("/System/Endpoint", "EndPointInfo", "user"),
     ("/System/Info/Storage", "SystemStorageDto", "admin"),
-    ("/Auth/Keys", "AuthenticationInfoQueryResult", "admin"),
     (
         "/System/ActivityLog/Entries",
         "ActivityLogEntryQueryResult",
         "admin",
     ),
-    ("/ScheduledTasks", "List<TaskInfo>", "admin"),
+    ("/System/Logs", "List<LogFile>", "admin"),
+    ("/GetUtcTime", "UtcTimeResponse", "none"),
     ("/Users", "List<UserDto>", "admin"),
     ("/Users/Me", "UserDto", "user"),
     ("/Users/{user}", "UserDto", "user"),
     ("/Users/{user}/Views", "BaseItemDtoQueryResult", "user"),
     ("/UserViews", "BaseItemDtoQueryResult", "user"),
-    (
-        "/Library/VirtualFolders",
-        "List<VirtualFolderInfo>",
-        "admin",
-    ),
     ("/Items/Root", "BaseItemDto", "user"),
     ("/Items/Counts", "ItemCounts", "user"),
     ("/Items/Filters", "QueryFiltersLegacy", "user"),
@@ -100,6 +102,13 @@ const READS: &[(&str, &str, &str)] = &[
     ),
     ("/Users/{user}/Items/{movie}", "BaseItemDto", "user"),
     ("/Items/{movie}/Similar", "BaseItemDtoQueryResult", "user"),
+    (
+        "/Artists/{artist}/Similar",
+        "BaseItemDtoQueryResult",
+        "user",
+    ),
+    ("/Albums/{album}/Similar", "BaseItemDtoQueryResult", "user"),
+    ("/Shows/{series}/Similar", "BaseItemDtoQueryResult", "user"),
     (
         "/Items/{movie}/Collections",
         "BaseItemDtoQueryResult",
@@ -135,6 +144,19 @@ const READS: &[(&str, &str, &str)] = &[
     ("/Shows/{series}/Episodes", "BaseItemDtoQueryResult", "user"),
     ("/Shows/NextUp", "BaseItemDtoQueryResult", "user"),
     ("/Shows/Upcoming", "BaseItemDtoQueryResult", "user"),
+    ("/Channels", "BaseItemDtoQueryResult", "user"),
+    ("/Channels/Features", "List<ChannelFeatures>", "user"),
+    ("/Channels/{channel}/Features", "ChannelFeatures", "user"),
+    (
+        "/Channels/{channel}/Items?fields=MediaStreams,Chapters",
+        "BaseItemDtoQueryResult",
+        "user",
+    ),
+    (
+        "/Channels/Items/Latest?fields=MediaStreams,Chapters",
+        "BaseItemDtoQueryResult",
+        "user",
+    ),
     (
         "/Videos/{movie}/AdditionalParts",
         "BaseItemDtoQueryResult",
@@ -146,12 +168,18 @@ const READS: &[(&str, &str, &str)] = &[
         "BaseItemDtoQueryResult",
         "user",
     ),
+    (
+        "/UserItems/Resume?userId={user}&fields=MediaSourceCount",
+        "BaseItemDtoQueryResult",
+        "user",
+    ),
     ("/Items/Suggestions", "BaseItemDtoQueryResult", "user"),
     ("/Years", "BaseItemDtoQueryResult", "user"),
     ("/Years/2011", "BaseItemDto", "user"),
     ("/Genres", "BaseItemDtoQueryResult", "user"),
     ("/Genres/Action", "BaseItemDto", "user"),
     ("/MusicGenres", "BaseItemDtoQueryResult", "user"),
+    ("/MusicGenres/Test%20Genre", "BaseItemDto", "user"),
     ("/Studios", "BaseItemDtoQueryResult", "user"),
     ("/Studios/Pixar", "BaseItemDto", "user"),
     ("/Persons", "BaseItemDtoQueryResult", "user"),
@@ -160,6 +188,8 @@ const READS: &[(&str, &str, &str)] = &[
     ("/Artists/AlbumArtists", "BaseItemDtoQueryResult", "user"),
     ("/Search/Hints?searchTerm=movie", "SearchHintResult", "user"),
     ("/Sessions", "List<SessionInfoDto>", "admin"),
+    ("/ScheduledTasks", "List<TaskInfo>", "admin"),
+    ("/Auth/Keys", "AuthenticationInfoQueryResult", "admin"),
     (
         "/UserItems/{movie}/UserData?userId={user}",
         "UserItemDataDto",
@@ -194,6 +224,11 @@ const READS: &[(&str, &str, &str)] = &[
     ),
     ("/Library/MediaFolders", "BaseItemDtoQueryResult", "admin"),
     (
+        "/Library/VirtualFolders",
+        "List<VirtualFolderInfo>",
+        "admin",
+    ),
+    (
         "/Items/{audio}/PlaybackInfo",
         "PlaybackInfoResponse",
         "user",
@@ -220,10 +255,38 @@ const READS: &[(&str, &str, &str)] = &[
     ),
     ("/Environment/Drives", "List<FileSystemEntryInfo>", "admin"),
     ("/SyncPlay/List", "List<GroupInfoDto>", "user"),
-    ("/Movies/{movie}/Similar", "BaseItemDtoQueryResult", "user"),
+    ("/Backup", "List<BackupManifestDto>", "admin"),
+    ("/Packages", "List<PackageInfo>", "admin"),
+    ("/Plugins", "List<PluginInfo>", "admin"),
+    ("/Repositories", "List<RepositoryInfo>", "admin"),
     ("/Movies/Recommendations", "List<RecommendationDto>", "user"),
     (
         "/Albums/{audio}/InstantMix",
+        "BaseItemDtoQueryResult",
+        "user",
+    ),
+    (
+        "/Albums/{album}/InstantMix",
+        "BaseItemDtoQueryResult",
+        "user",
+    ),
+    (
+        "/Artists/{artist}/InstantMix",
+        "BaseItemDtoQueryResult",
+        "user",
+    ),
+    (
+        "/Playlists/{playlist}/InstantMix",
+        "BaseItemDtoQueryResult",
+        "user",
+    ),
+    (
+        "/Songs/{audio}/InstantMix",
+        "BaseItemDtoQueryResult",
+        "user",
+    ),
+    (
+        "/MusicGenres/Test%20Genre/InstantMix",
         "BaseItemDtoQueryResult",
         "user",
     ),
@@ -234,6 +297,17 @@ const READS: &[(&str, &str, &str)] = &[
     ),
     ("/Trailers", "BaseItemDtoQueryResult", "user"),
     ("/Devices?limit=5", "DeviceInfoDtoQueryResult", "admin"),
+    (
+        "/Devices/Info?id=kotlin-sdk-compat",
+        "DeviceInfoDto",
+        "admin",
+    ),
+    (
+        "/Devices/Options?id=kotlin-sdk-compat",
+        "DeviceOptionsDto",
+        "admin",
+    ),
+    ("/QuickConnect/Enabled", "Boolean", "none"),
 ];
 
 #[tokio::test]
@@ -269,13 +343,9 @@ async fn connect_default_database() -> DatabaseConnection {
 }
 
 async fn exercise(database_name: &str) {
-    let database = jellyfin_data::connect(&DatabaseConfig {
-        url: format!("postgres://postgres:123456@127.0.0.1:5432/{database_name}"),
-        max_connections: 8,
-        min_connections: 1,
-    })
-    .await
-    .expect("temporary PostgreSQL database must be available");
+    let database = jellyfin_data::connect(&temporary_database_config(database_name))
+        .await
+        .expect("temporary PostgreSQL database must be available");
     jellyfin_data::migrate(&database)
         .await
         .expect("PostgreSQL migrations must succeed");
@@ -408,6 +478,39 @@ async fn exercise(database_name: &str) {
         failures.push("/Persons returned no canonical Person items".to_owned());
     }
 
+    // MusicGenre detail ids are deterministic item-by-name ids, not the ids
+    // submitted in media metadata. Follow the public detail response like a client.
+    let music_genres = dumped
+        .iter()
+        .find(|response| response.model == "BaseItemDto" && response.value["Type"] == "MusicGenre")
+        .map(|response| response.value.clone());
+    if let Some(music_genres) = music_genres {
+        let id = music_genres["Id"]
+            .as_str()
+            .expect("MusicGenre detail item id");
+        let response = fixture
+            .request(
+                Method::GET,
+                &format!("/MusicGenres/InstantMix?id={id}"),
+                Some(&fixture.user_token),
+            )
+            .await;
+        let status = response.status();
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        match serde_json::from_slice::<Value>(&body) {
+            Ok(value) if status == StatusCode::OK => {
+                dumped.push(DumpedResponse {
+                    route: format!("/MusicGenres/InstantMix?id={id}"),
+                    model: "BaseItemDtoQueryResult".to_owned(),
+                    value,
+                });
+            }
+            _ => failures.push(format!("/MusicGenres/InstantMix?id={id} -> HTTP {status}")),
+        }
+    } else {
+        failures.push("/MusicGenres/Test%20Genre returned no MusicGenre item".to_owned());
+    }
+
     // PlaybackInfo with an Android DeviceProfile body, which is how both Android
     // clients actually request playback.
     let playback_route = fixture.resolve("/Items/{movie}/PlaybackInfo");
@@ -442,6 +545,18 @@ async fn exercise(database_name: &str) {
     );
 }
 
+fn temporary_database_config(database_name: &str) -> DatabaseConfig {
+    let mut config = DatabaseConfig::default();
+    let (prefix, _) = config
+        .url
+        .rsplit_once('/')
+        .expect("database URL must include a database name");
+    config.url = format!("{prefix}/{database_name}");
+    config.max_connections = 8;
+    config.min_connections = 1;
+    config
+}
+
 struct Fixture {
     database: DatabaseConnection,
     app: Router,
@@ -453,6 +568,9 @@ struct Fixture {
     movie_id: Uuid,
     episode_id: Uuid,
     series_id: Uuid,
+    channel_id: Uuid,
+    artist_id: Uuid,
+    album_id: Uuid,
     audio_id: Uuid,
 }
 
@@ -468,9 +586,9 @@ impl Fixture {
         let root = items.ensure_user_root().await.unwrap();
         VirtualFolderService::new(database.clone())
             .create(
-                "SDK Compat Movies",
+                "SDK Compat Library",
                 Some("movies".to_owned()),
-                json!({}),
+                json!({ "Enabled": true }),
                 Vec::new(),
                 false,
             )
@@ -533,18 +651,23 @@ impl Fixture {
         new_album.is_folder = true;
         new_album.data = Some(json!({"NormalizationGain": -2.5}));
         let album = items.create(new_album).await.unwrap();
+        let channel = create_item(&items, "Channel", Some(root.id), "Test Channel", None).await;
+        let _channel_item =
+            create_item(&items, "Movie", Some(channel.id), "Channel Movie", None).await;
         let mut new_audio = NewBaseItem::new(Uuid::new_v4(), "Audio");
         new_audio.parent_id = Some(album.id);
         new_audio.name = Some("Test Song".to_owned());
         new_audio.path = Some(format!("{}/song.flac", storage_root.display()));
         new_audio.media_type = Some("Audio".to_owned());
         new_audio.runtime_ticks = Some(180_000_000);
+        let music_genre_id = Uuid::new_v4();
         new_audio.data = Some(json!({
             "Album": "Test Album",
             "Artists": ["Test Artist"],
             "AlbumArtist": "Test Artist",
             "IndexNumber": 1,
-            "LUFS": -14.0
+            "LUFS": -14.0,
+            "GenreItems": [{"Name": "Test Genre", "Id": music_genre_id.simple().to_string()}],
         }));
         let audio = items.create(new_audio).await.unwrap();
         BaseItemImageRepository::new(database.clone())
@@ -727,6 +850,10 @@ impl Fixture {
             .await
             .unwrap()
             .access_token;
+        DeviceOptionsRepository::new(database.clone())
+            .upsert_custom_name("kotlin-sdk-compat", Some("Compat Device".to_owned()))
+            .await
+            .unwrap();
 
         let person_name = "Tom Hanks".to_owned();
         PersonRepository::new(database.clone())
@@ -822,6 +949,9 @@ impl Fixture {
             movie_id: movie.id,
             episode_id: episode.id,
             series_id: series.id,
+            channel_id: channel.id,
+            artist_id: artist.id,
+            album_id: album.id,
             audio_id: audio.id,
         }
     }
@@ -832,6 +962,9 @@ impl Fixture {
             .replace("{movie}", &self.movie_id.simple().to_string())
             .replace("{episode}", &self.episode_id.simple().to_string())
             .replace("{series}", &self.series_id.simple().to_string())
+            .replace("{channel}", &self.channel_id.simple().to_string())
+            .replace("{artist}", &self.artist_id.simple().to_string())
+            .replace("{album}", &self.album_id.simple().to_string())
             .replace("{audio}", &self.audio_id.simple().to_string())
             .replace("{playlist}", &self.playlist_id.simple().to_string())
             .replace("{person}", &self.person_name)
@@ -954,6 +1087,7 @@ fn write_dump(dir: &PathBuf, dumped: &[DumpedResponse]) {
         // so a shared response dump can be checked against each SDK without
         // weakening either validator.
         let swift_model = match response.model.as_str() {
+            "Boolean" => "Bool",
             "List<LocalizationOption>" => "List<NameValuePair>",
             _ => response.model.as_str(),
         };

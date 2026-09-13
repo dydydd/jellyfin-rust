@@ -96,6 +96,89 @@ impl ItemUpdateRepository {
         Ok(updated)
     }
 
+    /// Adds and/or removes tags while holding the item row lock.
+    ///
+    /// The JSON metadata and normalized tag mappings are committed together so
+    /// concurrent tag operations cannot lose one another.
+    pub async fn modify_tags(
+        &self,
+        item_id: Uuid,
+        additions: &[String],
+        removals: &[String],
+    ) -> Result<base_item::Model, ItemUpdateStoreError> {
+        let additions = additions
+            .iter()
+            .map(|tag| {
+                let tag = tag.trim();
+                if tag.is_empty() {
+                    Err(ItemUpdateStoreError::InvalidValue)
+                } else {
+                    Ok(tag.to_owned())
+                }
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let removals = removals
+            .iter()
+            .map(|tag| tag.trim().to_owned())
+            .filter(|tag| !tag.is_empty())
+            .collect::<Vec<_>>();
+
+        let transaction = self.database.begin().await?;
+        let item = base_item::Entity::find_by_id(item_id)
+            .lock_exclusive()
+            .one(&transaction)
+            .await?
+            .ok_or(ItemUpdateStoreError::NotFound)?;
+        let mut item = item;
+        let mut object = match std::mem::take(&mut item.data) {
+            None => Map::new(),
+            Some(Value::Object(object)) => object,
+            Some(_) => return Err(ItemUpdateStoreError::InvalidMetadata),
+        };
+        let mut tags = object
+            .iter()
+            .find(|(key, _)| key.eq_ignore_ascii_case("Tags"))
+            .map(|(_, value)| value)
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+
+        tags.retain(|tag| {
+            !removals
+                .iter()
+                .any(|removed| tag_eq_ignore_case(tag, removed))
+        });
+        for addition in additions {
+            if !tags
+                .iter()
+                .any(|existing| tag_eq_ignore_case(existing, &addition))
+            {
+                tags.push(addition);
+            }
+        }
+
+        replace_values(
+            &transaction,
+            item_id,
+            item_value::ItemValueType::Tags,
+            &tags,
+        )
+        .await?;
+        object.retain(|key, _| !key.eq_ignore_ascii_case("Tags"));
+        object.insert(
+            "Tags".to_owned(),
+            Value::Array(tags.into_iter().map(Value::String).collect()),
+        );
+        let mut active = item.into_active_model();
+        active.data = Set(Some(Value::Object(object)));
+        let updated = active.update(&transaction).await?;
+        transaction.commit().await?;
+        Ok(updated)
+    }
+
     /// Adds one provider identifier only when no casing variant of its key is
     /// already present.
     ///
@@ -209,7 +292,18 @@ async fn replace_values(
     delete_value_mappings(transaction, item_id, value_type).await?;
 
     for value in values {
-        let Some((value, clean_value)) = normalized_mapping_value(value)? else {
+        let Some((value, clean_value)) = (match normalized_mapping_value(value) {
+            Ok(value) => value,
+            // Tags are valid metadata even when their searchable key contains
+            // no alphanumeric characters; retain JSON while skipping only the
+            // normalized relation that PostgreSQL cannot index meaningfully.
+            Err(ItemUpdateStoreError::InvalidValue)
+                if value_type == item_value::ItemValueType::Tags =>
+            {
+                continue;
+            }
+            Err(error) => return Err(error),
+        }) else {
             continue;
         };
         let stored = item_value::Entity::insert(item_value::ActiveModel {
@@ -343,4 +437,10 @@ fn normalized_mapping_value(value: &str) -> Result<Option<(String, String)>, Ite
         return Err(ItemUpdateStoreError::InvalidValue);
     }
     Ok(Some((value.to_owned(), clean_value)))
+}
+
+fn tag_eq_ignore_case(left: &str, right: &str) -> bool {
+    left.chars()
+        .flat_map(char::to_lowercase)
+        .eq(right.chars().flat_map(char::to_lowercase))
 }

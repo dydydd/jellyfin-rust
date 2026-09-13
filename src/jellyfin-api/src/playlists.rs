@@ -127,6 +127,13 @@ pub(crate) struct PlaylistDto {
     item_ids: Vec<Uuid>,
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "PascalCase")]
+pub(crate) struct AddToPlaylistInfo {
+    item_count: usize,
+    contains_duplicates: bool,
+}
+
 #[derive(Debug, Default, Deserialize)]
 #[serde(default, rename_all = "PascalCase")]
 pub(crate) struct UpdateBody {
@@ -253,6 +260,40 @@ pub(crate) async fn update(
     Ok(StatusCode::NO_CONTENT)
 }
 
+pub(crate) async fn make_public(
+    State(state): State<Arc<AppState>>,
+    OriginalUri(uri): OriginalUri,
+    headers: HeaderMap,
+    Path(playlist_id): Path<Uuid>,
+) -> Result<StatusCode, ApiError> {
+    set_public(state, uri, headers, playlist_id, true).await
+}
+
+pub(crate) async fn make_private(
+    State(state): State<Arc<AppState>>,
+    OriginalUri(uri): OriginalUri,
+    headers: HeaderMap,
+    Path(playlist_id): Path<Uuid>,
+) -> Result<StatusCode, ApiError> {
+    set_public(state, uri, headers, playlist_id, false).await
+}
+
+async fn set_public(
+    state: Arc<AppState>,
+    uri: axum::http::Uri,
+    headers: HeaderMap,
+    playlist_id: Uuid,
+    is_public: bool,
+) -> Result<StatusCode, ApiError> {
+    let identity = authorization::require_default(&state, &headers, &uri).await?;
+    let user_id = identity.target_user_id(None)?;
+    state
+        .playlists
+        .update(playlist_id, user_id, None, None, None, Some(is_public))
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
 pub(crate) async fn get_users(
     State(state): State<Arc<AppState>>,
     OriginalUri(uri): OriginalUri,
@@ -334,6 +375,28 @@ pub(crate) async fn add_items(
         .add_items(playlist_id, user_id, &query.ids, query.position)
         .await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+pub(crate) async fn add_to_playlist_info(
+    State(state): State<Arc<AppState>>,
+    OriginalUri(uri): OriginalUri,
+    headers: HeaderMap,
+    Path(playlist_id): Path<Uuid>,
+    Query(query): Query<ItemsQuery>,
+) -> Result<Json<AddToPlaylistInfo>, ApiError> {
+    let identity = authorization::require_default(&state, &headers, &uri).await?;
+    let user_id = identity.target_user_id(query.user_id)?;
+    if query.ids.is_empty() {
+        return Err(ApiError::InvalidRequest);
+    }
+    let info = state
+        .playlists
+        .add_to_playlist_info(playlist_id, user_id, &query.ids)
+        .await?;
+    Ok(Json(AddToPlaylistInfo {
+        item_count: info.item_count,
+        contains_duplicates: info.contains_duplicates,
+    }))
 }
 
 pub(crate) async fn get_items(

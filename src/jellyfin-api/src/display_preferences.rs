@@ -33,17 +33,19 @@ pub(crate) async fn get(
     Path(display_preferences_id): Path<String>,
     query: Result<Query<DisplayPreferencesQuery>, QueryRejection>,
 ) -> Result<Json<DisplayPreferencesDto>, ApiError> {
-    let (target_user_id, client, item_id) =
-        target_user_and_client(&state, &headers, &uri, &display_preferences_id, query).await?;
-    let preferences = state
-        .display_preferences
-        .find(target_user_id, item_id, &client)
-        .await?;
-    Ok(Json(display_preferences_dto(
-        item_id,
-        &client,
-        preferences.map(|preferences| preferences.preferences),
-    )?))
+    let Query(query) = query.map_err(|_| ApiError::InvalidRequest)?;
+    Ok(Json(
+        get_for_request(
+            &state,
+            &headers,
+            &uri,
+            &display_preferences_id,
+            query.user_id,
+            query.item_id,
+            query.client,
+        )
+        .await?,
+    ))
 }
 
 pub(crate) async fn update(
@@ -54,9 +56,72 @@ pub(crate) async fn update(
     query: Result<Query<DisplayPreferencesQuery>, QueryRejection>,
     request: Result<Json<DisplayPreferencesDto>, JsonRejection>,
 ) -> Result<StatusCode, ApiError> {
-    let (target_user_id, client, item_id) =
-        target_user_and_client(&state, &headers, &uri, &display_preferences_id, query).await?;
-    let Json(mut preferences) = request.map_err(|_| ApiError::InvalidRequest)?;
+    let Query(query) = query.map_err(|_| ApiError::InvalidRequest)?;
+    let Json(preferences) = request.map_err(|_| ApiError::InvalidRequest)?;
+    update_for_request(
+        &state,
+        &headers,
+        &uri,
+        &display_preferences_id,
+        query.user_id,
+        query.item_id,
+        query.client,
+        preferences,
+    )
+    .await
+}
+
+pub(crate) async fn get_for_request(
+    state: &AppState,
+    headers: &HeaderMap,
+    uri: &axum::http::Uri,
+    display_preferences_id: &str,
+    user_id: Option<Uuid>,
+    item_id: Option<Uuid>,
+    client: Option<String>,
+) -> Result<DisplayPreferencesDto, ApiError> {
+    let (target_user_id, client, item_id) = target_user_and_client(
+        state,
+        headers,
+        uri,
+        display_preferences_id,
+        user_id,
+        item_id,
+        client,
+    )
+    .await?;
+    let preferences = state
+        .display_preferences
+        .find(target_user_id, item_id, &client)
+        .await?;
+    display_preferences_dto(
+        item_id,
+        &client,
+        preferences.map(|preferences| preferences.preferences),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn update_for_request(
+    state: &AppState,
+    headers: &HeaderMap,
+    uri: &axum::http::Uri,
+    display_preferences_id: &str,
+    user_id: Option<Uuid>,
+    item_id: Option<Uuid>,
+    client: Option<String>,
+    mut preferences: DisplayPreferencesDto,
+) -> Result<StatusCode, ApiError> {
+    let (target_user_id, client, item_id) = target_user_and_client(
+        state,
+        headers,
+        uri,
+        display_preferences_id,
+        user_id,
+        item_id,
+        client,
+    )
+    .await?;
     preferences.id = Some(item_id.to_string());
     preferences.client = Some(client);
     normalize_official_defaults(&mut preferences);
@@ -74,22 +139,20 @@ async fn target_user_and_client(
     headers: &HeaderMap,
     uri: &axum::http::Uri,
     display_preferences_id: &str,
-    query: Result<Query<DisplayPreferencesQuery>, QueryRejection>,
+    user_id: Option<Uuid>,
+    item_id: Option<Uuid>,
+    client: Option<String>,
 ) -> Result<(Uuid, String, Uuid), ApiError> {
     let identity = authentication::authenticated_identity(state, headers, Some(uri)).await?;
-    let Query(query) = query.map_err(|_| ApiError::InvalidRequest)?;
-    let user_id = identity.target_user_id(query.user_id)?;
+    let user_id = identity.target_user_id(user_id)?;
     if user_id.is_nil() {
         return Err(ApiError::InvalidRequest);
     }
     state.users.get(user_id).await?;
-    let client = query
-        .client
+    let client = client
         .filter(|client| !client.trim().is_empty())
         .ok_or(ApiError::InvalidRequest)?;
-    let item_id = query
-        .item_id
-        .unwrap_or_else(|| display_preferences_item_id(display_preferences_id));
+    let item_id = item_id.unwrap_or_else(|| display_preferences_item_id(display_preferences_id));
     Ok((user_id, client, item_id))
 }
 

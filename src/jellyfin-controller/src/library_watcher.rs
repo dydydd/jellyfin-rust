@@ -5,6 +5,7 @@ use std::{
     time::Duration,
 };
 
+use jellyfin_server_implementations::IgnorePatterns;
 use notify::{Config, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use tracing;
 
@@ -124,12 +125,24 @@ impl LibraryWatcher {
 
                             let mut canonical_dirs = Vec::with_capacity(dirs.len());
                             for path in &dirs {
-                                let Ok(canonical) = tokio::fs::canonicalize(path).await else {
-                                    continue;
-                                };
-                                canonical_dirs.push(canonical);
+                                match tokio::fs::canonicalize(path).await {
+                                    Ok(canonical) => canonical_dirs.push(canonical),
+                                    // A remove or rename-from event no longer has a path to
+                                    // canonicalize, but it is still beneath the canonical
+                                    // virtual-folder root registered with this watcher.
+                                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                                        canonical_dirs.push(path.clone());
+                                    }
+                                    Err(error) => tracing::debug!(
+                                        path = %path.display(),
+                                        %error,
+                                        "cannot canonicalize changed library path"
+                                    ),
+                                }
                             }
                             let affected = affected_folder_ids(&canonical_dirs, &all_virtual);
+                            // ponytail: collection scans are the current bounded fallback;
+                            // replace with a path-scoped scan when reconciliation supports it.
                             for vf in all_virtual
                                 .iter()
                                 .filter(|folder| affected.contains(&folder.id))
@@ -207,52 +220,7 @@ fn relevant_event_paths(event: Event) -> impl Iterator<Item = PathBuf> {
     event
         .paths
         .into_iter()
-        .filter(move |path| relevant && is_library_media_path(path))
-}
-
-fn is_library_media_path(path: &Path) -> bool {
-    let Some(ext) = path.extension().and_then(|e| e.to_str()) else {
-        return false;
-    };
-    matches!(
-        ext.to_ascii_lowercase().as_str(),
-        "mkv"
-            | "mp4"
-            | "avi"
-            | "mov"
-            | "m4v"
-            | "wmv"
-            | "flv"
-            | "webm"
-            | "mp3"
-            | "flac"
-            | "aac"
-            | "ogg"
-            | "wav"
-            | "m4a"
-            | "opus"
-            | "wma"
-            | "dsf"
-            | "aiff"
-            | "srt"
-            | "ass"
-            | "ssa"
-            | "sub"
-            | "jpg"
-            | "jpeg"
-            | "png"
-            | "gif"
-            | "bmp"
-            | "webp"
-            | "tiff"
-            | "tif"
-            | "pdf"
-            | "epub"
-            | "mobi"
-            | "cbr"
-            | "cbz"
-            | "djvu"
-    )
+        .filter(move |path| relevant && !IgnorePatterns::should_ignore(&path.to_string_lossy()))
 }
 
 fn deduplicate_parents<'a>(paths: impl IntoIterator<Item = &'a PathBuf>) -> Vec<PathBuf> {
@@ -381,17 +349,27 @@ mod tests {
     }
 
     #[test]
-    fn event_paths_are_bounded_to_media_and_all_paths_are_retained() {
+    fn event_paths_include_metadata_and_directories_but_skip_ignored_paths() {
         let event = Event {
-            kind: EventKind::Modify(notify::event::ModifyKind::Any),
+            kind: EventKind::Modify(notify::event::ModifyKind::Name(
+                notify::event::RenameMode::Both,
+            )),
             paths: vec![
                 PathBuf::from("/media/movies/one.mkv"),
-                PathBuf::from("/media/movies/two.srt"),
-                PathBuf::from("/media/movies/readme.txt"),
+                PathBuf::from("/media/movies/movie.nfo"),
+                PathBuf::from("/media/movies/new-season"),
+                PathBuf::from("/media/movies/.@__thumb/cache.mkv"),
             ],
             attrs: notify::event::EventAttributes::new(),
         };
-        assert_eq!(relevant_event_paths(event).count(), 2);
+        assert_eq!(
+            relevant_event_paths(event).collect::<Vec<_>>(),
+            vec![
+                PathBuf::from("/media/movies/one.mkv"),
+                PathBuf::from("/media/movies/movie.nfo"),
+                PathBuf::from("/media/movies/new-season"),
+            ]
+        );
     }
 
     #[test]

@@ -437,6 +437,10 @@ async fn assert_device_info_latest_projection(fixture: &Fixture) {
         assert_eq!(info["LastUserId"], fixture.user_id.simple().to_string());
         assert!(info["LastUserName"].as_str().is_some());
         assert_eq!(info["Capabilities"]["PlayableMediaTypes"], json!(["Video"]));
+        assert_eq!(
+            info["Capabilities"]["IconUrl"],
+            "https://example.test/device.png"
+        );
         assert_eq!(info["IconUrl"], "https://example.test/device.png");
     }
 

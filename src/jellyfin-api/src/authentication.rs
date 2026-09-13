@@ -452,8 +452,13 @@ pub(crate) async fn authenticated_identity(
     headers: &HeaderMap,
     uri: Option<&Uri>,
 ) -> Result<AuthenticatedIdentity, ApiError> {
-    let access_token =
-        access_token(headers, uri.and_then(Uri::query)).ok_or(ApiError::Unauthorized)?;
+    let access_token = match access_token(headers, uri.and_then(Uri::query)) {
+        Some(access_token) => access_token,
+        None => {
+            log_authentication_rejection(headers, "no recognizable access token");
+            return Err(ApiError::Unauthorized);
+        }
+    };
 
     if let Some(session) = state.devices.find_by_token(&access_token).await? {
         let user_id = session.user_id;
@@ -472,11 +477,10 @@ pub(crate) async fn authenticated_identity(
         )));
     }
 
-    let mut api_key = state
-        .api_keys
-        .find_by_token(&access_token)
-        .await?
-        .ok_or(ApiError::Unauthorized)?;
+    let Some(mut api_key) = state.api_keys.find_by_token(&access_token).await? else {
+        log_authentication_rejection(headers, "unknown access token");
+        return Err(ApiError::Unauthorized);
+    };
     let touched_at = Utc::now();
     if state.api_keys.touch(&access_token, touched_at).await? != 1 {
         return Err(ApiError::Unauthorized);
@@ -594,6 +598,22 @@ fn access_token(headers: &HeaderMap, query: Option<&str>) -> Option<String> {
     None
 }
 
+fn log_authentication_rejection(headers: &HeaderMap, reason: &str) {
+    // Never log token values; the header shape is enough to diagnose client compatibility.
+    let authorization_scheme = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.split_ascii_whitespace().next())
+        .unwrap_or("none");
+    tracing::info!(
+        authorization_scheme,
+        has_x_emby_token = headers.contains_key("x-emby-token"),
+        has_x_mediabrowser_token = headers.contains_key("x-mediabrowser-token"),
+        %reason,
+        "authentication rejected"
+    );
+}
+
 fn nonempty_header(headers: &HeaderMap, name: &str) -> Option<String> {
     headers
         .get(name)
@@ -709,6 +729,16 @@ mod tests {
         assert_eq!(metadata.device_id, "69420");
         assert_eq!(metadata.device, "Apple II");
         assert_eq!(metadata.version, "10.8.0");
+        assert_eq!(metadata.token.as_deref(), Some("abc"));
+    }
+
+    #[test]
+    fn parses_emby_mobile_client_header() {
+        let metadata = parse_authorization(
+            "Emby Client=\"Emby for iOS\", DeviceId=\"ios-device\", Device=\"iPhone\", Version=\"2.1\", Token=\"abc\"",
+        );
+        assert_eq!(metadata.client, "Emby for iOS");
+        assert_eq!(metadata.device_id, "ios-device");
         assert_eq!(metadata.token.as_deref(), Some("abc"));
     }
 

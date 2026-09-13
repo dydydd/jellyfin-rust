@@ -58,6 +58,26 @@ async fn exercise_video_attachment_route(database_name: &str) {
         body_bytes(response).await,
         Bytes::from_static(b"test attachment bytes")
     );
+    for route in [
+        format!(
+            "/Videos/{}/{}/Attachments/4/Stream",
+            fixture.item_id,
+            fixture.item_id.simple()
+        ),
+        format!(
+            "/videos/{}/{}/attachments/4/stream",
+            fixture.item_id,
+            fixture.item_id.simple()
+        ),
+    ] {
+        let response = get(&fixture.app, &route).await;
+        assert_eq!(response.status(), StatusCode::OK, "{route}");
+        assert_eq!(
+            body_bytes(response).await,
+            Bytes::from_static(b"test attachment bytes"),
+            "{route}"
+        );
+    }
 
     let alternate_source = fixture
         .alternate_id
