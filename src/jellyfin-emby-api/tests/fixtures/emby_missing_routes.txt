@@ -2,8 +2,6 @@ GET /Parties
 POST /Parties
 POST /BackupRestore/Restore
 POST /BackupRestore/RestoreData
-GET /Connect/Pending
-GET /Connect/Exchange
 GET /Devices/CameraUploads
 POST /Devices/CameraUploads
 POST /Dlna/Profiles

@@ -354,6 +354,26 @@ fn route_policy(method: &Method, path: &str) -> RoutePolicy {
     {
         return RoutePolicy::Elevated;
     }
+    // Legacy Emby Connect is separate from Jellyfin QuickConnect. The
+    // generated Emby contract marks pending-link discovery and every user
+    // link mutation as administrator-only. Keep these rules protocol-local
+    // and match static segments case-insensitively just like Emby's router.
+    if is_emby_protocol
+        && (matches!(segments.as_slice(), [connect, pending]
+            if connect.eq_ignore_ascii_case("Connect")
+                && pending.eq_ignore_ascii_case("Pending"))
+            || matches!(segments.as_slice(), [users, _, connect, link]
+                if users.eq_ignore_ascii_case("Users")
+                    && connect.eq_ignore_ascii_case("Connect")
+                    && link.eq_ignore_ascii_case("Link"))
+            || matches!(segments.as_slice(), [users, _, connect, link, delete]
+                if users.eq_ignore_ascii_case("Users")
+                    && connect.eq_ignore_ascii_case("Connect")
+                    && link.eq_ignore_ascii_case("Link")
+                    && delete.eq_ignore_ascii_case("Delete")))
+    {
+        return RoutePolicy::Elevated;
+    }
     // Emby's generated Android/iOS contract exposes this legacy DELETE to any
     // authenticated user. Keep Jellyfin's unprefixed endpoint on the current
     // RequiresElevation policy.

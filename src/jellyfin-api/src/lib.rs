@@ -1203,6 +1203,25 @@ impl AppState {
             .map_err(IntoResponse::into_response)
     }
 
+    /// Enforces Emby's administrator boundary before resolving a target user.
+    ///
+    /// Protocol handlers use this ordering so malformed or unknown targets do
+    /// not leak ahead of the generated client's elevated authorization rule.
+    pub async fn require_emby_administrator_user(
+        &self,
+        headers: &HeaderMap,
+        uri: &Uri,
+        user_id: Uuid,
+    ) -> Result<(), Response> {
+        self.require_emby_administrator(headers, uri).await?;
+        self.users
+            .get(user_id)
+            .await
+            .map(|_| ())
+            .map_err(ApiError::from)
+            .map_err(IntoResponse::into_response)
+    }
+
     /// Persists Emby's explicit user/item share levels without exposing the
     /// protocol-private table through Jellyfin's root API.
     ///

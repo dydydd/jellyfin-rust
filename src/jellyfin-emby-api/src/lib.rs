@@ -22,6 +22,7 @@ mod auth_user;
 mod backup;
 mod bif;
 mod collection_provider;
+mod connect;
 mod dlna;
 mod encoding;
 mod environment;
@@ -172,6 +173,8 @@ const DEDICATED_ROUTE_TEMPLATES: &[&str] = &[
     "/Users/{user_id}/HomeSections/Move",
     "/Users/{user_id}/HomeSections",
     "/Users/{user_id}/Configuration",
+    "/Users/{user_id}/Connect/Link/Delete",
+    "/Users/{user_id}/Connect/Link",
     "/Users/{user_id}/Authenticate",
     "/Users/{user_id}/CopyData",
     "/Users/{user_id}/Policy",
@@ -383,6 +386,7 @@ fn dedicated_routes() -> Router<Arc<AppState>> {
         .merge(backup::routes())
         .merge(bif::routes())
         .merge(collection_provider::routes())
+        .merge(connect::routes())
         .merge(dlna::routes())
         .merge(encoding::routes())
         .merge(environment::routes())
