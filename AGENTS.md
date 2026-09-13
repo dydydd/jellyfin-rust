@@ -49,6 +49,10 @@
   order for add/update/delete/move operations, and reject an invalid move before changing the
   stored sequence. Resolve and authorize the target user before binding mutation bodies; ordinary
   users may manage only themselves, while administrators and valid API keys may target any user.
+- Resolve Emby section-item queries from the target user's persisted `Emby.HomeSections`
+  preference. Merge section defaults without overriding explicitly supplied case-insensitive query
+  keys, then delegate to the shared authorized user-items path so policy filtering, signed
+  pagination, and batched DTO projection remain consistent. Keep this route confined to `/emby`.
 
 ## Working practices
 
