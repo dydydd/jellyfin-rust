@@ -71,6 +71,17 @@ paths:
             self.assertIsInstance(document["version"], str)
             self.assertTrue(document["operations"])
 
+    def test_checked_in_inventory_matches_local_generated_client_when_present(self):
+        spec = Path("Emby.ApiClients/Clients/Go/api/swagger.yaml")
+        inventory = Path("src/jellyfin-emby-api/tests/fixtures/emby_operations.json")
+        if not spec.exists() or not inventory.exists():
+            self.skipTest("the generated Emby client checkout is optional")
+        self.assertEqual(
+            json.loads(inventory.read_text(encoding="utf-8")),
+            extract(spec),
+            "refresh emby_operations.json from the generated client contract",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

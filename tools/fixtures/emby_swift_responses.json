@@ -1,0 +1,128 @@
+{
+  "cases": [
+    {
+      "name": "system-info",
+      "model": "SystemInfo",
+      "body": {
+        "ServerName": "Emby Compatibility Test",
+        "Version": "4.10.0.40",
+        "Id": "0123456789abcdef0123456789abcdef",
+        "HttpServerPortNumber": 18096,
+        "SupportsHttps": false,
+        "LocalAddresses": ["http://127.0.0.1:18096"],
+        "CompletedInstallations": []
+      }
+    },
+    {
+      "name": "authentication-result",
+      "model": "AuthenticationAuthenticationResult",
+      "body": {
+        "User": {
+          "Name": "mobile-user",
+          "Id": "0123456789abcdef0123456789abcdef",
+          "DateCreated": "2026-09-14T01:02:03.000Z",
+          "Policy": {
+            "IsAdministrator": false,
+            "EnableAllFolders": true
+          }
+        },
+        "AccessToken": "fixture-token",
+        "ServerId": "0123456789abcdef0123456789abcdef"
+      }
+    },
+    {
+      "name": "user",
+      "model": "UserDto",
+      "body": {
+        "Name": "mobile-user",
+        "Id": "0123456789abcdef0123456789abcdef",
+        "HasPassword": true,
+        "HasConfiguredPassword": true,
+        "Configuration": {
+          "PlayDefaultAudioTrack": true
+        },
+        "Policy": {
+          "IsAdministrator": false,
+          "EnableAllFolders": true
+        }
+      }
+    },
+    {
+      "name": "base-item-page",
+      "model": "QueryResultBaseItemDto",
+      "body": {
+        "Items": [
+          {
+            "Name": "Fixture Movie",
+            "Id": "fedcba9876543210fedcba9876543210",
+            "Type": "Movie",
+            "MediaType": "Video",
+            "LocationType": "FileSystem",
+            "ProviderIds": {"Tmdb": "123"},
+            "ImageTags": {},
+            "MediaSources": []
+          }
+        ],
+        "TotalRecordCount": 1
+      }
+    },
+    {
+      "name": "display-preferences",
+      "model": "DisplayPreferences",
+      "body": {
+        "Id": "dashboard",
+        "SortBy": "SortName",
+        "CustomPrefs": {"landing": "home"},
+        "SortOrder": "Ascending",
+        "Client": "emby"
+      }
+    },
+    {
+      "name": "sync-dialog-empty",
+      "model": "SyncDialogOptions",
+      "body": {
+        "Targets": [],
+        "Options": [],
+        "QualityOptions": [],
+        "ProfileOptions": []
+      }
+    },
+    {
+      "name": "sync-jobs-empty",
+      "model": "QueryResultSyncJob",
+      "body": {"Items": [], "TotalRecordCount": 0}
+    },
+    {
+      "name": "sync-job-items-empty",
+      "model": "QueryResultSyncJobItem",
+      "body": {"Items": [], "TotalRecordCount": 0}
+    },
+    {
+      "name": "sync-targets-empty",
+      "model": "[SyncTarget]",
+      "body": []
+    },
+    {
+      "name": "sync-ready-empty",
+      "model": "[SyncedItem]",
+      "body": []
+    },
+    {
+      "name": "dlna-profile-infos",
+      "model": "[DlnaProfilesDlnaProfile]",
+      "body": [
+        {
+          "Type": "User",
+          "Name": "Fixture profile",
+          "Id": "fixture-profile",
+          "DirectPlayProfiles": [],
+          "TranscodingProfiles": [],
+          "ContainerProfiles": [],
+          "CodecProfiles": [],
+          "ResponseProfiles": [],
+          "SubtitleProfiles": []
+        }
+      ]
+    }
+  ]
+}

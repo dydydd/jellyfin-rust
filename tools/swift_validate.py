@@ -97,7 +97,18 @@ def check_date(value):
     return True
 
 
-def check(structs, enums, aliases, typ, value, path, report, depth=0, nullable=False):
+def check(
+    structs,
+    enums,
+    aliases,
+    typ,
+    value,
+    path,
+    report,
+    depth=0,
+    nullable=False,
+    date_validator=check_date,
+):
     optional = typ.strip().endswith("?")
     typ = strip_optional(typ)
     if value is None:
@@ -116,20 +127,23 @@ def check(structs, enums, aliases, typ, value, path, report, depth=0, nullable=F
                     return
                 for key, item in value.items():
                     check(structs, enums, aliases, dictionary.group(1), item,
-                          f"{path}.{key}", report, depth + 1)
+                          f"{path}.{key}", report, depth + 1,
+                          date_validator=date_validator)
                 return
             if not isinstance(value, list):
                 report.add(path, f"expected array for {typ}, got {json_type(value)}")
                 return
             for index, item in enumerate(value):
-                check(structs, enums, aliases, parts[0], item, f"{path}[{index}]", report, depth + 1)
+                check(structs, enums, aliases, parts[0], item, f"{path}[{index}]", report,
+                      depth + 1, date_validator=date_validator)
             return
         if len(parts) == 2 and parts[0] == "String":
             if not isinstance(value, dict):
                 report.add(path, f"expected object for {typ}, got {json_type(value)}")
                 return
             for key, item in value.items():
-                check(structs, enums, aliases, parts[1], item, f"{path}.{key}", report, depth + 1)
+                check(structs, enums, aliases, parts[1], item, f"{path}.{key}", report,
+                      depth + 1, date_validator=date_validator)
             return
     generic = re.match(r"^(?:List|Array)<(.+)>$", typ)
     if generic:
@@ -139,7 +153,8 @@ def check(structs, enums, aliases, typ, value, path, report, depth=0, nullable=F
         item_type = generic.group(1).strip()
         for index, item in enumerate(value):
             check(structs, enums, aliases, item_type, item,
-                  f"{path}[{index}]", report, depth + 1)
+                  f"{path}[{index}]", report, depth + 1,
+                  date_validator=date_validator)
         return
     if typ in PRIMITIVES:
         expected = PRIMITIVES[typ]
@@ -150,7 +165,7 @@ def check(structs, enums, aliases, typ, value, path, report, depth=0, nullable=F
             "int": isinstance(value, int) and not isinstance(value, bool),
             "num": isinstance(value, (int, float)) and not isinstance(value, bool),
             "str": isinstance(value, str),
-            "date": check_date(value),
+            "date": date_validator(value),
         }[expected]
         if not valid:
             report.add(path, f"{typ} expects {expected}, got {json_type(value)}")
@@ -166,7 +181,8 @@ def check(structs, enums, aliases, typ, value, path, report, depth=0, nullable=F
             report.add(path, f"{typ} value {value!r} is not supported by the Swift SDK")
         return
     if typ in aliases:
-        check(structs, enums, aliases, aliases[typ], value, path, report, depth + 1)
+        check(structs, enums, aliases, aliases[typ], value, path, report, depth + 1,
+              date_validator=date_validator)
         return
     if typ in structs:
         if not isinstance(value, dict):
@@ -175,15 +191,16 @@ def check(structs, enums, aliases, typ, value, path, report, depth=0, nullable=F
         for key, field_type, required in structs[typ]:
             if key in value:
                 check(structs, enums, aliases, field_type, value[key],
-                      f"{path}.{key}", report, depth + 1, nullable=not required)
+                      f"{path}.{key}", report, depth + 1, nullable=not required,
+                      date_validator=date_validator)
             elif required:
                 report.add(f"{path}.{key}", f"missing required {field_type}")
         return
     # Hand-written discriminated unions are intentionally not guessed here.
 
 
-def validate(root, document):
-    structs, enums, aliases = load()
+def validate(root, document, schema_loader=load, date_validator=check_date):
+    structs, enums, aliases = schema_loader()
     report = Report()
     root_type = strip_optional(root)
     generic = re.match(r"^(?:List|Array)<(.+)>$", root_type)
@@ -195,7 +212,16 @@ def validate(root, document):
             and root_type not in aliases and root_type not in PRIMITIVES):
         report.add(root, f"unknown Swift Codable root type {root_type}")
         return report.errors
-    check(structs, enums, aliases, root, document, root, report)
+    check(
+        structs,
+        enums,
+        aliases,
+        root,
+        document,
+        root,
+        report,
+        date_validator=date_validator,
+    )
     return report.errors
 
 

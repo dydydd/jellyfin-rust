@@ -1299,6 +1299,14 @@ instead of accepting zero responses. Keep `none` fixtures genuinely anonymous an
 transcode in the Sessions response so nested transcoding reasons are exercised. Do not add the
 checked-out SDK source tree or Python bytecode to commits.
 
+For the protocol-private Emby surface, run `emby_swift_compat` with a temporary PostgreSQL database
+and `JELLYFIN_EMBY_SWIFT_DUMP` set, then validate the completed manifest with
+`tools/validate_emby_swift_dump.sh`. Derive the schema from the checked-out generated Emby Swift
+`Codable` models, keep the dump free of access-token values, and require every named runtime case to
+pass before writing the manifest. Keep the validator aligned with Emby's generated date decoder,
+including its distinction between timezone-less millisecond timestamps and rejected
+timezone-less whole-second ISO timestamps.
+
 Some `jellyfin-data` integration tests require PostgreSQL and create temporary databases whose names begin with `jellyfin_`. Do not point those tests at a database containing user data.
 
 For scan-memory work, include a repeatable large-directory or synthetic-library measurement when possible. Report baseline, peak, 60-second, and 300-second post-scan values. Separate process RSS and anonymous memory (`RssAnon` or `smaps_rollup` Anonymous) from cgroup `file` and `inactive_file`; metadata image page cache is reclaimable and must not be reported as a Rust heap leak. Also report whether memory returns after the scan, and do not infer a leak from allocator-retained RSS alone.
