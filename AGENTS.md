@@ -1218,6 +1218,42 @@
   substitute the historical singular `ItemId`/`UserData` fields, which mobile SDKs cannot decode.
 - Emit `RefreshProgress` WebSocket data as a string-valued map. Both `ItemId` and invariant-culture
   `Progress` must be JSON strings, matching the official generated Kotlin and Swift contracts.
+- Keep legacy Emby Connect isolated under `/emby`; it is not Jellyfin QuickConnect and must never
+  register root or `/api` aliases. Without an external Connect provider, return an empty pending
+  list, 404 for token exchange, 503 for link, and an idempotent success for unlink while retaining
+  the official administrator authorization on pending and user-link mutations.
+- Keep Emby Parties process-local until a durable party provider exists. Bind its route and DTO
+  casing like the generated clients, isolate it from Jellyfin SyncPlay, enforce membership and
+  ownership transitions, and never advertise a process-local party as durable across restarts.
+- Expose generic Emby UI state and web-string resources only under `/emby`. Preserve the official
+  elevated policy for UI view/command operations and the runtime's anonymous policy for web strings,
+  including mixed-case static paths and case-insensitive request binding.
+- Match the official empty notification-provider registry instead of manufacturing notifier
+  options or successful delivery records. Keep configuration/default/test operations on their
+  generated authorization, binding, and not-found behavior until a real provider is registered.
+- Restore only Rust-native PostgreSQL backup ZIP archives through the existing validated restore
+  engine. Reject legacy SQLite, lightweight, and selective-user restore modes with 422 instead of
+  partially importing them, and retain path, archive-entry, and transaction safety checks.
+- Persist Emby DLNA user profiles in protocol-private named configuration. Keep profile management
+  administrator-only, bind nested JSON properties and enums case-insensitively, and do not register
+  these profiles as Jellyfin playback device profiles.
+- Keep the Emby UPnP/DLNA description, SCPD, SOAP control, and icon resources unauthenticated and
+  isolated under `/emby`, matching static segments case-insensitively and accepting stale UDN path
+  values like the official controller. Bound SOAP bodies, return official 401 SOAP faults for
+  invalid actions, and use a legal empty DIDL response until browsing can apply a real DLNA profile
+  and media policy; never expose an unfiltered library from this public transport surface.
+- Keep retired Emby offline-Sync routes separate from Jellyfin SyncPlay. When no legacy Sync
+  provider is registered, discovery collections are empty and individual job or job-file lookups
+  are 404 after normal authentication and query binding; do not create placeholder files or claim
+  mutation success until a durable provider and persistence model exist.
+- Keep Emby CameraUploads history protocol-local and keyed only by the authenticated request's
+  reported DeviceId, case-insensitively, so the same device retains one append-only history when
+  users change. Persist history across user/session/device-auth deletion like the official device
+  JSON, enforce the protocol-private `AllowCameraUpload` role before query/body extraction, and
+  stream raw or first-file multipart bodies into a bounded same-directory temporary file followed
+  by atomic rename. Sanitize filesystem components without altering the original SDK-visible
+  `LocalFileInfo`, keep all paths inside the internal camera-uploads root, and remove a published
+  unique file if its PostgreSQL history append fails.
 
 ## Validation
 
