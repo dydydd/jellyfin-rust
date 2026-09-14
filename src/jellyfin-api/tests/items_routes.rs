@@ -757,6 +757,18 @@ async fn related_item_counts_use_batched_persisted_relationships() {
         assert_eq!(dto["SpecialFeatureCount"], 2, "{route}");
         assert_eq!(dto["PartCount"], 3, "{route}");
     }
+    let alternate_detail = body_json(
+        fixture
+            .request(
+                &format!("/Items/{}?UserId={}", alternate.id, fixture.user_id),
+                Some(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    assert_eq!(alternate_detail["LocalTrailerCount"], 1);
+    assert_eq!(alternate_detail["SpecialFeatureCount"], 2);
+    assert!(alternate_detail.get("PartCount").is_none());
     let empty_detail_route = format!("/Items/{}?UserId={}", folder.id, fixture.user_id);
     let empty_detail = body_json(
         fixture

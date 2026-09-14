@@ -959,9 +959,15 @@
 - Project requested `LocalTrailerCount` and `SpecialFeatureCount` from relational extra children in
   bounded page batches, returning real zeroes when requested. Share video-version extras and merged
   Series extras like official owner resolution, count the complete official display-extra set, and
-  keep both fields omitted when not requested. Project `PartCount` without an `ItemFields` gate only
+  keep every batched owner lookup indexable by resolving self, primary/alternate versions, and
+  merged Series as separate set branches rather than one cross-catalog `OR` join. Keep both fields
+  omitted when not requested. Project `PartCount` without an `ItemFields` gate only
   for Video items whose persisted `AdditionalParts` relationship is nonempty, using length plus one;
   never emit a placeholder one or leak it from similarly shaped metadata on non-Video items.
+- Resolve each related-count batch's self, primary-version id, reverse alternate-version, and Series
+  presentation-key owners through separate indexable set branches. Do not combine those owner paths
+  into an `OR` join over all `base_items`; unbounded default-all-fields Suggestions pages amplify
+  that scan once per bounded DTO batch even though their official nullable `Limit` must stay unbounded.
 - Project `LocationType` for every non-Live-TV item from its persisted source and path: pathless
   Channel items and non-file URIs are Remote, pathless library items are Virtual, and ordinary paths
   plus file URIs are FileSystem. Project requested `EnableMediaSourceDisplay` as true for ordinary

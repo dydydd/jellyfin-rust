@@ -2541,7 +2541,7 @@ impl BaseItemRepository {
                 .join(", ");
             let sql = format!(
                 "WITH requested(item_id) AS (VALUES {requested_values}), \
-                 displayed AS (\
+                 displayed AS MATERIALIZED (\
                      SELECT requested.item_id, item.item_type, item.primary_version_id, \
                             item.presentation_unique_key, \
                             COALESCE(\
@@ -2551,17 +2551,32 @@ impl BaseItemRepository {
                      FROM requested \
                      INNER JOIN jellyfin.base_items AS item ON item.id = requested.item_id\
                  ), owners AS (\
-                     SELECT DISTINCT displayed.item_id, owner.id AS owner_id \
+                     SELECT displayed.item_id, displayed.item_id AS owner_id \
                      FROM displayed \
-                     INNER JOIN jellyfin.base_items AS owner ON owner.id = displayed.item_id \
-                        OR (displayed.item_type IN {VIDEO_ITEM_TYPES_SQL} \
-                            AND owner.item_type IN {VIDEO_ITEM_TYPES_SQL} \
-                            AND COALESCE(owner.primary_version_id, owner.id) = \
-                                COALESCE(displayed.primary_version_id, displayed.item_id)) \
-                        OR (displayed.item_type IN {SERIES_ITEM_TYPES_SQL} \
-                            AND owner.item_type IN {SERIES_ITEM_TYPES_SQL} \
-                            AND displayed.presentation_unique_key IS NOT NULL \
-                            AND owner.presentation_unique_key = displayed.presentation_unique_key)\
+                     UNION \
+                     SELECT displayed.item_id, owner.id AS owner_id \
+                     FROM displayed \
+                     INNER JOIN jellyfin.base_items AS owner \
+                       ON owner.id = COALESCE(\
+                           displayed.primary_version_id, displayed.item_id) \
+                     WHERE displayed.item_type IN {VIDEO_ITEM_TYPES_SQL} \
+                       AND owner.item_type IN {VIDEO_ITEM_TYPES_SQL} \
+                     UNION \
+                     SELECT displayed.item_id, owner.id AS owner_id \
+                     FROM displayed \
+                     INNER JOIN jellyfin.base_items AS owner \
+                       ON owner.primary_version_id = COALESCE(\
+                           displayed.primary_version_id, displayed.item_id) \
+                     WHERE displayed.item_type IN {VIDEO_ITEM_TYPES_SQL} \
+                       AND owner.item_type IN {VIDEO_ITEM_TYPES_SQL} \
+                     UNION \
+                     SELECT displayed.item_id, owner.id AS owner_id \
+                     FROM displayed \
+                     INNER JOIN jellyfin.base_items AS owner \
+                       ON owner.presentation_unique_key = displayed.presentation_unique_key \
+                     WHERE displayed.item_type IN {SERIES_ITEM_TYPES_SQL} \
+                       AND owner.item_type IN {SERIES_ITEM_TYPES_SQL} \
+                       AND displayed.presentation_unique_key IS NOT NULL\
                  ), extra_counts AS (\
                      SELECT owners.item_id, \
                             (COUNT(extra.id) FILTER (WHERE LOWER(COALESCE(\
