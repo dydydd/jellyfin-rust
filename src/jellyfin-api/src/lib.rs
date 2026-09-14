@@ -1615,10 +1615,7 @@ impl AppState {
 
     /// Loads one Emby DLNA user profile using the official
     /// case-insensitive profile-id comparison.
-    pub async fn emby_dlna_profile(
-        &self,
-        id: &str,
-    ) -> Result<Option<serde_json::Value>, Response> {
+    pub async fn emby_dlna_profile(&self, id: &str) -> Result<Option<serde_json::Value>, Response> {
         let repository = self
             .named_configurations
             .as_ref()
