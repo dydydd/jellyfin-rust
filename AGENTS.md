@@ -1188,6 +1188,9 @@
   JSONB without teaching Jellyfin's shared DTO about them, and preserve omitted Emby-private fields
   across short, Full, and modern Jellyfin reports. Emby returns an empty 200; root and `/api` retain
   their optional session-id fallback, `SupportsPersistentIdentifier`, typed projection, and 204.
+- Keep Emby Sessions `TranscodeReasons` decodable by its generated closed Swift enum. Translate
+  Jellyfin's renamed external-audio and video-range reasons to their Emby names, omit newer
+  Jellyfin-only reasons, and preserve the complete modern reason list on root and `/api` Sessions.
 - Bind general-command and message JSON properties case-insensitively; accept official command enum
   names, integers, and numeric strings, and reject whitespace-only required message text. Apply the
   same enum rules to play and playstate query/path commands, preserve the collection binder's

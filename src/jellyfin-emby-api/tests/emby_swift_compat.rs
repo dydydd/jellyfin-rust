@@ -8,6 +8,7 @@ use axum::{
 use jellyfin_api::AppState;
 use jellyfin_controller::UserService;
 use jellyfin_data::{DatabaseConfig, DeviceRepository, NewDevice};
+use jellyfin_model::TranscodeReason;
 use jellyfin_server_implementations::DefaultAuthenticationProvider;
 use sea_orm::ConnectionTrait;
 use serde_json::{Value, json};
@@ -90,6 +91,17 @@ async fn exercise(database_name: &str, dump_dir: Option<PathBuf>) {
         database.clone(),
         "Emby Swift Compatibility Server".to_owned(),
         "http://127.0.0.1:18096".to_owned(),
+    )
+    .with_transcode_job(
+        "emby-swift-transcode",
+        "emby-swift-compat",
+        "emby-swift-play-session",
+        TranscodeReason::VIDEO_CODEC_NOT_SUPPORTED
+            | TranscodeReason::AUDIO_IS_EXTERNAL
+            | TranscodeReason::VIDEO_RANGE_TYPE_NOT_SUPPORTED
+            | TranscodeReason::VIDEO_CODEC_TAG_NOT_SUPPORTED
+            | TranscodeReason::STREAM_COUNT_EXCEEDS_LIMIT
+            | TranscodeReason::VIDEO_ROTATION_NOT_SUPPORTED,
     );
     let app = jellyfin_api::router(state.clone()).merge(jellyfin_emby_api::router(state));
     let user_id = user.id.simple();
@@ -127,6 +139,7 @@ async fn exercise(database_name: &str, dump_dir: Option<PathBuf>) {
             format!("/emby/Items?UserId={user_id}&Limit=1"),
             "QueryResultBaseItemDto",
         ),
+        ("/emby/Sessions".to_owned(), "[SessionSessionInfo]"),
         (
             format!("/emby/DisplayPreferences/emby-swift?UserId={user_id}&Client=emby-swift"),
             "DisplayPreferences",
@@ -165,25 +178,68 @@ async fn exercise(database_name: &str, dump_dir: Option<PathBuf>) {
         });
     }
 
-    assert_eq!(responses.len(), 11);
+    assert_eq!(responses.len(), 12);
     assert!(responses.iter().all(|response| !response.route.is_empty()));
     assert_eq!(responses[2].body["Id"], user_id.to_string());
     assert!(responses[3].body["Items"].is_array());
-    assert!(responses[4].body["CustomPrefs"].is_object());
     assert_eq!(
-        responses[6].body,
-        json!({"Items": [], "TotalRecordCount": 0})
+        session_for_device(&responses[4].body, "emby-swift-compat")["TranscodingInfo"]["TranscodeReasons"],
+        json!([
+            "VideoCodecNotSupported",
+            "ExternalAudioNotSupported",
+            "VideoRangeNotSupported"
+        ])
     );
+    assert!(responses[5].body["CustomPrefs"].is_object());
     assert_eq!(
         responses[7].body,
         json!({"Items": [], "TotalRecordCount": 0})
     );
-    assert_eq!(responses[8].body, json!([]));
+    assert_eq!(
+        responses[8].body,
+        json!({"Items": [], "TotalRecordCount": 0})
+    );
+    assert_eq!(responses[9].body, json!([]));
+
+    let jellyfin_sessions = response_json(
+        request(
+            &app,
+            Method::GET,
+            "/Sessions",
+            Some(&user_token),
+            None,
+            None,
+        )
+        .await,
+        "/Sessions",
+    )
+    .await;
+    assert_eq!(
+        session_for_device(&jellyfin_sessions, "emby-swift-compat")["TranscodingInfo"]["TranscodeReasons"],
+        json!([
+            "VideoCodecNotSupported",
+            "AudioIsExternal",
+            "VideoRangeTypeNotSupported",
+            "VideoCodecTagNotSupported",
+            "StreamCountExceedsLimit",
+            "VideoRotationNotSupported"
+        ]),
+        "the Emby adapter must not rewrite Jellyfin's root Sessions response"
+    );
 
     if let Some(dump_dir) = dump_dir {
         write_dump(&dump_dir, &responses, &[&user_token]);
     }
     database.close().await.expect("database cleanup");
+}
+
+fn session_for_device<'a>(sessions: &'a Value, device_id: &str) -> &'a Value {
+    sessions
+        .as_array()
+        .expect("Sessions response is an array")
+        .iter()
+        .find(|session| session["DeviceId"] == device_id)
+        .unwrap_or_else(|| panic!("Sessions response has no device {device_id}"))
 }
 
 async fn request(

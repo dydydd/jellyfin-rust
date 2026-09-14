@@ -266,7 +266,8 @@ pub(crate) async fn list(
             .get(&device.user_id)
             .map(|(name, tag)| (Some(name.clone()), tag.clone()))
             .unwrap_or((None, None));
-        let transcoding_info = transcoding_info(&state, &device.device_id);
+        let mut transcoding_info = transcoding_info(&state, &device.device_id);
+        adapt_emby_transcoding_info(&uri, &mut transcoding_info);
         sessions.push(session_info(
             device,
             user_name,
@@ -1328,6 +1329,67 @@ pub(crate) fn transcoding_info(state: &AppState, device_id: &str) -> Option<Tran
         })
 }
 
+fn adapt_emby_transcoding_info(uri: &axum::http::Uri, info: &mut Option<TranscodingInfo>) {
+    if !uri
+        .path()
+        .split('/')
+        .nth(1)
+        .is_some_and(|segment| segment.eq_ignore_ascii_case("emby"))
+    {
+        return;
+    }
+    let Some(info) = info else {
+        return;
+    };
+
+    // Emby's generated Swift client decodes this as a closed enum. Preserve
+    // reasons shared by both protocols, translate the two renamed reasons,
+    // and omit Jellyfin-only reasons so one unsupported value cannot reject
+    // the complete Sessions response.
+    info.transcode_reasons = info
+        .transcode_reasons
+        .iter()
+        .filter_map(|reason| emby_transcode_reason(reason).map(str::to_owned))
+        .collect();
+}
+
+fn emby_transcode_reason(reason: &str) -> Option<&str> {
+    match reason {
+        "AudioIsExternal" => Some("ExternalAudioNotSupported"),
+        "VideoRangeTypeNotSupported" => Some("VideoRangeNotSupported"),
+        "ContainerNotSupported"
+        | "VideoCodecNotSupported"
+        | "AudioCodecNotSupported"
+        | "SubtitleCodecNotSupported"
+        | "SecondaryAudioNotSupported"
+        | "VideoProfileNotSupported"
+        | "VideoLevelNotSupported"
+        | "VideoResolutionNotSupported"
+        | "VideoBitDepthNotSupported"
+        | "VideoFramerateNotSupported"
+        | "RefFramesNotSupported"
+        | "AnamorphicVideoNotSupported"
+        | "InterlacedVideoNotSupported"
+        | "AudioChannelsNotSupported"
+        | "AudioProfileNotSupported"
+        | "AudioSampleRateNotSupported"
+        | "AudioBitDepthNotSupported"
+        | "ContainerBitrateExceedsLimit"
+        | "VideoBitrateNotSupported"
+        | "AudioBitrateNotSupported"
+        | "UnknownVideoStreamInfo"
+        | "UnknownAudioStreamInfo"
+        | "DirectPlayError"
+        | "VideoRangeNotSupported"
+        | "SubtitleContentOptionsEnabled"
+        | "ExternalAudioNotSupported"
+        | "AudioDelayNotSupported" => Some(reason),
+        // VideoCodecTagNotSupported, StreamCountExceedsLimit, and
+        // VideoRotationNotSupported have no Emby 4.10 wire representation.
+        _ => None,
+    }
+}
+
 async fn session_user_details(
     state: &AppState,
     devices: &[device::Model],
@@ -1484,8 +1546,8 @@ pub(crate) fn jellyfin_session_id(app_name: &str, device_id: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        can_access_session_device, can_control_session, controlled_user_allows_session,
-        queue_item_ids, transcoding_info,
+        adapt_emby_transcoding_info, can_access_session_device, can_control_session,
+        controlled_user_allows_session, queue_item_ids, transcoding_info,
     };
     use crate::AppState;
     use jellyfin_model::{TranscodeReason, UserPolicy};
@@ -1570,6 +1632,45 @@ mod tests {
             info.transcode_reasons,
             ["VideoCodecNotSupported", "AudioBitrateNotSupported"]
         );
+    }
+
+    #[test]
+    fn emby_sessions_translate_or_omit_jellyfin_only_transcode_reasons() {
+        let reasons = vec![
+            "VideoCodecNotSupported".to_owned(),
+            "AudioIsExternal".to_owned(),
+            "VideoRangeTypeNotSupported".to_owned(),
+            "VideoCodecTagNotSupported".to_owned(),
+            "StreamCountExceedsLimit".to_owned(),
+            "VideoRotationNotSupported".to_owned(),
+        ];
+        let mut emby = Some(jellyfin_model::TranscodingInfo {
+            transcode_reasons: reasons.clone(),
+            ..jellyfin_model::TranscodingInfo::default()
+        });
+        adapt_emby_transcoding_info(&"/eMbY/Sessions".parse().unwrap(), &mut emby);
+        assert_eq!(
+            emby.unwrap().transcode_reasons,
+            [
+                "VideoCodecNotSupported",
+                "ExternalAudioNotSupported",
+                "VideoRangeNotSupported",
+            ]
+        );
+
+        let mut jellyfin = Some(jellyfin_model::TranscodingInfo {
+            transcode_reasons: reasons.clone(),
+            ..jellyfin_model::TranscodingInfo::default()
+        });
+        adapt_emby_transcoding_info(&"/Sessions".parse().unwrap(), &mut jellyfin);
+        assert_eq!(jellyfin.unwrap().transcode_reasons, reasons);
+
+        let mut api = Some(jellyfin_model::TranscodingInfo {
+            transcode_reasons: reasons.clone(),
+            ..jellyfin_model::TranscodingInfo::default()
+        });
+        adapt_emby_transcoding_info(&"/api/Sessions".parse().unwrap(), &mut api);
+        assert_eq!(api.unwrap().transcode_reasons, reasons);
     }
 
     #[test]
