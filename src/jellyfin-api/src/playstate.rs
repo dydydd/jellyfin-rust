@@ -2,7 +2,10 @@ use std::{fmt, marker::PhantomData, sync::Arc};
 
 use axum::{
     Json,
-    extract::{OriginalUri, Path, Query, State, rejection::JsonRejection},
+    extract::{
+        FromRequest, OriginalUri, Path, Query, Request, State,
+        rejection::{JsonRejection, QueryRejection},
+    },
     http::{HeaderMap, StatusCode},
 };
 use jellyfin_controller::{
@@ -10,7 +13,7 @@ use jellyfin_controller::{
 };
 use jellyfin_data::NewActivityLog;
 use jellyfin_model::{PlayMethod, PlaybackOrder, PlayerStateInfo, RepeatMode, UserItemDataDto};
-use serde::{Deserialize, Serialize, Serializer, de};
+use serde::{Deserialize, Serialize, Serializer, de, de::IgnoredAny};
 use serde_json::{Value, json};
 use uuid::Uuid;
 
@@ -437,6 +440,311 @@ pub struct PlaybackStopQuery {
     pub play_session_id: Option<String>,
 }
 
+fn is_emby_protocol_uri(uri: &axum::http::Uri) -> bool {
+    uri.path() == "/emby" || uri.path().starts_with("/emby/")
+}
+
+fn parse_optional_query_integer<T>(value: Option<String>) -> Result<Option<T>, ApiError>
+where
+    T: std::str::FromStr,
+{
+    value
+        .filter(|value| !value.is_empty())
+        .map(|value| value.parse().map_err(|_| ApiError::InvalidRequest))
+        .transpose()
+}
+
+fn parse_optional_query_bool(value: Option<String>) -> Result<bool, ApiError> {
+    match value.as_deref() {
+        None => Ok(false),
+        Some(value) if value.eq_ignore_ascii_case("true") => Ok(true),
+        Some(value) if value.eq_ignore_ascii_case("false") => Ok(false),
+        Some(_) => Err(ApiError::InvalidRequest),
+    }
+}
+
+fn parse_optional_query_enum<T: CompatibleEnum>(
+    value: Option<String>,
+) -> Result<Option<T>, ApiError> {
+    value
+        .map(|value| T::from_name(&value).ok_or(ApiError::InvalidRequest))
+        .transpose()
+}
+
+fn emby_playback_start_query(uri: &axum::http::Uri) -> Result<PlaybackStartQuery, ApiError> {
+    let mut media_source_id = None;
+    let mut audio_stream_index = None;
+    let mut subtitle_stream_index = None;
+    let mut play_method = None;
+    let mut live_stream_id = None;
+    let mut play_session_id = None;
+    let mut can_seek = None;
+    for (name, value) in form_urlencoded::parse(uri.query().unwrap_or_default().as_bytes()) {
+        let value = value.into_owned();
+        if name.eq_ignore_ascii_case("MediaSourceId") {
+            media_source_id = Some(value);
+        } else if name.eq_ignore_ascii_case("AudioStreamIndex") {
+            audio_stream_index = Some(value);
+        } else if name.eq_ignore_ascii_case("SubtitleStreamIndex") {
+            subtitle_stream_index = Some(value);
+        } else if name.eq_ignore_ascii_case("PlayMethod") {
+            play_method = Some(value);
+        } else if name.eq_ignore_ascii_case("LiveStreamId") {
+            live_stream_id = Some(value);
+        } else if name.eq_ignore_ascii_case("PlaySessionId") {
+            play_session_id = Some(value);
+        } else if name.eq_ignore_ascii_case("CanSeek") {
+            can_seek = Some(value);
+        }
+    }
+    Ok(PlaybackStartQuery {
+        media_source_id: Some(media_source_id.ok_or(ApiError::InvalidRequest)?),
+        audio_stream_index: parse_optional_query_integer(audio_stream_index)?,
+        subtitle_stream_index: parse_optional_query_integer(subtitle_stream_index)?,
+        play_method: parse_optional_query_enum(play_method)?,
+        live_stream_id,
+        play_session_id,
+        can_seek: parse_optional_query_bool(can_seek)?,
+    })
+}
+
+fn emby_playback_progress_query(uri: &axum::http::Uri) -> Result<PlaybackProgressQuery, ApiError> {
+    let mut media_source_id = None;
+    let mut position_ticks = None;
+    let mut audio_stream_index = None;
+    let mut subtitle_stream_index = None;
+    let mut volume_level = None;
+    let mut play_method = None;
+    let mut live_stream_id = None;
+    let mut play_session_id = None;
+    let mut repeat_mode = None;
+    let mut is_paused = None;
+    let mut is_muted = None;
+    let mut subtitle_offset = None;
+    let mut playback_rate = None;
+    for (name, value) in form_urlencoded::parse(uri.query().unwrap_or_default().as_bytes()) {
+        let value = value.into_owned();
+        if name.eq_ignore_ascii_case("MediaSourceId") {
+            media_source_id = Some(value);
+        } else if name.eq_ignore_ascii_case("PositionTicks") {
+            position_ticks = Some(value);
+        } else if name.eq_ignore_ascii_case("AudioStreamIndex") {
+            audio_stream_index = Some(value);
+        } else if name.eq_ignore_ascii_case("SubtitleStreamIndex") {
+            subtitle_stream_index = Some(value);
+        } else if name.eq_ignore_ascii_case("VolumeLevel") {
+            volume_level = Some(value);
+        } else if name.eq_ignore_ascii_case("PlayMethod") {
+            play_method = Some(value);
+        } else if name.eq_ignore_ascii_case("LiveStreamId") {
+            live_stream_id = Some(value);
+        } else if name.eq_ignore_ascii_case("PlaySessionId") {
+            play_session_id = Some(value);
+        } else if name.eq_ignore_ascii_case("RepeatMode") {
+            repeat_mode = Some(value);
+        } else if name.eq_ignore_ascii_case("IsPaused") {
+            is_paused = Some(value);
+        } else if name.eq_ignore_ascii_case("IsMuted") {
+            is_muted = Some(value);
+        } else if name.eq_ignore_ascii_case("SubtitleOffset") {
+            subtitle_offset = Some(value);
+        } else if name.eq_ignore_ascii_case("PlaybackRate") {
+            playback_rate = Some(value);
+        }
+    }
+    let _ = parse_optional_query_integer::<i32>(subtitle_offset)?;
+    let _ = parse_optional_query_integer::<f64>(playback_rate)?;
+    Ok(PlaybackProgressQuery {
+        media_source_id: Some(media_source_id.ok_or(ApiError::InvalidRequest)?),
+        position_ticks: parse_optional_query_integer(position_ticks)?,
+        audio_stream_index: parse_optional_query_integer(audio_stream_index)?,
+        subtitle_stream_index: parse_optional_query_integer(subtitle_stream_index)?,
+        volume_level: parse_optional_query_integer(volume_level)?,
+        play_method: parse_optional_query_enum(play_method)?,
+        live_stream_id,
+        play_session_id,
+        repeat_mode: parse_optional_query_enum(repeat_mode)?,
+        is_paused: parse_optional_query_bool(is_paused)?,
+        is_muted: parse_optional_query_bool(is_muted)?,
+    })
+}
+
+fn emby_playback_stop_query(uri: &axum::http::Uri) -> Result<PlaybackStopQuery, ApiError> {
+    let mut media_source_id = None;
+    let mut position_ticks = None;
+    let mut next_media_type = None;
+    let mut live_stream_id = None;
+    let mut play_session_id = None;
+    for (name, value) in form_urlencoded::parse(uri.query().unwrap_or_default().as_bytes()) {
+        let value = value.into_owned();
+        if name.eq_ignore_ascii_case("MediaSourceId") {
+            media_source_id = Some(value);
+        } else if name.eq_ignore_ascii_case("PositionTicks") {
+            position_ticks = Some(value);
+        } else if name.eq_ignore_ascii_case("NextMediaType") {
+            next_media_type = Some(value);
+        } else if name.eq_ignore_ascii_case("LiveStreamId") {
+            live_stream_id = Some(value);
+        } else if name.eq_ignore_ascii_case("PlaySessionId") {
+            play_session_id = Some(value);
+        }
+    }
+    Ok(PlaybackStopQuery {
+        media_source_id: Some(media_source_id.ok_or(ApiError::InvalidRequest)?),
+        position_ticks: parse_optional_query_integer(position_ticks)?,
+        next_media_type: Some(next_media_type.ok_or(ApiError::InvalidRequest)?),
+        live_stream_id,
+        play_session_id,
+    })
+}
+
+#[derive(Debug, Default)]
+struct EmbyPlaybackProgressBody;
+
+impl<'de> Deserialize<'de> for EmbyPlaybackProgressBody {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        struct ProgressVisitor;
+
+        impl<'de> de::Visitor<'de> for ProgressVisitor {
+            type Value = EmbyPlaybackProgressBody;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("an Emby OnPlaybackProgress object")
+            }
+
+            fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+            where
+                A: de::MapAccess<'de>,
+            {
+                let mut playlist_index = None;
+                let mut playlist_length = None;
+                let mut shuffle = None;
+                let mut sleep_timer_mode = None;
+                let mut sleep_timer_end_time = None;
+                let mut event_name = None;
+                while let Some(name) = map.next_key::<String>()? {
+                    if name.eq_ignore_ascii_case("PlaylistIndex") {
+                        playlist_index = Some(map.next_value::<Value>()?);
+                    } else if name.eq_ignore_ascii_case("PlaylistLength") {
+                        playlist_length = Some(map.next_value::<Value>()?);
+                    } else if name.eq_ignore_ascii_case("Shuffle") {
+                        shuffle = Some(map.next_value::<Value>()?);
+                    } else if name.eq_ignore_ascii_case("SleepTimerMode") {
+                        sleep_timer_mode = Some(map.next_value::<Value>()?);
+                    } else if name.eq_ignore_ascii_case("EventName") {
+                        event_name = Some(map.next_value::<Value>()?);
+                    } else if name.eq_ignore_ascii_case("SleepTimerEndTime") {
+                        sleep_timer_end_time = Some(map.next_value::<Value>()?);
+                    } else {
+                        map.next_value::<IgnoredAny>()?;
+                    }
+                }
+                if let Some(value) = playlist_index {
+                    validate_optional_json_integer::<i32, A::Error>(&value)?;
+                }
+                if let Some(value) = playlist_length {
+                    validate_optional_json_integer::<i32, A::Error>(&value)?;
+                }
+                if let Some(value) = shuffle {
+                    validate_optional_json_bool::<A::Error>(&value)?;
+                }
+                if let Some(value) = sleep_timer_mode {
+                    validate_optional_json_enum::<A::Error>(
+                        &value,
+                        &["None", "AfterItem", "AtTime"],
+                    )?;
+                }
+                if let Some(value) = sleep_timer_end_time {
+                    validate_optional_json_date::<A::Error>(&value)?;
+                }
+                if let Some(value) = event_name {
+                    validate_optional_json_enum::<A::Error>(
+                        &value,
+                        &[
+                            "TimeUpdate",
+                            "Pause",
+                            "Unpause",
+                            "VolumeChange",
+                            "RepeatModeChange",
+                            "AudioTrackChange",
+                            "SubtitleTrackChange",
+                            "PlaylistItemMove",
+                            "PlaylistItemRemove",
+                            "PlaylistItemAdd",
+                            "QualityChange",
+                            "StateChange",
+                            "SubtitleOffsetChange",
+                            "PlaybackRateChange",
+                            "ShuffleChange",
+                            "SleepTimerChange",
+                        ],
+                    )?;
+                }
+                Ok(EmbyPlaybackProgressBody)
+            }
+        }
+
+        deserializer.deserialize_map(ProgressVisitor)
+    }
+}
+
+fn validate_optional_json_integer<T, E>(value: &Value) -> Result<(), E>
+where
+    T: TryFrom<i64> + std::str::FromStr,
+    E: de::Error,
+{
+    match value {
+        Value::Null => Ok(()),
+        Value::Number(number) => number
+            .as_i64()
+            .and_then(|value| T::try_from(value).ok())
+            .map(drop)
+            .ok_or_else(|| E::custom("integer is outside the supported range")),
+        Value::String(value) => value
+            .parse::<T>()
+            .map(drop)
+            .map_err(|_| E::custom("invalid integer string")),
+        _ => Err(E::custom("expected an integer or integer string")),
+    }
+}
+
+fn validate_optional_json_bool<E: de::Error>(value: &Value) -> Result<(), E> {
+    match value {
+        Value::Null | Value::Bool(_) => Ok(()),
+        _ => Err(E::custom("expected a boolean")),
+    }
+}
+
+fn validate_optional_json_enum<E: de::Error>(value: &Value, variants: &[&str]) -> Result<(), E> {
+    match value {
+        Value::Null => Ok(()),
+        Value::String(value) if variants.iter().any(|item| value.eq_ignore_ascii_case(item)) => {
+            Ok(())
+        }
+        Value::Number(number)
+            if number
+                .as_u64()
+                .is_some_and(|index| index < variants.len() as u64) =>
+        {
+            Ok(())
+        }
+        _ => Err(E::custom("unknown enum value")),
+    }
+}
+
+fn validate_optional_json_date<E: de::Error>(value: &Value) -> Result<(), E> {
+    match value {
+        Value::Null => Ok(()),
+        Value::String(value) => chrono::DateTime::parse_from_rfc3339(value)
+            .map(drop)
+            .map_err(|_| E::custom("invalid date-time")),
+        _ => Err(E::custom("expected a date-time string")),
+    }
+}
+
 #[derive(Debug, Default, Deserialize)]
 pub struct PlaybackPingQuery {
     #[serde(
@@ -845,8 +1153,13 @@ pub(crate) async fn report_playback_start_legacy_for_user(
     OriginalUri(uri): OriginalUri,
     headers: HeaderMap,
     Path((_user_id, item_id)): Path<(Uuid, Uuid)>,
-    Query(query): Query<PlaybackStartQuery>,
+    query: Result<Query<PlaybackStartQuery>, QueryRejection>,
 ) -> Result<StatusCode, ApiError> {
+    let query = if is_emby_protocol_uri(&uri) {
+        emby_playback_start_query(&uri)?
+    } else {
+        query.map_err(|_| ApiError::InvalidRequest)?.0
+    };
     report_playback_start_for_current_session(
         state,
         &uri,
@@ -871,8 +1184,13 @@ pub(crate) async fn report_playback_stopped_legacy_for_user(
     OriginalUri(uri): OriginalUri,
     headers: HeaderMap,
     Path((_user_id, item_id)): Path<(Uuid, Uuid)>,
-    Query(query): Query<PlaybackStopQuery>,
+    query: Result<Query<PlaybackStopQuery>, QueryRejection>,
 ) -> Result<StatusCode, ApiError> {
+    let query = if is_emby_protocol_uri(&uri) {
+        emby_playback_stop_query(&uri)?
+    } else {
+        query.map_err(|_| ApiError::InvalidRequest)?.0
+    };
     report_playback_stop_for_current_session(
         state,
         &uri,
@@ -926,8 +1244,17 @@ pub(crate) async fn report_playback_progress_legacy_for_user(
     OriginalUri(uri): OriginalUri,
     headers: HeaderMap,
     Path((_user_id, item_id)): Path<(Uuid, Uuid)>,
-    Query(query): Query<PlaybackProgressQuery>,
+    query: Result<Query<PlaybackProgressQuery>, QueryRejection>,
+    request: Request,
 ) -> Result<StatusCode, ApiError> {
+    let query = if is_emby_protocol_uri(&uri) {
+        let _ = Json::<EmbyPlaybackProgressBody>::from_request(request, &state)
+            .await
+            .map_err(|_| ApiError::InvalidRequest)?;
+        emby_playback_progress_query(&uri)?
+    } else {
+        query.map_err(|_| ApiError::InvalidRequest)?.0
+    };
     report_playback_progress_for_current_session(
         state,
         &uri,
