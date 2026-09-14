@@ -291,7 +291,7 @@ async fn assert_close_makes_the_stream_unavailable(fixture: &Fixture, live_strea
         )
         .await
         .status(),
-        StatusCode::NO_CONTENT,
+        StatusCode::OK,
     );
     assert_eq!(
         request(

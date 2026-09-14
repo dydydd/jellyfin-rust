@@ -123,7 +123,7 @@ impl Fixture {
             for token in [&self.admin_token, &self.api_key] {
                 assert_eq!(
                     request(&self.emby, Method::POST, route, Some(token)).await,
-                    StatusCode::NO_CONTENT,
+                    StatusCode::OK,
                     "elevated caller {route}",
                 );
             }

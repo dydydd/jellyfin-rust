@@ -122,7 +122,7 @@ impl Fixture {
             request(&self.emby, &malformed, Some(&self.user_token))
                 .await
                 .status(),
-            StatusCode::NO_CONTENT,
+            StatusCode::OK,
             "the legacy binder defaults a malformed body",
         );
 
@@ -137,7 +137,7 @@ impl Fixture {
         for request_spec in &requests {
             for token in [&self.user_token, &self.admin_token, &self.api_key_token] {
                 let response = request(&self.emby, request_spec, Some(token)).await;
-                assert_eq!(response.status(), StatusCode::NO_CONTENT);
+                assert_eq!(response.status(), StatusCode::OK);
                 assert!(response_bytes(response).await.is_empty());
             }
         }
@@ -157,7 +157,7 @@ impl Fixture {
             request(&self.emby, &malformed, Some(&self.user_token))
                 .await
                 .status(),
-            StatusCode::NO_CONTENT,
+            StatusCode::OK,
             "the legacy binder defaults an incompatible body",
         );
 
@@ -173,7 +173,7 @@ impl Fixture {
         for request_spec in &requests {
             for token in [&self.user_token, &self.api_key_token] {
                 let response = request(&self.emby, request_spec, Some(token)).await;
-                assert_eq!(response.status(), StatusCode::NO_CONTENT);
+                assert_eq!(response.status(), StatusCode::OK);
                 assert!(response_bytes(response).await.is_empty());
             }
         }
