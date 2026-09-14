@@ -24,6 +24,163 @@ const AUTHORIZATION: &str = "MediaBrowser Client=\"Emby Playstate Tests\", Devic
 static TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 #[tokio::test]
+async fn generated_emby_play_body_is_queued_without_changing_jellyfin_routes() {
+    let _guard = TEST_LOCK.lock().await;
+    let fixture = Fixture::new().await;
+    let item_ids = [Uuid::new_v4(), Uuid::new_v4()];
+    let first_controller = Uuid::new_v4();
+    let body_controller = Uuid::new_v4();
+    let emby_route = format!(
+        "/emby/sEsSiOnS/{}/pLaYiNg?ItemIds={},{}&PlayCommand=PlayNext&StartPositionTicks=123&ControllingUserId={first_controller}&MediaSourceId=query&AudioStreamIndex=90&SubtitleStreamIndex=91&StartIndex=92",
+        fixture.target_session_id, item_ids[0], item_ids[1],
+    );
+
+    assert_eq!(
+        fixture
+            .request(&fixture.emby, &emby_route, None, Body::from("{"))
+            .await
+            .status(),
+        StatusCode::UNAUTHORIZED,
+        "authentication must precede malformed generated bodies"
+    );
+
+    let response = fixture
+        .request(
+            &fixture.emby,
+            &emby_route,
+            Some(&fixture.api_key_token),
+            Body::from(format!(
+                r#"{{
+                    "ControllingUserId":"{first_controller}",
+                    "cOnTrOlLiNgUsErId":"{body_controller}",
+                    "SubtitleStreamIndex":1,
+                    "sUbTiTlEsTrEaMiNdEx":2,
+                    "AudioStreamIndex":3,
+                    "aUdIoStReAmInDeX":4,
+                    "MediaSourceId":"first-body-source",
+                    "mEdIaSoUrCeId":"body-source",
+                    "StartIndex":5,
+                    "sTaRtInDeX":6,
+                    "PlayCommand":"PlayLast",
+                    "ItemIds":["ignored-body-item"],
+                    "UnknownGeneratedExtension":true
+                }}"#
+            )),
+        )
+        .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(
+        to_bytes(response.into_body(), 1024)
+            .await
+            .expect("empty Emby response")
+            .is_empty()
+    );
+
+    let queued = fixture.queued().await;
+    assert_eq!(queued.len(), 1);
+    let emby_play = &queued[0];
+    assert_eq!(emby_play.message_type, "Play");
+    assert_eq!(emby_play.payload["PlayCommand"], "PlayNext");
+    assert_eq!(
+        emby_play.payload["ItemIds"],
+        json!([
+            item_ids[0].simple().to_string(),
+            item_ids[1].simple().to_string()
+        ])
+    );
+    assert_eq!(emby_play.payload["StartPositionTicks"], 123);
+    assert_eq!(
+        emby_play.payload["ControllingUserId"],
+        body_controller.simple().to_string()
+    );
+    assert_eq!(emby_play.payload["SubtitleStreamIndex"], 2);
+    assert_eq!(emby_play.payload["AudioStreamIndex"], 4);
+    assert_eq!(emby_play.payload["MediaSourceId"], "body-source");
+    assert_eq!(emby_play.payload["StartIndex"], 6);
+
+    for body in [
+        Body::empty(),
+        Body::from("{"),
+        Body::from("[]"),
+        Body::from(r#"{"ControllingUserId":"not-a-guid"}"#),
+        Body::from(r#"{"AudioStreamIndex":"bad"}"#),
+    ] {
+        assert_eq!(
+            fixture
+                .request(
+                    &fixture.emby,
+                    &format!(
+                        "/emby/Sessions/{}/Playing?ItemIds={}&PlayCommand=PlayNow",
+                        fixture.target_session_id, item_ids[0]
+                    ),
+                    Some(&fixture.user_token),
+                    body,
+                )
+                .await
+                .status(),
+            StatusCode::BAD_REQUEST
+        );
+    }
+    assert_eq!(fixture.queued().await.len(), 1);
+
+    fixture
+        .devices
+        .remove_additional_user(fixture.target_row_id, fixture.user_id)
+        .await
+        .expect("remove target controller");
+    assert_eq!(
+        fixture
+            .request(
+                &fixture.emby,
+                &emby_route,
+                Some(&fixture.user_token),
+                Body::from("{"),
+            )
+            .await
+            .status(),
+        StatusCode::FORBIDDEN,
+        "session-control authorization must precede malformed body binding"
+    );
+
+    for (prefix, source, audio, subtitle, start) in [
+        ("", "root-query", 11, 12, 13),
+        ("/api", "api-query", 21, 22, 23),
+    ] {
+        let response = fixture
+            .request(
+                &fixture.jellyfin,
+                &format!(
+                    "{prefix}/Sessions/{}/Playing?ItemIds={}&PlayCommand=PlayNow&MediaSourceId={source}&AudioStreamIndex={audio}&SubtitleStreamIndex={subtitle}&StartIndex={start}",
+                    fixture.target_session_id, item_ids[0]
+                ),
+                Some(&fixture.api_key_token),
+                Body::from("{"),
+            )
+            .await;
+        assert_eq!(response.status(), StatusCode::NO_CONTENT, "{prefix}");
+    }
+
+    let queued = fixture.queued().await;
+    assert_eq!(queued.len(), 3);
+    for (command, (source, audio, subtitle, start)) in queued[1..]
+        .iter()
+        .zip([("root-query", 11, 12, 13), ("api-query", 21, 22, 23)])
+    {
+        assert_eq!(command.payload["PlayCommand"], "PlayNow");
+        assert_eq!(command.payload["MediaSourceId"], source);
+        assert_eq!(command.payload["AudioStreamIndex"], audio);
+        assert_eq!(command.payload["SubtitleStreamIndex"], subtitle);
+        assert_eq!(command.payload["StartIndex"], start);
+        assert_eq!(
+            command.payload["ControllingUserId"],
+            Uuid::nil().simple().to_string()
+        );
+    }
+
+    fixture.cleanup().await;
+}
+
+#[tokio::test]
 async fn generated_emby_playstate_body_is_bound_without_changing_jellyfin_routes() {
     let _guard = TEST_LOCK.lock().await;
     let fixture = Fixture::new().await;

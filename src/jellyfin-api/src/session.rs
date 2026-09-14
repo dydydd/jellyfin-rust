@@ -635,33 +635,122 @@ pub(crate) async fn send_play_command(
     headers: HeaderMap,
     path: Result<Path<String>, PathRejection>,
     query: Result<Query<PlayCommandQuery>, QueryRejection>,
+    request: Request,
 ) -> Result<StatusCode, ApiError> {
     let controller = authenticated_session_controller(&state, &headers, &uri).await?;
     let Path(session_id) = path.map_err(|_| ApiError::InvalidRequest)?;
+    let emby_protocol = is_emby_protocol_uri(&uri);
+    if emby_protocol {
+        authorize_session_command(&state, &session_id, &controller).await?;
+    }
     let Query(query) = query.map_err(|_| ApiError::InvalidRequest)?;
     let play_command = query.play_command.ok_or(ApiError::InvalidRequest)?;
     if query.item_ids.is_empty() {
         return Err(ApiError::InvalidRequest);
     }
+    let (
+        controlling_user_id,
+        subtitle_stream_index,
+        audio_stream_index,
+        media_source_id,
+        start_index,
+    ) = if emby_protocol {
+        let Json(body) = Json::<EmbyPlayRequest>::from_request(request, &state)
+            .await
+            .map_err(|_| ApiError::InvalidRequest)?;
+        (
+            controller.play_controlling_user_id(body.controlling_user_id),
+            body.subtitle_stream_index,
+            body.audio_stream_index,
+            body.media_source_id,
+            body.start_index,
+        )
+    } else {
+        (
+            controller.user_id(),
+            query.subtitle_stream_index,
+            query.audio_stream_index,
+            query.media_source_id,
+            query.start_index,
+        )
+    };
 
-    enqueue_session_command(
-        &state,
-        &session_id,
-        &controller,
-        "Play",
-        PlayRequest {
-            item_ids: query.item_ids,
-            start_position_ticks: query.start_position_ticks,
-            play_command,
-            controlling_user_id: controller.user_id(),
-            subtitle_stream_index: query.subtitle_stream_index,
-            audio_stream_index: query.audio_stream_index,
-            media_source_id: query.media_source_id,
-            start_index: query.start_index,
-        },
-    )
-    .await?;
-    Ok(StatusCode::NO_CONTENT)
+    let command = PlayRequest {
+        item_ids: query.item_ids,
+        start_position_ticks: query.start_position_ticks,
+        play_command,
+        controlling_user_id,
+        subtitle_stream_index,
+        audio_stream_index,
+        media_source_id,
+        start_index,
+    };
+    if emby_protocol {
+        enqueue_authorized_session_command(&state, &session_id, &controller, "Play", command)
+            .await?;
+    } else {
+        enqueue_session_command(&state, &session_id, &controller, "Play", command).await?;
+    }
+    Ok(if emby_protocol {
+        StatusCode::OK
+    } else {
+        StatusCode::NO_CONTENT
+    })
+}
+
+/// Emby's legacy ServiceStack request merges three query-owned `PlayRequest`
+/// properties with the remaining generated JSON body properties. Query values
+/// for these body-owned fields are deliberately ignored on `/emby`, while the
+/// modern Jellyfin routes continue to bind them from the query string.
+#[derive(Debug, Default)]
+struct EmbyPlayRequest {
+    controlling_user_id: Option<Uuid>,
+    subtitle_stream_index: Option<i32>,
+    audio_stream_index: Option<i32>,
+    media_source_id: Option<String>,
+    start_index: Option<i32>,
+}
+
+impl<'de> Deserialize<'de> for EmbyPlayRequest {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct RequestVisitor;
+
+        impl<'de> serde::de::Visitor<'de> for RequestVisitor {
+            type Value = EmbyPlayRequest;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("an Emby PlayRequest object")
+            }
+
+            fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+            where
+                A: serde::de::MapAccess<'de>,
+            {
+                let mut request = EmbyPlayRequest::default();
+                while let Some(name) = map.next_key::<String>()? {
+                    if name.eq_ignore_ascii_case("ControllingUserId") {
+                        request.controlling_user_id = map.next_value()?;
+                    } else if name.eq_ignore_ascii_case("SubtitleStreamIndex") {
+                        request.subtitle_stream_index = map.next_value()?;
+                    } else if name.eq_ignore_ascii_case("AudioStreamIndex") {
+                        request.audio_stream_index = map.next_value()?;
+                    } else if name.eq_ignore_ascii_case("MediaSourceId") {
+                        request.media_source_id = map.next_value()?;
+                    } else if name.eq_ignore_ascii_case("StartIndex") {
+                        request.start_index = map.next_value()?;
+                    } else {
+                        map.next_value::<IgnoredAny>()?;
+                    }
+                }
+                Ok(request)
+            }
+        }
+
+        deserializer.deserialize_map(RequestVisitor)
+    }
 }
 
 pub(crate) async fn send_playstate_command(
@@ -1170,6 +1259,16 @@ impl SessionController {
         }
     }
 
+    fn play_controlling_user_id(&self, requested: Option<Uuid>) -> Uuid {
+        match self {
+            // SessionManager overwrites the request DTO value when the
+            // controlling session belongs to a user. An API-key controller
+            // has no user, so its generated body value remains intact.
+            Self::Device(session) => session.user.id,
+            Self::ApiKey { .. } => requested.unwrap_or_default(),
+        }
+    }
+
     fn can_control(&self, target: &device::Model) -> Result<(), ApiError> {
         match self {
             // The official SessionManager treats an API-key request as a
@@ -1230,8 +1329,30 @@ async fn enqueue_session_command<T>(
 where
     T: Serialize,
 {
+    authorize_session_command(state, target_session_id, controller).await?;
+    enqueue_authorized_session_command(state, target_session_id, controller, message_type, payload)
+        .await
+}
+
+async fn authorize_session_command(
+    state: &AppState,
+    target_session_id: &str,
+    controller: &SessionController,
+) -> Result<(), ApiError> {
     let target = find_active_session(state, target_session_id).await?;
-    controller.can_control(&target)?;
+    controller.can_control(&target)
+}
+
+async fn enqueue_authorized_session_command<T>(
+    state: &AppState,
+    target_session_id: &str,
+    controller: &SessionController,
+    message_type: &str,
+    payload: T,
+) -> Result<(), ApiError>
+where
+    T: Serialize,
+{
     let queued = state
         .session_commands
         .enqueue(NewSessionCommand {

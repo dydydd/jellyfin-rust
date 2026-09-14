@@ -1356,6 +1356,11 @@
   with case-insensitive property names and last-duplicate-wins semantics while keeping the path
   command authoritative. Return Emby's empty 200 response, but do not leak that body binding or
   status into Jellyfin's root and `/api` query-based routes, which retain their empty 204 response.
+- Require the generated `PlayRequest` JSON body on `/emby/Sessions/{Id}/Playing`. Keep `ItemIds`,
+  `PlayCommand`, and `StartPositionTicks` query-owned, while the body exclusively supplies
+  `ControllingUserId`, `SubtitleStreamIndex`, `AudioStreamIndex`, `MediaSourceId`, and `StartIndex`.
+  Bind body names case-insensitively with last-duplicate-wins semantics, ignore unknown properties,
+  queue every bound field, and preserve Jellyfin root and `/api` query-only behavior and 204 status.
 - Keep the generated legacy `/emby/Users/{UserId}/PlayingItems/**` request contract protocol-local.
   Require its `MediaSourceId`, require `NextMediaType` for stop requests, and require and validate
   the progress JSON body. Bind query and body names case-insensitively with last-duplicate-wins
