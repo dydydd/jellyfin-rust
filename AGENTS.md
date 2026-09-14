@@ -496,6 +496,10 @@
   repeated query keys from Android and Swift, case-insensitive names, and defined integers while
   preserving field/direction order; invalid elements fail binding instead of silently selecting a
   different default.
+- Keep ActivityLog response severity adaptation protocol-local. Under `/emby`, map Jellyfin's
+  `Information`, `Warning`, and `Critical` names to Emby's generated `Info`, `Warn`, and `Fatal`,
+  preserve `Debug` and `Error`, and omit `Trace` and `None` because Emby's nullable closed enum has
+  no corresponding values. Keep Jellyfin root and `/api` severity names unchanged.
 - Keep `/Users/Public` available as `/users/public`; otherwise Axum's dynamic `/users/{id}` route
   treats the SDK's lowercase public-user request as a UUID binding failure.
 - Normalize canonical, lowercase, and mixed-case `/emby/Users/Public` requests inside the Emby

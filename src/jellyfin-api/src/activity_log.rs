@@ -83,7 +83,8 @@ struct ActivityLogEntry {
     #[serde(serialize_with = "serialize_date")]
     date: DateTimeUtc,
     user_id: String,
-    severity: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    severity: Option<&'static str>,
 }
 
 pub(crate) async fn entries(
@@ -98,9 +99,15 @@ pub(crate) async fn entries(
     let requested_start_index = parameters.start_index.unwrap_or(0);
     let query = parameters.try_into_query()?;
     let page = state.activity_logs.query(&query).await?;
+    let mut items = page
+        .items
+        .into_iter()
+        .map(ActivityLogEntry::from)
+        .collect::<Vec<_>>();
+    adapt_emby_severities(&uri, &mut items);
 
     Ok(Json(ActivityLogResult {
-        items: page.items.into_iter().map(ActivityLogEntry::from).collect(),
+        items,
         total_record_count: crate::user_library::checked_int32(page.total_record_count)?,
         start_index: requested_start_index,
     }))
@@ -173,8 +180,37 @@ impl From<activity_log::Model> for ActivityLogEntry {
             item_id: entry.item_id,
             date: entry.date_created,
             user_id: entry.user_id.simple().to_string(),
-            severity: severity_name(entry.log_severity),
+            severity: Some(severity_name(entry.log_severity)),
         }
+    }
+}
+
+fn adapt_emby_severities(uri: &axum::http::Uri, entries: &mut [ActivityLogEntry]) {
+    if !uri
+        .path()
+        .split('/')
+        .nth(1)
+        .is_some_and(|segment| segment.eq_ignore_ascii_case("emby"))
+    {
+        return;
+    }
+
+    for entry in entries {
+        entry.severity = entry.severity.and_then(emby_severity_name);
+    }
+}
+
+const fn emby_severity_name(severity: &str) -> Option<&'static str> {
+    match severity.as_bytes() {
+        b"Information" => Some("Info"),
+        b"Warning" => Some("Warn"),
+        b"Critical" => Some("Fatal"),
+        b"Debug" => Some("Debug"),
+        b"Error" => Some("Error"),
+        // Emby's generated LoggingLogSeverity is closed and has no
+        // representation for Jellyfin's Trace or None values. Its Severity
+        // property is nullable, so omission is the only lossless adaptation.
+        _ => None,
     }
 }
 
@@ -268,5 +304,53 @@ mod tests {
         );
         assert_eq!(parse_severity("Warning"), Some(LogSeverity::Warning));
         assert_eq!(parse_severity("6"), Some(LogSeverity::None));
+    }
+
+    #[test]
+    fn emby_activity_log_severities_use_the_generated_closed_enum() {
+        for (jellyfin, emby) in [
+            ("Information", Some("Info")),
+            ("Warning", Some("Warn")),
+            ("Critical", Some("Fatal")),
+            ("Debug", Some("Debug")),
+            ("Error", Some("Error")),
+            ("Trace", None),
+            ("None", None),
+        ] {
+            assert_eq!(emby_severity_name(jellyfin), emby, "{jellyfin}");
+        }
+    }
+
+    #[test]
+    fn activity_log_severity_adaptation_is_emby_only() {
+        fn entries() -> Vec<ActivityLogEntry> {
+            vec![ActivityLogEntry {
+                id: 1,
+                name: "test".to_owned(),
+                overview: None,
+                short_overview: None,
+                activity_type: "test".to_owned(),
+                item_id: None,
+                date: chrono::Utc::now(),
+                user_id: Uuid::nil().simple().to_string(),
+                severity: Some("Warning"),
+            }]
+        }
+
+        let mut emby = entries();
+        adapt_emby_severities(
+            &"/eMbY/System/ActivityLog/Entries".parse().unwrap(),
+            &mut emby,
+        );
+        assert_eq!(emby[0].severity, Some("Warn"));
+
+        for path in [
+            "/System/ActivityLog/Entries",
+            "/api/System/ActivityLog/Entries",
+        ] {
+            let mut jellyfin = entries();
+            adapt_emby_severities(&path.parse().unwrap(), &mut jellyfin);
+            assert_eq!(jellyfin[0].severity, Some("Warning"), "{path}");
+        }
     }
 }
