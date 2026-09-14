@@ -481,7 +481,7 @@ async fn refresh_library_task_scans_virtual_folder_media_for_playback() {
     let response = fixture
         .request(
             Method::GET,
-            &format!("/Videos/{item_id}/stream.mp4"),
+            &format!("/Videos/{item_id}/stream.mp4?static=true"),
             Some(&fixture.user_token),
             None,
         )
