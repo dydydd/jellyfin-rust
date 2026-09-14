@@ -158,6 +158,10 @@
 - Keep Emby's `/Users/Query` response on its generated `QueryResult<UserDto>` wire shape: return
   only `Items` and `TotalRecordCount`; use `StartIndex` solely to page and never serialize it into
   the response. Do not alter Jellyfin user-list response models.
+- Keep generated Emby `/Auth/Keys` paging protocol-local. Bind optional signed Int32 `StartIndex`
+  and `Limit` case-insensitively with last-duplicate-wins semantics, preserve deterministic key
+  order and the pre-page `TotalRecordCount`, and authorize before binding. Jellyfin root and `/api`
+  retain their unpaged behavior and ignore these query values.
 - Bind generated mobile credential JSON and password query fields case-insensitively with
   last-duplicate-wins semantics. Keep Emby's `/emby/Users/{Id}/Password` on its protocol-private
   `Id`/`NewPw`/`ResetPassword` body: the path id is authoritative, an authorized ordinary user may
