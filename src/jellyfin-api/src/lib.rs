@@ -1367,6 +1367,23 @@ impl AppState {
         })
     }
 
+    /// Looks up the target user used by Emby's notification-default service.
+    ///
+    /// The legacy endpoint is authenticated but intentionally does not apply
+    /// the ordinary self/administrator target-user boundary. Its service
+    /// reads the target only to decide whether a future provider default is a
+    /// self-notification, so keep this narrow lookup protocol-owned.
+    pub async fn emby_notification_target_is_administrator(
+        &self,
+        user_id: Uuid,
+    ) -> Result<Option<bool>, Response> {
+        match self.users.get(user_id).await {
+            Ok(user) => Ok(Some(user.is_administrator)),
+            Err(UserError::NotFound) => Ok(None),
+            Err(error) => Err(ApiError::from(error).into_response()),
+        }
+    }
+
     /// Resets Emby's administrator-owned metadata settings and performs a
     /// real full metadata replacement for every requested item.
     ///

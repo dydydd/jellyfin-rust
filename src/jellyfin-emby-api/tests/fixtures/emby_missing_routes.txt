@@ -1,7 +1,6 @@
 POST /BackupRestore/Restore
 POST /BackupRestore/RestoreData
 POST /Dlna/Profiles
-POST /Notifications/Admin
 POST /Sync/Jobs
 POST /Sync/OfflineActions
 POST /Sync/Data
@@ -14,8 +13,6 @@ GET /Dlna/Profiles/{Id}
 POST /Dlna/Profiles/{Id}
 DELETE /Dlna/Profiles/{Id}
 GET /Dlna/Profiles/Default
-POST /Notifications/Services/Test
-GET /Notifications/Services/Defaults
 POST /Sync/{ItemId}/Status
 GET /Sync/Jobs/{Id}
 POST /Sync/Jobs/{Id}

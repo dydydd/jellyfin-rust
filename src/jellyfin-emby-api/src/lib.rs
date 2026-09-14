@@ -149,6 +149,9 @@ const DEDICATED_ROUTE_TEMPLATES: &[&str] = &[
     "/Items/Prefixes",
     "/ItemTypes",
     "/LiveStreams/MediaInfo",
+    "/Notifications/Admin",
+    "/Notifications/Services/Defaults",
+    "/Notifications/Services/Test",
     "/Notifications/Types",
     // Keep the literal route before the dynamic package-name route. This is
     // the same precedence ASP.NET gives literal segments.
