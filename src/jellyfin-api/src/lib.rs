@@ -1855,6 +1855,56 @@ impl AppState {
         Ok(target_user_id)
     }
 
+    /// Resolves an Emby legacy user-view target before the protocol adapter
+    /// validates its required query value. This keeps another or missing user
+    /// from being disclosed through query-binding error precedence.
+    ///
+    /// # Errors
+    ///
+    /// Returns the protocol response for authentication, target authorization,
+    /// malformed identifiers, and missing users.
+    #[allow(clippy::result_large_err)]
+    pub async fn resolve_emby_user_views_target(
+        &self,
+        headers: &HeaderMap,
+        uri: &Uri,
+        requested_user_id: &str,
+    ) -> Result<Uuid, Response> {
+        let identity = authentication::authenticated_identity(self, headers, Some(uri))
+            .await
+            .map_err(IntoResponse::into_response)?;
+        let requested_user_id = Uuid::parse_str(requested_user_id)
+            .map_err(|_| ApiError::InvalidRequest.into_response())?;
+        let target_user_id = identity
+            .target_user_id(Some(requested_user_id))
+            .map_err(IntoResponse::into_response)?;
+        self.users
+            .get(target_user_id)
+            .await
+            .map_err(ApiError::from)
+            .map_err(IntoResponse::into_response)?;
+        Ok(target_user_id)
+    }
+
+    /// Projects the already-authorized target user's legacy Emby views while
+    /// preserving the shared Jellyfin view and DTO implementation.
+    #[allow(clippy::result_large_err)]
+    pub async fn emby_user_views_for_resolved_target(
+        &self,
+        uri: &Uri,
+        target_user_id: Uuid,
+        include_external_content: bool,
+    ) -> Response {
+        match user_views::user_views_for_emby(self, target_user_id, include_external_content).await
+        {
+            Ok(mut result) => {
+                user_library::omit_incompatible_emby_relations(uri, &mut result.0.items);
+                result.into_response()
+            }
+            Err(error) => error.into_response(),
+        }
+    }
+
     /// Snapshot plugin/package data for the Emby protocol adapter.
     pub fn emby_plugins(&self) -> Vec<jellyfin_model::PluginInfo> {
         self.plugins.plugins()

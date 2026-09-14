@@ -1229,6 +1229,10 @@
 - `UserViews.IncludeExternalContent` defaults to true. Append policy-visible non-Live-TV Channel
   views to both modern and legacy home views, honor Enabled/Blocked Channels and ordinary metadata
   policy, suppress them only when explicitly false, and keep official ordered-view/sort-name order.
+- Keep `GET /emby/Users/{UserId}/Views` on its generated legacy contract: require
+  `IncludeExternalContent`, bind its query name case-insensitively with last-duplicate-wins
+  semantics, and resolve the authenticated target user before surfacing a missing or malformed
+  query. Jellyfin root and `/api` user-view routes retain their optional, default-true query.
 - Apply non-Live-TV Channel capability, favorite, and `ItemFilter` queries before count and paging.
   Persisted channels without a provider capability match explicit false but not true. Accept enum
   names and defined integers case-insensitively, reject conflicting filters, batch requested Channel

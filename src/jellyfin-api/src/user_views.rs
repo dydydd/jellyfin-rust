@@ -133,7 +133,7 @@ pub(crate) async fn get(
     let identity = authentication::authenticated_identity(&state, &headers, Some(&uri)).await?;
     let Query(query) = query.map_err(|_| ApiError::InvalidRequest)?;
     let target_user_id = identity.target_user_id(query.user_id)?;
-    let mut result = user_views_for(state, target_user_id, query).await?;
+    let mut result = user_views_for(&state, target_user_id, query).await?;
     crate::user_library::omit_incompatible_emby_relations(&uri, &mut result.0.items);
     Ok(result)
 }
@@ -148,7 +148,7 @@ pub(crate) async fn get_legacy(
     let identity = authentication::authenticated_identity(&state, &headers, Some(&uri)).await?;
     let Query(query) = query.map_err(|_| ApiError::InvalidRequest)?;
     let target_user_id = identity.target_user_id(Some(user_id))?;
-    let mut result = user_views_for(state, target_user_id, query).await?;
+    let mut result = user_views_for(&state, target_user_id, query).await?;
     crate::user_library::omit_incompatible_emby_relations(&uri, &mut result.0.items);
     Ok(result)
 }
@@ -177,7 +177,7 @@ pub(crate) async fn grouping_options_legacy(
 }
 
 async fn user_views_for(
-    state: Arc<AppState>,
+    state: &AppState,
     target_user_id: Uuid,
     query: UserViewsQuery,
 ) -> Result<Json<BaseItemQueryResult>, ApiError> {
@@ -262,6 +262,28 @@ async fn user_views_for(
         start_index: 0,
         items,
     }))
+}
+
+/// Projects Emby's required-flag legacy view request through the shared view
+/// implementation without changing Jellyfin's optional query contract.
+///
+/// # Errors
+///
+/// Returns user, item-policy, image-projection, and persistence failures.
+pub(crate) async fn user_views_for_emby(
+    state: &AppState,
+    target_user_id: Uuid,
+    include_external_content: bool,
+) -> Result<Json<BaseItemQueryResult>, ApiError> {
+    user_views_for(
+        state,
+        target_user_id,
+        UserViewsQuery {
+            include_external_content: Some(include_external_content),
+            ..UserViewsQuery::default()
+        },
+    )
+    .await
 }
 
 async fn grouping_options_for(

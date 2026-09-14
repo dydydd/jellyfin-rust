@@ -23,6 +23,8 @@ use contracts::{EmbyUserConfiguration, EmbyUserPolicy};
 
 pub(crate) fn routes() -> Router<Arc<AppState>> {
     Router::new()
+        .route("/Users/{user_id}/Views", get(user_views))
+        .route("/users/{user_id}/views", get(user_views))
         .route("/Users/Query", get(query_users))
         .route("/users/query", get(query_users))
         .route("/Users/ItemAccess", get(item_access))
@@ -41,6 +43,62 @@ pub(crate) fn routes() -> Router<Arc<AppState>> {
         .route("/users/{user_id}/configuration", post(update_configuration))
         .route("/Users/{user_id}/Policy", post(update_policy))
         .route("/users/{user_id}/policy", post(update_policy))
+}
+
+async fn user_views(
+    State(state): State<Arc<AppState>>,
+    OriginalUri(uri): OriginalUri,
+    Path(user_id): Path<String>,
+    request: Request,
+) -> Response {
+    user_views_response(
+        &state,
+        &uri,
+        request.headers(),
+        &user_id,
+        request.uri().query(),
+    )
+    .await
+}
+
+async fn user_views_response(
+    state: &AppState,
+    uri: &axum::http::Uri,
+    headers: &HeaderMap,
+    user_id: &str,
+    raw_query: Option<&str>,
+) -> Response {
+    let target_user_id = match state
+        .resolve_emby_user_views_target(headers, uri, user_id)
+        .await
+    {
+        Ok(user_id) => user_id,
+        Err(response) => return response,
+    };
+    let include_external_content = match include_external_content(raw_query) {
+        Ok(value) => value,
+        Err(()) => return StatusCode::BAD_REQUEST.into_response(),
+    };
+    state
+        .emby_user_views_for_resolved_target(uri, target_user_id, include_external_content)
+        .await
+}
+
+fn include_external_content(raw_query: Option<&str>) -> Result<bool, ()> {
+    let mut value = None;
+    for (name, candidate) in form_urlencoded::parse(raw_query.unwrap_or_default().as_bytes()) {
+        if name.eq_ignore_ascii_case("IncludeExternalContent") {
+            value = Some(candidate);
+        }
+    }
+    let value = value.ok_or(())?;
+    if value.eq_ignore_ascii_case("true") {
+        Ok(true)
+    } else if value.eq_ignore_ascii_case("false") {
+        Ok(false)
+    } else {
+        Err(())
+    }
 }
 
 #[derive(Debug, Default)]
@@ -767,6 +825,25 @@ mod tests {
         assert_eq!(query.is_disabled, Some(false));
         assert_eq!(query.name_starts_with_or_greater.as_deref(), Some("M"));
         assert_eq!(query.sort_order.as_deref(), Some("Descending"));
+    }
+
+    #[test]
+    fn user_views_query_is_required_case_insensitive_and_last_wins() {
+        assert_eq!(
+            include_external_content(Some(
+                "IncludeExternalContent=true&iNcLuDeExTeRnAlCoNtEnT=false"
+            )),
+            Ok(false)
+        );
+        assert_eq!(
+            include_external_content(Some("iNcLuDeExTeRnAlCoNtEnT=TRUE")),
+            Ok(true)
+        );
+        assert_eq!(include_external_content(None), Err(()));
+        assert_eq!(
+            include_external_content(Some("IncludeExternalContent=not-a-bool")),
+            Err(())
+        );
     }
 
     #[test]
