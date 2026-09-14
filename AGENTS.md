@@ -151,6 +151,10 @@
   change their own password without the absent `CurrentPw` field, and success is an empty 200.
   Preserve the unprefixed Jellyfin self-service requirement for `CurrentPw` and its 204 response;
   password changes revoke other user sessions while resets preserve them in both protocols.
+- Bind Emby's `POST /emby/Sessions/{Id}/Message` from its generated query-only contract: require
+  `Text` and `Header`, accept nullable signed `TimeoutMs`, bind names case-insensitively with the
+  last duplicate winning, and return an empty 200 after normal session-control authorization.
+  Keep Jellyfin's root and `/api` variants on their JSON `MessageCommand` body and 204 response.
 - Treat Emby's `/LiveStreams/MediaInfo` as a lookup and access-time touch of a real entry in the
   shared live-stream registry. Match ids case-insensitively, reject missing ids, return not found for
   unknown, closed, or expired streams, and keep the authenticated empty-response operation under

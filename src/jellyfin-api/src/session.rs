@@ -2,7 +2,10 @@ use std::{collections::HashMap, fmt::Write as _, sync::Arc};
 
 use axum::{
     Json,
-    extract::{OriginalUri, Path, State, rejection::JsonRejection, rejection::PathRejection},
+    extract::{
+        FromRequest, OriginalUri, Path, Request, State, rejection::JsonRejection,
+        rejection::PathRejection,
+    },
     http::{HeaderMap, StatusCode},
 };
 use axum_extra::extract::{Query, QueryRejection};
@@ -548,11 +551,19 @@ pub(crate) async fn send_message_command(
     OriginalUri(uri): OriginalUri,
     headers: HeaderMap,
     path: Result<Path<String>, PathRejection>,
-    request: Result<Json<MessageCommand>, JsonRejection>,
+    request: Request,
 ) -> Result<StatusCode, ApiError> {
     let controller = authenticated_session_controller(&state, &headers, &uri).await?;
     let Path(session_id) = path.map_err(|_| ApiError::InvalidRequest)?;
-    let Json(command) = request.map_err(|_| ApiError::InvalidRequest)?;
+    let emby_protocol = uri.path() == "/emby" || uri.path().starts_with("/emby/");
+    let command = if emby_protocol {
+        emby_message_command(&uri)?
+    } else {
+        let Json(command) = Json::<MessageCommand>::from_request(request, &state)
+            .await
+            .map_err(|_| ApiError::InvalidRequest)?;
+        command
+    };
     let text = command
         .text
         .filter(|text| !text.trim().is_empty())
@@ -576,7 +587,44 @@ pub(crate) async fn send_message_command(
         },
     )
     .await?;
-    Ok(StatusCode::NO_CONTENT)
+    Ok(if emby_protocol {
+        StatusCode::OK
+    } else {
+        StatusCode::NO_CONTENT
+    })
+}
+
+fn emby_message_command(uri: &axum::http::Uri) -> Result<MessageCommand, ApiError> {
+    let mut text = None;
+    let mut header = None;
+    let mut timeout_ms = None;
+    let mut has_text = false;
+    let mut has_header = false;
+
+    for (name, value) in form_urlencoded::parse(uri.query().unwrap_or_default().as_bytes()) {
+        if name.eq_ignore_ascii_case("Text") {
+            has_text = true;
+            text = Some(value.into_owned());
+        } else if name.eq_ignore_ascii_case("Header") {
+            has_header = true;
+            header = Some(value.into_owned());
+        } else if name.eq_ignore_ascii_case("TimeoutMs") {
+            timeout_ms = Some(value.into_owned());
+        }
+    }
+    if !has_text || !has_header {
+        return Err(ApiError::InvalidRequest);
+    }
+    let timeout_ms = timeout_ms
+        .filter(|value| !value.is_empty())
+        .map(|value| value.parse::<i64>().map_err(|_| ApiError::InvalidRequest))
+        .transpose()?;
+
+    Ok(MessageCommand {
+        header,
+        text,
+        timeout_ms,
+    })
 }
 
 pub(crate) async fn send_play_command(
