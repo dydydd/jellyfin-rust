@@ -5,6 +5,7 @@ mod base_item_repository;
 mod chapter_repository;
 mod collection_repository;
 mod display_preference_repository;
+mod emby_camera_upload_repository;
 mod emby_item_access_repository;
 pub mod entities;
 mod item_by_name_repository;
@@ -52,6 +53,9 @@ pub use base_item_repository::{
 pub use chapter_repository::{ChapterRecord, ChapterRepository, ChapterStoreError, NewChapter};
 pub use collection_repository::{CollectionRepository, CollectionStoreError};
 pub use display_preference_repository::{DisplayPreferenceRepository, DisplayPreferenceStoreError};
+pub use emby_camera_upload_repository::{
+    EmbyCameraUploadRepository, EmbyCameraUploadStoreError, NewEmbyCameraUpload,
+};
 pub use emby_item_access_repository::{
     EmbyItemAccessLevel, EmbyItemAccessRepository, EmbyItemAccessStoreError,
 };

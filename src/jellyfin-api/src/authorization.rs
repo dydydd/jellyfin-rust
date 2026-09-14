@@ -21,6 +21,7 @@ enum RoutePolicy {
     Optional,
     Default,
     Download,
+    CameraUpload,
     SubtitleManagement,
     LyricManagement,
     IgnoreParentalControl,
@@ -182,7 +183,10 @@ pub(crate) async fn require_route_auth(
                 .await?;
             Ok(next.run(request).await)
         }
-        RoutePolicy::Download | RoutePolicy::SubtitleManagement | RoutePolicy::LyricManagement => {
+        RoutePolicy::Download
+        | RoutePolicy::CameraUpload
+        | RoutePolicy::SubtitleManagement
+        | RoutePolicy::LyricManagement => {
             let identity =
                 require_default_with_remote(&state, request.headers(), request.uri(), remote_ip)
                     .await?;
@@ -190,6 +194,9 @@ pub(crate) async fn require_route_auth(
                 (AuthenticatedIdentity::ApiKey(_), _) => true,
                 (AuthenticatedIdentity::Device(session), RoutePolicy::Download) => {
                     session.can_download_content()
+                }
+                (AuthenticatedIdentity::Device(session), RoutePolicy::CameraUpload) => {
+                    session.can_upload_camera()
                 }
                 (AuthenticatedIdentity::Device(session), RoutePolicy::SubtitleManagement) => {
                     session.can_manage_subtitles()
@@ -339,6 +346,20 @@ fn route_policy(method: &Method, path: &str) -> RoutePolicy {
                 && profiles.eq_ignore_ascii_case("ProfileInfos"))
     {
         return RoutePolicy::Elevated;
+    }
+    // Emby's camera upload action uses its named `cameraupload` role. Apply
+    // the protocol-private user-policy flag before the handler extracts the
+    // required query or starts consuming a potentially large request body.
+    if is_emby_protocol
+        && matches!(segments.as_slice(), [devices, camera_uploads]
+            if devices.eq_ignore_ascii_case("Devices")
+                && camera_uploads.eq_ignore_ascii_case("CameraUploads"))
+    {
+        return if method == Method::POST {
+            RoutePolicy::CameraUpload
+        } else {
+            RoutePolicy::Default
+        };
     }
     // Package update discovery is administrator-only in the generated Emby
     // contract. Match both static segments case-insensitively because the

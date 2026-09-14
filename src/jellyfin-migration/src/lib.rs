@@ -63,6 +63,7 @@ mod m20260913_000060_bound_device_option_ids;
 mod m20260913_000061_add_hidden_from_resume;
 mod m20260913_000062_create_user_search_state;
 mod m20260914_000063_create_emby_item_access;
+mod m20260914_000064_create_emby_camera_uploads;
 pub mod startup_routines;
 
 #[doc(hidden)]
@@ -173,6 +174,7 @@ pub use m20260913_000060_bound_device_option_ids::Migration as BoundDeviceOption
 pub use m20260913_000061_add_hidden_from_resume::Migration as AddHiddenFromResumeMigration;
 pub use m20260913_000062_create_user_search_state::Migration as CreateUserSearchStateMigration;
 pub use m20260914_000063_create_emby_item_access::Migration as CreateEmbyItemAccessMigration;
+pub use m20260914_000064_create_emby_camera_uploads::Migration as CreateEmbyCameraUploadsMigration;
 
 pub use startup_routines::{
     ALL_STARTUP_ROUTINES, MigrationStage, StartupMigrationRoutine, StartupMigrationRunner,
@@ -247,6 +249,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20260913_000061_add_hidden_from_resume::Migration),
             Box::new(m20260913_000062_create_user_search_state::Migration),
             Box::new(m20260914_000063_create_emby_item_access::Migration),
+            Box::new(m20260914_000064_create_emby_camera_uploads::Migration),
         ]
     }
 }

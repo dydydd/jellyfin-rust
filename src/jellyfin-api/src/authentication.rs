@@ -281,6 +281,25 @@ pub(crate) enum AuthenticatedIdentity {
 }
 
 impl AuthenticatedSession {
+    pub(crate) fn can_upload_camera(&self) -> bool {
+        self.user
+            .policy
+            .as_object()
+            .and_then(|policy| {
+                policy
+                    .iter()
+                    .find(|(name, _)| name.eq_ignore_ascii_case("EmbyUserPolicy"))
+                    .and_then(|(_, value)| value.as_object())
+            })
+            .and_then(|policy| {
+                policy
+                    .iter()
+                    .find(|(name, _)| name.eq_ignore_ascii_case("AllowCameraUpload"))
+                    .and_then(|(_, value)| value.as_bool())
+            })
+            .unwrap_or(false)
+    }
+
     pub(crate) fn can_download_content(&self) -> bool {
         self.user.is_administrator || self.policy.enable_content_downloading
     }

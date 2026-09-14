@@ -36,12 +36,13 @@ use jellyfin_data::{
     ActivityLogError, ActivityLogRepository, ApiKeyRepository, AuthenticationStoreError,
     BaseItemError, BaseItemImageRepository, BaseItemRepository, ChapterRepository,
     DeviceOptionsRepository, DeviceRepository, DisplayPreferenceRepository,
-    DisplayPreferenceStoreError, EmbyItemAccessLevel, EmbyItemAccessRepository,
-    EmbyItemAccessStoreError, ItemUpdateRepository, ItemUpdateStoreError, ItemValueRepository,
-    KeyframeDataRepository, NamedConfigurationRepository, NamedConfigurationStoreError,
-    PersonRepository, QuickConnectRepository, RememberedTrackSelection,
-    ServerConfigurationRepository, ServerConfigurationStoreError, SessionCommandRepository,
-    SessionCommandStoreError, UserDataRepository, UserSearchStateRepository,
+    DisplayPreferenceStoreError, EmbyCameraUploadRepository, EmbyItemAccessLevel,
+    EmbyItemAccessRepository, EmbyItemAccessStoreError, ItemUpdateRepository, ItemUpdateStoreError,
+    ItemValueRepository, KeyframeDataRepository, NamedConfigurationRepository,
+    NamedConfigurationStoreError, PersonRepository, QuickConnectRepository,
+    RememberedTrackSelection, ServerConfigurationRepository, ServerConfigurationStoreError,
+    SessionCommandRepository, SessionCommandStoreError, UserDataRepository,
+    UserSearchStateRepository,
     entities::{user, user_profile_image},
 };
 use jellyfin_drawing::{ImageProcessingError, ImageProcessor};
@@ -87,6 +88,7 @@ mod configuration;
 mod dashboard;
 mod devices;
 mod display_preferences;
+mod emby_camera_upload;
 mod encoding_runtime;
 mod environment;
 mod filters;
@@ -141,6 +143,7 @@ mod years;
 
 pub use backup::restore_backup_at_startup;
 pub use branding::BrandingOptions;
+pub use emby_camera_upload::{EmbyCameraDeviceContext, EmbyCameraUploadMetadata};
 pub use subtitles::emby_legacy_subtitle_delete_routes;
 pub use system::emby_log_file_lines;
 
@@ -249,6 +252,7 @@ pub struct AppState {
     pub(crate) api_keys: ApiKeyRepository,
     pub(crate) devices: DeviceRepository,
     pub(crate) device_options: DeviceOptionsRepository,
+    pub(crate) emby_camera_uploads: EmbyCameraUploadRepository,
     pub(crate) display_preferences: DisplayPreferenceRepository,
     pub(crate) session_commands: SessionCommandRepository,
     pub(crate) sync_play: SyncPlayManager,
@@ -498,6 +502,7 @@ impl AppState {
             api_keys: ApiKeyRepository::new(Arc::clone(&database)),
             devices: DeviceRepository::new(Arc::clone(&database)),
             device_options: DeviceOptionsRepository::new(Arc::clone(&database)),
+            emby_camera_uploads: EmbyCameraUploadRepository::new(Arc::clone(&database)),
             display_preferences: DisplayPreferenceRepository::new(Arc::clone(&database)),
             session_commands: SessionCommandRepository::new(Arc::clone(&database)),
             sync_play: SyncPlayManager::new(),

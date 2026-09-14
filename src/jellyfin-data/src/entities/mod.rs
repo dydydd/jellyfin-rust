@@ -7,6 +7,7 @@ pub mod chapter;
 pub mod device;
 pub mod device_option;
 pub mod display_preference;
+pub mod emby_camera_upload;
 pub mod emby_item_access;
 pub mod item_value;
 pub mod item_value_map;

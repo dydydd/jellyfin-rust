@@ -1,7 +1,5 @@
 POST /BackupRestore/Restore
 POST /BackupRestore/RestoreData
-GET /Devices/CameraUploads
-POST /Devices/CameraUploads
 POST /Dlna/Profiles
 POST /Notifications/Admin
 POST /Sync/Jobs

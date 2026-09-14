@@ -12,10 +12,12 @@ chrono.workspace = true
 form_urlencoded = "1.2"
 jellyfin-api = { path = "../jellyfin-api" }
 jellyfin-model = { path = "../jellyfin-model" }
+multer = "3"
 serde.workspace = true
 serde_json.workspace = true
 tower.workspace = true
 tower-http = { version = "0.6", features = ["fs"] }
+tokio.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
