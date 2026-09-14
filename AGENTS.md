@@ -91,11 +91,12 @@
   preserve signed `Int32` paging, map `AlbumId` to the shared album filter, and reuse the batched
   Items DTO projector so field, image, and user-data options remain consistent. Keep the route and
   its response adaptation confined to `/emby`.
-- Derive Emby library-discovery prefixes, item types, audio codecs/layouts, containers, extended
-  video types, and official ratings from the full policy-filtered Items candidate set in one
-  set-based PostgreSQL facet query per request. Preserve the generated result shapes, deterministic
-  case-insensitive distinct ordering, signed paging, and the complete supported Items query binder;
-  never load a full item page or issue per-item stream/value lookups. Keep `/emby/Features`
+- Derive Emby library-discovery prefixes, item types, audio/video/subtitle codecs, audio layouts,
+  stream languages, tags, containers, extended video types, and official ratings from the full
+  policy-filtered Items candidate set in one set-based PostgreSQL facet query per request. Preserve
+  the generated `QueryResult<TagItem>` shapes, deterministic case-insensitive distinct ordering,
+  signed paging, and the complete supported Items query binder; never load a full item page or
+  issue per-item stream/value lookups. Keep `/emby/Features`
   administrator/API-key-only and return an empty SDK collection when no Emby feature provider is
   registered, without adding any of these protocol-owned routes to Jellyfin root or `/api`.
 - Persist `POST /emby/Items/Access` assignments in the private PostgreSQL Emby relation without

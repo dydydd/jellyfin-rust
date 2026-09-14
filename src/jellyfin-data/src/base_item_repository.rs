@@ -397,6 +397,10 @@ pub enum BaseItemFacet {
     ItemType,
     AudioCodec,
     AudioLayout,
+    VideoCodec,
+    SubtitleCodec,
+    StreamLanguage,
+    Tag,
     Container,
     ExtendedVideoType,
     OfficialRating,
@@ -4039,6 +4043,32 @@ impl BaseItemRepository {
                  FROM filtered AS item \
                  INNER JOIN jellyfin.media_streams AS stream ON stream.item_id = item.id \
                  WHERE stream.stream_type = 0"
+            }
+            BaseItemFacet::VideoCodec => {
+                "SELECT stream.codec AS display_value \
+                 FROM filtered AS item \
+                 INNER JOIN jellyfin.media_streams AS stream ON stream.item_id = item.id \
+                 WHERE stream.stream_type = 1"
+            }
+            BaseItemFacet::SubtitleCodec => {
+                "SELECT stream.codec AS display_value \
+                 FROM filtered AS item \
+                 INNER JOIN jellyfin.media_streams AS stream ON stream.item_id = item.id \
+                 WHERE stream.stream_type = 2"
+            }
+            BaseItemFacet::StreamLanguage => {
+                "SELECT COALESCE(NULLIF(stream.language, ''), 'und') AS display_value \
+                 FROM filtered AS item \
+                 INNER JOIN jellyfin.media_streams AS stream ON stream.item_id = item.id \
+                 WHERE stream.stream_type IN (0, 2)"
+            }
+            BaseItemFacet::Tag => {
+                "SELECT item_value.value AS display_value \
+                 FROM filtered AS item \
+                 INNER JOIN jellyfin.item_value_map AS item_map ON item_map.item_id = item.id \
+                 INNER JOIN jellyfin.item_values AS item_value \
+                    ON item_value.item_value_id = item_map.item_value_id \
+                 WHERE item_value.\"type\" = 4"
             }
             BaseItemFacet::Container => {
                 "SELECT BTRIM(container.value) AS display_value \

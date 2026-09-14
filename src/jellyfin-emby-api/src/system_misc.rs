@@ -35,14 +35,6 @@ pub(crate) fn routes() -> Router<Arc<AppState>> {
         )
         .route("/Shows/Missing", get(shows_missing))
         .route("/shows/missing", get(shows_missing))
-        .route("/StreamLanguages", get(stream_languages))
-        .route("/streamlanguages", get(stream_languages))
-        .route("/SubtitleCodecs", get(subtitle_codecs))
-        .route("/subtitlecodecs", get(subtitle_codecs))
-        .route("/VideoCodecs", get(video_codecs))
-        .route("/videocodecs", get(video_codecs))
-        .route("/Tags", get(tags))
-        .route("/tags", get(tags))
 }
 
 async fn ping() -> StatusCode {
@@ -74,13 +66,6 @@ async fn release_notes() -> Json<PackageVersionInfo> {
 
 async fn release_note_versions() -> Json<Vec<PackageVersionInfo>> {
     Json(Vec::new())
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "PascalCase")]
-struct QueryResult<T> {
-    items: Vec<T>,
-    total_record_count: usize,
 }
 
 async fn shows_missing(
@@ -178,26 +163,6 @@ const fn hex_value(byte: u8) -> Option<u8> {
     }
 }
 
-async fn stream_languages() -> Json<QueryResult<String>> {
-    strings()
-}
-async fn subtitle_codecs() -> Json<QueryResult<String>> {
-    strings()
-}
-async fn video_codecs() -> Json<QueryResult<String>> {
-    strings()
-}
-async fn tags() -> Json<QueryResult<String>> {
-    strings()
-}
-
-fn strings() -> Json<QueryResult<String>> {
-    Json(QueryResult {
-        items: Vec::new(),
-        total_record_count: 0,
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -220,10 +185,6 @@ mod tests {
             "/System/ReleaseNotes/Versions",
             "/System/WakeOnLanInfo",
             "/Shows/Missing",
-            "/StreamLanguages",
-            "/SubtitleCodecs",
-            "/VideoCodecs",
-            "/Tags",
         ] {
             let response = app
                 .clone()

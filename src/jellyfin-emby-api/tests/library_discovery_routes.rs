@@ -160,6 +160,10 @@ impl Fixture {
             .await
             .expect("visible artist relation");
         item_values
+            .link(visible_movie.id, item_value::ItemValueType::Tags, "Family")
+            .await
+            .expect("visible tag relation");
+        item_values
             .link(
                 hidden_video.id,
                 item_value::ItemValueType::AlbumArtist,
@@ -167,6 +171,14 @@ impl Fixture {
             )
             .await
             .expect("hidden artist relation");
+        item_values
+            .link(
+                hidden_video.id,
+                item_value::ItemValueType::Tags,
+                "Hidden Tag",
+            )
+            .await
+            .expect("hidden tag relation");
         item_values
             .link(
                 blocked_by_tag.id,
@@ -191,6 +203,7 @@ impl Fixture {
             0,
             Some("aac"),
             Some("stereo"),
+            Some("eng"),
             None,
             None,
             None,
@@ -201,6 +214,7 @@ impl Fixture {
             visible_movie.id,
             1,
             1,
+            Some("h264"),
             None,
             None,
             Some("smpte2084"),
@@ -210,11 +224,25 @@ impl Fixture {
         .await;
         insert_stream(
             &database,
+            visible_movie.id,
+            2,
+            2,
+            Some("srt"),
+            None,
+            Some("eng"),
+            None,
+            None,
+            None,
+        )
+        .await;
+        insert_stream(
+            &database,
             visible_audio.id,
             0,
             0,
             Some("mp3"),
             Some("mono"),
+            Some("jpn"),
             None,
             None,
             None,
@@ -227,6 +255,7 @@ impl Fixture {
             0,
             Some("flac"),
             Some("5.1"),
+            Some("fra"),
             None,
             None,
             None,
@@ -239,6 +268,7 @@ impl Fixture {
             0,
             Some("ogg"),
             Some("7.1"),
+            Some("deu"),
             None,
             None,
             None,
@@ -249,10 +279,24 @@ impl Fixture {
             hidden_video.id,
             1,
             1,
+            Some("hevc"),
             None,
             None,
             Some("arib-std-b67"),
             Some(8),
+            None,
+        )
+        .await;
+        insert_stream(
+            &database,
+            hidden_video.id,
+            2,
+            2,
+            Some("ass"),
+            None,
+            Some("fra"),
+            None,
+            None,
             None,
         )
         .await;
@@ -308,6 +352,22 @@ impl Fixture {
             &["mono", "stereo"],
         );
         assert_names(
+            request_json(&self.emby, "/emby/ViDeOcOdEcS", Some(&self.user_token)).await,
+            &["h264"],
+        );
+        assert_names(
+            request_json(&self.emby, "/emby/sUbTiTlEcOdEcS", Some(&self.user_token)).await,
+            &["srt"],
+        );
+        assert_names(
+            request_json(&self.emby, "/emby/sTrEaMlAnGuAgEs", Some(&self.user_token)).await,
+            &["eng", "jpn"],
+        );
+        assert_names(
+            request_json(&self.emby, "/emby/tAgS", Some(&self.user_token)).await,
+            &["Family"],
+        );
+        assert_names(
             request_json(&self.emby, "/emby/containers", Some(&self.user_token)).await,
             &["mkv", "mp3", "webm"],
         );
@@ -345,6 +405,22 @@ impl Fixture {
     async fn assert_global_facets_and_paging(&self) {
         let global = request_json(&self.emby, "/emby/AudioCodecs", Some(&self.api_key)).await;
         assert_names(global, &["aac", "flac", "mp3", "ogg"]);
+        assert_names(
+            request_json(&self.emby, "/emby/VideoCodecs", Some(&self.api_key)).await,
+            &["h264", "hevc"],
+        );
+        assert_names(
+            request_json(&self.emby, "/emby/SubtitleCodecs", Some(&self.api_key)).await,
+            &["ass", "srt"],
+        );
+        assert_names(
+            request_json(&self.emby, "/emby/StreamLanguages", Some(&self.api_key)).await,
+            &["deu", "eng", "fra", "jpn"],
+        );
+        assert_names(
+            request_json(&self.emby, "/emby/Tags", Some(&self.api_key)).await,
+            &["Blocked Facet", "Family", "Hidden Tag"],
+        );
 
         let empty_page = request_json(
             &self.emby,
@@ -406,7 +482,15 @@ impl Fixture {
             assert_eq!(response.status(), StatusCode::OK);
             assert_eq!(response_json(response).await, json!([]));
         }
-        for path in ["/AudioCodecs", "/api/AudioCodecs", "/ItemTypes"] {
+        for path in [
+            "/AudioCodecs",
+            "/api/AudioCodecs",
+            "/ItemTypes",
+            "/StreamLanguages",
+            "/api/SubtitleCodecs",
+            "/VideoCodecs",
+            "/Tags",
+        ] {
             assert_eq!(
                 request(&self.jellyfin, path, Some(&self.api_key))
                     .await
@@ -445,6 +529,7 @@ async fn insert_stream(
     stream_type: i16,
     codec: Option<&str>,
     layout: Option<&str>,
+    language: Option<&str>,
     transfer: Option<&str>,
     dv_profile: Option<i32>,
     hdr10_plus: Option<bool>,
@@ -453,15 +538,16 @@ async fn insert_stream(
         .execute(Statement::from_sql_and_values(
             DbBackend::Postgres,
             "INSERT INTO jellyfin.media_streams (\
-                 item_id, stream_index, stream_type, codec, channel_layout, color_transfer, \
+                 item_id, stream_index, stream_type, codec, channel_layout, language, color_transfer, \
                  dv_profile, hdr10_plus_present_flag, is_default, is_forced, is_external, is_original\
-             ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, false, false, false, false)",
+             ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, false, false, false, false)",
             [
                 item_id.into(),
                 stream_index.into(),
                 stream_type.into(),
                 codec.map(str::to_owned).into(),
                 layout.map(str::to_owned).into(),
+                language.map(str::to_owned).into(),
                 transfer.map(str::to_owned).into(),
                 dv_profile.into(),
                 hdr10_plus.into(),

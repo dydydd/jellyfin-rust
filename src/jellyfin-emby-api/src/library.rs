@@ -40,6 +40,14 @@ pub(crate) fn routes() -> Router<Arc<AppState>> {
         .route("/audiocodecs", get(audio_codecs))
         .route("/AudioLayouts", get(audio_layouts))
         .route("/audiolayouts", get(audio_layouts))
+        .route("/VideoCodecs", get(video_codecs))
+        .route("/videocodecs", get(video_codecs))
+        .route("/SubtitleCodecs", get(subtitle_codecs))
+        .route("/subtitlecodecs", get(subtitle_codecs))
+        .route("/StreamLanguages", get(stream_languages))
+        .route("/streamlanguages", get(stream_languages))
+        .route("/Tags", get(tags))
+        .route("/tags", get(tags))
         .route("/Containers", get(containers))
         .route("/containers", get(containers))
         .route("/ExtendedVideoTypes", get(extended_video_types))
@@ -365,6 +373,38 @@ async fn audio_layouts(
     headers: HeaderMap,
 ) -> Result<Json<TagResult>, Response> {
     tag_facet(&state, &headers, &uri, "AudioLayout").await
+}
+
+async fn video_codecs(
+    State(state): State<Arc<AppState>>,
+    OriginalUri(uri): OriginalUri,
+    headers: HeaderMap,
+) -> Result<Json<TagResult>, Response> {
+    tag_facet(&state, &headers, &uri, "VideoCodec").await
+}
+
+async fn subtitle_codecs(
+    State(state): State<Arc<AppState>>,
+    OriginalUri(uri): OriginalUri,
+    headers: HeaderMap,
+) -> Result<Json<TagResult>, Response> {
+    tag_facet(&state, &headers, &uri, "SubtitleCodec").await
+}
+
+async fn stream_languages(
+    State(state): State<Arc<AppState>>,
+    OriginalUri(uri): OriginalUri,
+    headers: HeaderMap,
+) -> Result<Json<TagResult>, Response> {
+    tag_facet(&state, &headers, &uri, "StreamLanguage").await
+}
+
+async fn tags(
+    State(state): State<Arc<AppState>>,
+    OriginalUri(uri): OriginalUri,
+    headers: HeaderMap,
+) -> Result<Json<TagResult>, Response> {
+    tag_facet(&state, &headers, &uri, "Tag").await
 }
 
 async fn containers(
