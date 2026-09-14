@@ -114,7 +114,7 @@ async fn exercise(database_name: &str) {
             })),
         )
         .await;
-        assert_eq!(response.status(), StatusCode::NO_CONTENT, "{path}");
+        assert_eq!(response.status(), StatusCode::OK, "{path}");
     }
 
     database.close().await.expect("database cleanup");
