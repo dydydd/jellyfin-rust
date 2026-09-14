@@ -13,6 +13,9 @@ DELETE /Sync/Jobs/{Id}
 POST /Sync/Items/Cancel
 DELETE /Sync/{TargetId}/Items
 DELETE /Sync/JobItems/{Id}
+GET /Sync/JobItems/{Id}/File
+HEAD /Sync/JobItems/{Id}/File
+GET /Sync/JobItems/{Id}/AdditionalFiles
 GET /Dlna/{UuId}/contentdirectory/contentdirectory.xml
 HEAD /Dlna/{UuId}/contentdirectory/contentdirectory.xml
 GET /Dlna/{UuId}/contentdirectory/contentdirectory
@@ -27,13 +30,7 @@ GET /Dlna/{UuId}/icons/{Filename}
 POST /Sync/Jobs/{Id}/Delete
 POST /Sync/{TargetId}/Items/Delete
 POST /Sync/JobItems/{Id}/Transferred
-GET /Sync/JobItems/{Id}/File
-HEAD /Sync/JobItems/{Id}/File
-GET /Sync/JobItems/{Id}/AdditionalFiles
 POST /Sync/JobItems/{Id}/Enable
 POST /Sync/JobItems/{Id}/Delete
 POST /Sync/JobItems/{Id}/MarkForRemoval
 POST /Sync/JobItems/{Id}/UnmarkForRemoval
-POST /Users/{Id}/Connect/Link
-DELETE /Users/{Id}/Connect/Link
-POST /Users/{Id}/Connect/Link/Delete
