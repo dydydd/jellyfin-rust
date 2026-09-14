@@ -25,6 +25,10 @@
 - Require one nonblank, case-insensitively bound, last-duplicate-wins `Id` for Emby's DELETE
   `/Devices` and POST `/Devices/Delete`. Keep Jellyfin's root and `/api` repeated/comma-separated
   device-id binder and its omitted-id no-op behavior unchanged.
+- Bind the required `Id` query on `/Devices/Info` and `/Devices/Options` case-insensitively with the
+  last duplicate winning on Jellyfin root, `/api`, and `/emby`. Apply the same semantics to every
+  known `DeviceOptionsDto` JSON property, including `CustomName`, and ignore unknown properties
+  without changing the existing authorization and success-status differences between protocols.
 - Never serialize Jellyfin GUID strings into Emby's `NameLongIdPair.Id` fields. Until a stable Emby
   numeric-id mapping exists, `/emby` BaseItem responses must omit incompatible `Studios`,
   `GenreItems`, `TagItems`, and `Collections` relations; keep the names/ids unchanged on every

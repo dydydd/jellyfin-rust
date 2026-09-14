@@ -1,4 +1,4 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::HashMap, fmt, sync::Arc};
 
 use axum::{
     Json,
@@ -14,7 +14,7 @@ use jellyfin_data::{
 use jellyfin_model::{
     ClientCapabilitiesDto, DeviceInfoDto, DeviceOptionsDto, QueryResult, UserPolicy,
 };
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer, de};
 use uuid::Uuid;
 
 use crate::{ApiError, AppState, authentication};
@@ -28,11 +28,39 @@ pub(crate) struct DevicesQuery {
     sort_order: Option<String>,
 }
 
-#[derive(Debug, Default, Deserialize)]
-#[serde(default, rename_all = "camelCase")]
+#[derive(Debug, Default)]
 pub(crate) struct DeviceIdQuery {
-    #[serde(alias = "Id", alias = "ID")]
     id: Option<String>,
+}
+
+impl<'de> Deserialize<'de> for DeviceIdQuery {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Visitor;
+
+        impl<'de> de::Visitor<'de> for Visitor {
+            type Value = DeviceIdQuery;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("a device query containing an optional Id")
+            }
+
+            fn visit_map<M: de::MapAccess<'de>>(self, mut map: M) -> Result<Self::Value, M::Error> {
+                let mut id = None;
+                while let Some(name) = map.next_key::<String>()? {
+                    if name.eq_ignore_ascii_case("Id") {
+                        // ASP.NET's case-insensitive simple-value binder keeps
+                        // the last value assigned to the same property.
+                        id = Some(map.next_value::<String>()?);
+                    } else {
+                        map.next_value::<de::IgnoredAny>()?;
+                    }
+                }
+                Ok(DeviceIdQuery { id })
+            }
+        }
+
+        deserializer.deserialize_map(Visitor)
+    }
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -302,4 +330,26 @@ fn can_access_device(policy: &UserPolicy, device: &device::Model) -> bool {
     }
     let capabilities = ClientCapabilitiesDto::from_stored_value(device.capabilities.clone());
     !capabilities.supports_persistent_identifier
+}
+
+#[cfg(test)]
+mod tests {
+    use serde::{Deserialize, de::value::MapDeserializer};
+
+    use super::DeviceIdQuery;
+
+    #[test]
+    fn device_id_query_uses_case_insensitive_last_value() {
+        let query = DeviceIdQuery::deserialize(MapDeserializer::<_, serde::de::value::Error>::new(
+            [
+                ("ID", "wrong-device"),
+                ("Unknown", "ignored"),
+                ("iD", "expected-device"),
+            ]
+            .into_iter(),
+        ))
+        .expect("device query");
+
+        assert_eq!(query.id.as_deref(), Some("expected-device"));
+    }
 }
