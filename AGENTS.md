@@ -552,7 +552,8 @@
 - Require a nonempty, non-nil `UserId` on `/emby/Shows/NextUp`, bind every generated scalar query
   case-insensitively with last-duplicate-wins semantics, and preserve repeated `Fields` and
   `EnableImageTypes`. Delegate to the shared policy-aware NextUp implementation without imposing
-  this legacy requirement on Jellyfin's root or `/api` routes.
+  this legacy requirement on Jellyfin's root or `/api` routes. Accept a valid API key with an
+  explicit target user and apply that user's policy rather than requiring a device session.
 - Keep Startup, external library-update reports, elevated Person remote search, and elevated remote
   search Apply reachable through fully lowercase static aliases. Bind their JSON properties and
   compound query names in PascalCase, camelCase, and representative lowercase form; lowercase

@@ -328,15 +328,16 @@ pub(crate) async fn next_up(
     OriginalUri(uri): OriginalUri,
     Query(mut query): Query<NextUpQuery>,
 ) -> Result<Json<NextUpResult>, ApiError> {
-    let authenticated = authentication::authenticated_session(&state, &headers).await?;
-    let target_user_id = query
-        .user_id
-        .filter(|user_id| !user_id.is_nil())
-        .unwrap_or(authenticated.user.id);
-    if target_user_id != authenticated.user.id && !authenticated.user.is_administrator {
-        return Err(ApiError::Forbidden);
-    }
-    state.users.get(target_user_id).await?;
+    let identity = authentication::authenticated_identity(&state, &headers, Some(&uri)).await?;
+    let target_user_id = identity.target_user_id(query.user_id)?;
+    let target_user = state.users.get(target_user_id).await?;
+    let authenticated_user = match identity {
+        authentication::AuthenticatedIdentity::Device(authenticated) => authenticated.user,
+        // API keys are administrator-equivalent but have no implicit user.
+        // Once an explicit target has been resolved, use that user's policy
+        // for NextUp selection and DTO projection.
+        authentication::AuthenticatedIdentity::ApiKey(_) => target_user.clone(),
+    };
     let fields = std::mem::take(&mut query.fields);
     let dto_options = crate::items::PageDtoOptions {
         enable_images: query.enable_images.unwrap_or(true),
@@ -373,7 +374,7 @@ pub(crate) async fn next_up(
     let page = state
         .user_library
         .next_up(
-            &authenticated.user,
+            &authenticated_user,
             target_user_id,
             parent_id,
             query.enable_rewatching,

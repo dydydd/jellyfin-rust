@@ -5,7 +5,7 @@ use axum::{
 };
 use jellyfin_api::AppState;
 use jellyfin_controller::UserService;
-use jellyfin_data::{DatabaseConfig, DeviceRepository, NewDevice};
+use jellyfin_data::{ApiKeyRepository, DatabaseConfig, DeviceRepository, NewDevice};
 use sea_orm::ConnectionTrait;
 use serde_json::Value;
 use tower::ServiceExt;
@@ -79,6 +79,11 @@ async fn exercise(database_name: &str) {
         .await
         .expect("administrator session")
         .access_token;
+    let api_key = ApiKeyRepository::new(database.clone())
+        .create(&format!("emby-next-up-key-{suffix}"))
+        .await
+        .expect("API key")
+        .access_token;
 
     let state = AppState::new(
         database.clone(),
@@ -133,6 +138,18 @@ async fn exercise(database_name: &str) {
     assert_eq!(
         get(
             &emby,
+            &format!("/emby/Shows/NextUp?UserId={}&Limit=0", user.id),
+            Some(&api_key),
+        )
+        .await
+        .status(),
+        StatusCode::OK,
+        "the generated API-key security scheme can use an explicit target user"
+    );
+
+    assert_eq!(
+        get(
+            &emby,
             &format!("/emby/Shows/NextUp?UserId={}&Limit=bad", user.id),
             Some(&token),
         )
@@ -159,6 +176,17 @@ async fn exercise(database_name: &str) {
             "Jellyfin keeps its optional UserId contract at {path}"
         );
     }
+    assert_eq!(
+        get(
+            &jellyfin,
+            &format!("/Shows/NextUp?UserId={}&Limit=0", user.id),
+            Some(&api_key),
+        )
+        .await
+        .status(),
+        StatusCode::OK,
+        "an API key with an explicit target is valid on the shared controller too"
+    );
 
     drop(emby);
     drop(jellyfin);
