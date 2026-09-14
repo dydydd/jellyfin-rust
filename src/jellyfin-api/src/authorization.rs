@@ -368,6 +368,20 @@ fn route_policy(method: &Method, path: &str) -> RoutePolicy {
     if is_emby_protocol && is_public_emby_dlna_server_route(&segments) {
         return RoutePolicy::Public;
     }
+    // Emby's generated mobile clients mark both host lifecycle actions as
+    // administrator-only. Jellyfin deliberately permits an anonymous local
+    // restart, so keep this stricter contract below `/emby` only.
+    if is_emby_protocol && is_emby_generated_system_administrator_route(method, &segments) {
+        return RoutePolicy::Elevated;
+    }
+    // Several byte-serving Jellyfin routes intentionally allow anonymous or
+    // optional authentication. The generated Emby Android/iOS contract marks
+    // the corresponding legacy image, HLS segment, subtitle, and attachment
+    // operations as user-authenticated. Match only those literal generated
+    // shapes so modern unprefixed Jellyfin delivery semantics stay unchanged.
+    if is_emby_protocol && is_emby_generated_user_resource_route(method, &segments) {
+        return RoutePolicy::Default;
+    }
     // Emby's camera upload action uses its named `cameraupload` role. Apply
     // the protocol-private user-policy flag before the handler extracts the
     // required query or starts consuming a potentially large request body.
@@ -739,6 +753,61 @@ fn is_public_emby_dlna_server_route(segments: &[&str]) -> bool {
                         && ["connectionmanager", "connectionmanager.xml", "control"]
                             .iter()
                             .any(|candidate| endpoint.eq_ignore_ascii_case(candidate)))))
+}
+
+fn is_emby_generated_system_administrator_route(method: &Method, segments: &[&str]) -> bool {
+    method == Method::POST
+        && matches!(segments, [system, action]
+            if system.eq_ignore_ascii_case("System")
+                && ["Restart", "Shutdown"]
+                    .iter()
+                    .any(|candidate| action.eq_ignore_ascii_case(candidate)))
+}
+
+fn is_emby_generated_user_resource_route(method: &Method, segments: &[&str]) -> bool {
+    let get_or_head = is_get_or_head(method);
+    let image_route = get_or_head
+        && (matches!(segments, [items, _, images, _]
+            if items.eq_ignore_ascii_case("Items") && images.eq_ignore_ascii_case("Images"))
+            || matches!(segments, [items, _, images, _, _]
+                if items.eq_ignore_ascii_case("Items") && images.eq_ignore_ascii_case("Images"))
+            || matches!(segments, [items, _, images, _, _, _, _, _, _, _, _]
+                if items.eq_ignore_ascii_case("Items") && images.eq_ignore_ascii_case("Images"))
+            || matches!(segments, [kind, _, images, _] | [kind, _, images, _, _]
+                if ["Artists", "Genres", "MusicGenres", "Persons", "Studios"]
+                    .iter()
+                    .any(|candidate| kind.eq_ignore_ascii_case(candidate))
+                    && images.eq_ignore_ascii_case("Images"))
+            || matches!(segments, [users, _, images, _] | [users, _, images, _, _]
+                if users.eq_ignore_ascii_case("Users")
+                    && images.eq_ignore_ascii_case("Images")));
+    let hls_segment_route = method == Method::GET
+        && matches!(segments, [kind, _, hls, _, segment]
+            if ["Audio", "Videos"]
+                .iter()
+                .any(|candidate| kind.eq_ignore_ascii_case(candidate))
+                && hls.eq_ignore_ascii_case("hls")
+                && segment
+                    .split_once('.')
+                    .is_some_and(|(id, container)| !id.is_empty() && !container.is_empty()));
+    let subtitle_stream_route = get_or_head
+        && (matches!(segments, [videos, _, _, subtitles, _, stream]
+            if videos.eq_ignore_ascii_case("Videos")
+                && subtitles.eq_ignore_ascii_case("Subtitles")
+                && starts_with_ignore_ascii_case(stream, "Stream.")
+                && stream.len() > "Stream.".len())
+            || matches!(segments, [videos, _, _, subtitles, _, _, stream]
+                if videos.eq_ignore_ascii_case("Videos")
+                    && subtitles.eq_ignore_ascii_case("Subtitles")
+                    && starts_with_ignore_ascii_case(stream, "Stream.")
+                    && stream.len() > "Stream.".len()));
+    let attachment_stream_route = method == Method::GET
+        && matches!(segments, [videos, _, _, attachments, _, stream]
+            if videos.eq_ignore_ascii_case("Videos")
+                && attachments.eq_ignore_ascii_case("Attachments")
+                && stream.eq_ignore_ascii_case("Stream"));
+
+    image_route || hls_segment_route || subtitle_stream_route || attachment_stream_route
 }
 
 fn is_known_api_path(segments: &[&str]) -> bool {
@@ -1231,6 +1300,107 @@ mod tests {
                 "Jellyfin public route {route}",
             );
         }
+    }
+
+    #[test]
+    fn emby_generated_byte_resource_operations_require_a_user() {
+        let mut operations = Vec::new();
+
+        for method in [Method::GET, Method::HEAD] {
+            for route in [
+                "/emby/Items/item-id/Images/Primary",
+                "/emby/Items/item-id/Images/Primary/0",
+                "/emby/Items/item-id/Images/Primary/0/tag/jpg/400/300/0/0",
+                "/emby/Users/user-id/Images/Primary",
+                "/emby/Users/user-id/Images/Primary/0",
+            ] {
+                operations.push((method.clone(), route.to_owned()));
+            }
+            for kind in ["Artists", "Genres", "MusicGenres", "Persons", "Studios"] {
+                operations.push((method.clone(), format!("/emby/{kind}/name/Images/Primary")));
+                operations.push((
+                    method.clone(),
+                    format!("/emby/{kind}/name/Images/Primary/0"),
+                ));
+            }
+            for route in [
+                "/emby/Videos/item-id/media-source/Subtitles/0/Stream.srt",
+                "/emby/Videos/item-id/media-source/Subtitles/0/10000000/Stream.vtt",
+            ] {
+                operations.push((method.clone(), route.to_owned()));
+            }
+        }
+        operations.extend([
+            (
+                Method::GET,
+                "/emby/Audio/item-id/hls/playlist/segment.ts".to_owned(),
+            ),
+            (
+                Method::GET,
+                "/emby/Videos/item-id/hls/playlist/segment.ts".to_owned(),
+            ),
+            (
+                Method::GET,
+                "/emby/Videos/item-id/media-source/Attachments/0/Stream".to_owned(),
+            ),
+        ]);
+
+        assert_eq!(operations.len(), 37);
+        for (method, route) in operations {
+            assert_eq!(
+                route_policy(&method, &route),
+                RoutePolicy::Default,
+                "generated user operation {method} {route}",
+            );
+            let mixed_case = route
+                .replace("Items", "iTeMs")
+                .replace("Images", "iMaGeS")
+                .replace("Users", "uSeRs")
+                .replace("Artists", "aRtIsTs")
+                .replace("Genres", "gEnReS")
+                .replace("MusicGenres", "mUsIcGeNrEs")
+                .replace("Persons", "pErSoNs")
+                .replace("Studios", "sTuDiOs")
+                .replace("Videos", "vIdEoS")
+                .replace("Audio", "aUdIo")
+                .replace("Subtitles", "sUbTiTlEs")
+                .replace("Attachments", "aTtAcHmEnTs")
+                .replace("Stream", "sTrEaM");
+            assert_eq!(
+                route_policy(&method, &mixed_case),
+                RoutePolicy::Default,
+                "mixed-case generated user operation {method} {mixed_case}",
+            );
+        }
+    }
+
+    #[test]
+    fn emby_system_lifecycle_is_elevated_without_changing_jellyfin() {
+        for action in ["Restart", "Shutdown"] {
+            for route in [
+                format!("/emby/System/{action}"),
+                format!("/emby/sYsTeM/{}", action.to_ascii_lowercase()),
+            ] {
+                assert_eq!(
+                    route_policy(&Method::POST, &route),
+                    RoutePolicy::Elevated,
+                    "Emby lifecycle route {route}",
+                );
+            }
+        }
+
+        assert_eq!(
+            route_policy(&Method::POST, "/System/Restart"),
+            RoutePolicy::LocalOrElevated,
+        );
+        assert_eq!(
+            route_policy(&Method::POST, "/system/restart"),
+            RoutePolicy::LocalOrElevated,
+        );
+        assert_eq!(
+            route_policy(&Method::POST, "/System/Shutdown"),
+            RoutePolicy::Elevated,
+        );
     }
 
     #[test]
