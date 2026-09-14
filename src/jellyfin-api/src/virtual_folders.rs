@@ -178,15 +178,15 @@ pub(crate) async fn list(
     headers: HeaderMap,
 ) -> Result<Json<Vec<VirtualFolderInfo>>, ApiError> {
     authorization::require_first_time_setup_or_elevated(&state, &headers, &uri).await?;
-    Ok(Json(
-        state
-            .virtual_folders
-            .list()
-            .await?
-            .into_iter()
-            .map(folder_info)
-            .collect(),
-    ))
+    let mut folders = state
+        .virtual_folders
+        .list()
+        .await?
+        .into_iter()
+        .map(folder_info)
+        .collect::<Vec<_>>();
+    adapt_emby_virtual_folders(&uri, &mut folders);
+    Ok(Json(folders))
 }
 
 pub(crate) async fn query(
@@ -196,14 +196,78 @@ pub(crate) async fn query(
     Query(query): Query<VirtualFolderQuery>,
 ) -> Result<Json<VirtualFolderQueryResult>, ApiError> {
     authorization::require_default(&state, &headers, &uri).await?;
-    let folders = state
+    let mut folders = state
         .virtual_folders
         .list()
         .await?
         .into_iter()
         .map(folder_info)
         .collect::<Vec<_>>();
+    adapt_emby_virtual_folders(&uri, &mut folders);
     Ok(Json(page_folders(folders, query)))
+}
+
+fn adapt_emby_virtual_folders(uri: &axum::http::Uri, folders: &mut [VirtualFolderInfo]) {
+    if !is_emby_protocol_uri(uri) {
+        return;
+    }
+    for folder in folders {
+        filter_emby_library_image_options(&mut folder.library_options);
+    }
+}
+
+fn is_emby_protocol_uri(uri: &axum::http::Uri) -> bool {
+    uri.path()
+        .split('/')
+        .find(|segment| !segment.is_empty())
+        .is_some_and(|segment| segment.eq_ignore_ascii_case("emby"))
+}
+
+fn filter_emby_library_image_options(options: &mut Value) {
+    let Some(options) = options.as_object_mut() else {
+        return;
+    };
+    let Some(Value::Array(type_options)) = object_value_mut_ignore_case(options, "TypeOptions")
+    else {
+        return;
+    };
+    for type_option in type_options {
+        let Some(type_option) = type_option.as_object_mut() else {
+            continue;
+        };
+        let Some(Value::Array(image_options)) =
+            object_value_mut_ignore_case(type_option, "ImageOptions")
+        else {
+            continue;
+        };
+        image_options.retain(|option| {
+            option
+                .as_object()
+                .and_then(|option| object_value_ignore_case(option, "Type"))
+                .and_then(Value::as_str)
+                .is_none_or(|image_type| !image_type.eq_ignore_ascii_case("Profile"))
+        });
+    }
+}
+
+fn object_value_mut_ignore_case<'a>(
+    object: &'a mut serde_json::Map<String, Value>,
+    expected: &str,
+) -> Option<&'a mut Value> {
+    let key = object
+        .keys()
+        .find(|key| key.eq_ignore_ascii_case(expected))?
+        .clone();
+    object.get_mut(&key)
+}
+
+fn object_value_ignore_case<'a>(
+    object: &'a serde_json::Map<String, Value>,
+    expected: &str,
+) -> Option<&'a Value> {
+    object
+        .iter()
+        .find_map(|(key, value)| key.eq_ignore_ascii_case(expected).then_some(value))
 }
 
 fn page_folders(
