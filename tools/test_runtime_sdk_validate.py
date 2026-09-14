@@ -2,7 +2,14 @@
 import unittest
 from unittest.mock import patch
 
-from runtime_sdk_validate import item_id, item_ids, named_item, recursive_item_pages, response_json
+from runtime_sdk_validate import (
+    item_id,
+    item_ids,
+    named_item,
+    recursive_item_pages,
+    response_json,
+    static_cases,
+)
 
 
 class RuntimeSdkValidateTests(unittest.TestCase):
@@ -20,6 +27,12 @@ class RuntimeSdkValidateTests(unittest.TestCase):
     @patch("runtime_sdk_validate.get", return_value=(200, b'{"Items": [{"Id": "movie"}], "TotalRecordCount": 1}'))
     def test_recursive_item_pages_stops_at_total(self, _get):
         self.assertEqual(len(list(recursive_item_pages("http://server", "token"))), 1)
+
+    def test_localization_options_follow_swift_generator_type_mapping(self):
+        cases = {case.name: case for case in static_cases("user")}
+        for name in ("localization_options", "lowercase_options"):
+            self.assertEqual(cases[name].kotlin, "List<LocalizationOption>")
+            self.assertEqual(cases[name].swift, "List<NameValuePair>")
 
 
 if __name__ == "__main__":

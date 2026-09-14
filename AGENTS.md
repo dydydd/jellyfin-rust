@@ -1446,6 +1446,9 @@ record each route plus its Kotlin and Swift root model in the manifest. Validate
 instead of accepting zero responses. Keep `none` fixtures genuinely anonymous and include an active
 transcode in the Sessions response so nested transcoding reasons are exercised. Do not add the
 checked-out SDK source tree or Python bytecode to commits.
+Honor each generated client's schema-name mappings in runtime manifests instead of assuming Kotlin
+and Swift use the same root type; for example, Swift maps `LocalizationOption` responses to
+`NameValuePair` while Kotlin retains `LocalizationOption`.
 
 For the protocol-private Emby surface, run `emby_swift_compat` with a temporary PostgreSQL database
 and `JELLYFIN_EMBY_SWIFT_DUMP` set, then validate the completed manifest with

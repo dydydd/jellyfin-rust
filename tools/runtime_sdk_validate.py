@@ -149,7 +149,7 @@ def static_cases(user_id):
         Case("cultures", "/Localization/Cultures", "List<CultureDto>", "List<CultureDto>"),
         Case("countries", "/Localization/Countries", "List<CountryInfo>", "List<CountryInfo>"),
         Case("ratings", "/Localization/ParentalRatings", "List<ParentalRating>", "List<ParentalRating>"),
-        Case("localization_options", "/Localization/Options", "List<LocalizationOption>", "List<LocalizationOption>"),
+        Case("localization_options", "/Localization/Options", "List<LocalizationOption>", "List<NameValuePair>"),
         Case("devices", "/Devices?Limit=5", "DeviceInfoDtoQueryResult", "DeviceInfoDtoQueryResult"),
         Case("channels", "/Channels", "BaseItemDtoQueryResult", "BaseItemDtoQueryResult"),
         Case("channel_features", "/Channels/Features", "List<ChannelFeatures>", "List<ChannelFeatures>"),
@@ -167,7 +167,7 @@ def static_cases(user_id):
         Case("lowercase_cultures", "/localization/cultures", "List<CultureDto>", "List<CultureDto>"),
         Case("lowercase_countries", "/localization/countries", "List<CountryInfo>", "List<CountryInfo>"),
         Case("lowercase_ratings", "/localization/parentalratings", "List<ParentalRating>", "List<ParentalRating>"),
-        Case("lowercase_options", "/localization/options", "List<LocalizationOption>", "List<LocalizationOption>"),
+        Case("lowercase_options", "/localization/options", "List<LocalizationOption>", "List<NameValuePair>"),
     ]
 
 
