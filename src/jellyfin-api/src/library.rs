@@ -262,7 +262,8 @@ pub(crate) struct ThemeMediaResult {
     items: Vec<user_library::BaseItemDto>,
     total_record_count: i32,
     start_index: i32,
-    owner_id: Uuid,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    owner_id: Option<Uuid>,
 }
 
 #[derive(Debug, Serialize)]
@@ -309,6 +310,7 @@ pub(crate) async fn theme_songs(
     )
     .await?;
     user_library::omit_incompatible_emby_relations(&uri, &mut result.items);
+    omit_incompatible_emby_theme_owner(&uri, &mut result);
     Ok(Json(result))
 }
 
@@ -328,6 +330,7 @@ pub(crate) async fn theme_videos(
     )
     .await?;
     user_library::omit_incompatible_emby_relations(&uri, &mut result.items);
+    omit_incompatible_emby_theme_owner(&uri, &mut result);
     Ok(Json(result))
 }
 
@@ -361,12 +364,34 @@ pub(crate) async fn theme_media(
             items: Vec::new(),
             total_record_count: 0,
             start_index: 0,
-            owner_id: Uuid::nil(),
+            owner_id: Some(Uuid::nil()),
         },
     };
     user_library::omit_incompatible_emby_relations(&uri, &mut result.theme_songs.items);
     user_library::omit_incompatible_emby_relations(&uri, &mut result.theme_videos.items);
+    if is_emby_request(&uri) {
+        result.theme_songs.owner_id = None;
+        result.theme_videos.owner_id = None;
+        result.soundtrack_songs.owner_id = None;
+    }
     Ok(Json(result))
+}
+
+fn omit_incompatible_emby_theme_owner(uri: &axum::http::Uri, result: &mut ThemeMediaResult) {
+    if is_emby_request(uri) {
+        // Emby's generated Android/iOS contract models OwnerId as Int64.
+        // Jellyfin UUIDs have no lossless numeric representation, and the
+        // property is optional, so omit it instead of making Swift reject the
+        // complete theme result.
+        result.owner_id = None;
+    }
+}
+
+fn is_emby_request(uri: &axum::http::Uri) -> bool {
+    uri.path()
+        .split('/')
+        .nth(1)
+        .is_some_and(|segment| segment.eq_ignore_ascii_case("emby"))
 }
 
 pub(crate) async fn ancestors(
@@ -1112,7 +1137,7 @@ async fn theme_result(
         items: page.items,
         total_record_count: page.total_record_count,
         start_index: page.start_index,
-        owner_id,
+        owner_id: Some(owner_id),
     })
 }
 

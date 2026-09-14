@@ -34,6 +34,9 @@
 - Keep Emby's item-image info list on its generated closed `ImageType` contract: omit Jellyfin-only
   `Profile` entries from `/emby/Items/{Id}/Images` instead of fabricating an Emby type, while
   preserving them on Jellyfin root and `/api` responses.
+- Omit `ThemeMediaResult.OwnerId` only below `/emby`: Emby's generated clients model that optional
+  property as `Int64`, so a Jellyfin UUID makes Swift reject the complete ThemeSongs, ThemeVideos,
+  or ThemeMedia response. Preserve Jellyfin's UUID OwnerId on root and `/api` theme routes.
 - Keep Emby virtual-folder `LibraryOptions.TypeOptions[].ImageOptions` on that same closed
   `ImageType` contract: omit Jellyfin-only `Profile` options from both Emby virtual-folder list
   shapes, while preserving them on Jellyfin root and `/api` responses.

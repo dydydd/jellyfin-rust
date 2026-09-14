@@ -7,7 +7,7 @@ use axum::{
 };
 use jellyfin_api::AppState;
 use jellyfin_controller::UserService;
-use jellyfin_data::{DatabaseConfig, DeviceRepository, NewDevice};
+use jellyfin_data::{BaseItemRepository, DatabaseConfig, DeviceRepository, NewBaseItem, NewDevice};
 use jellyfin_model::TranscodeReason;
 use jellyfin_server_implementations::DefaultAuthenticationProvider;
 use sea_orm::ConnectionTrait;
@@ -86,6 +86,13 @@ async fn exercise(database_name: &str, dump_dir: Option<PathBuf>) {
         .await
         .expect("compatibility session")
         .access_token;
+    let items = BaseItemRepository::new(database.clone());
+    let root = items.ensure_user_root().await.expect("user root");
+    let mut movie = NewBaseItem::new(Uuid::new_v4(), "Movie");
+    movie.name = Some("Emby Swift Theme Owner".to_owned());
+    movie.sort_name = movie.name.clone();
+    movie.parent_id = Some(root.id);
+    let movie = items.create(movie).await.expect("theme owner item");
 
     let state = AppState::new(
         database.clone(),
@@ -165,6 +172,18 @@ async fn exercise(database_name: &str, dump_dir: Option<PathBuf>) {
             "/emby/Dlna/ProfileInfos".to_owned(),
             "[DlnaProfilesDlnaProfile]",
         ),
+        (
+            format!("/emby/Items/{}/ThemeSongs", movie.id),
+            "ThemeMediaResult",
+        ),
+        (
+            format!("/emby/Items/{}/ThemeVideos", movie.id),
+            "ThemeMediaResult",
+        ),
+        (
+            format!("/emby/Items/{}/ThemeMedia", movie.id),
+            "AllThemeMediaResult",
+        ),
     ] {
         let body = response_json(
             request(&app, Method::GET, &route, Some(&user_token), None, None).await,
@@ -178,7 +197,7 @@ async fn exercise(database_name: &str, dump_dir: Option<PathBuf>) {
         });
     }
 
-    assert_eq!(responses.len(), 12);
+    assert_eq!(responses.len(), 15);
     assert!(responses.iter().all(|response| !response.route.is_empty()));
     assert_eq!(responses[2].body["Id"], user_id.to_string());
     assert!(responses[3].body["Items"].is_array());
@@ -200,6 +219,36 @@ async fn exercise(database_name: &str, dump_dir: Option<PathBuf>) {
         json!({"Items": [], "TotalRecordCount": 0})
     );
     assert_eq!(responses[9].body, json!([]));
+    for response in &responses[12..14] {
+        assert!(
+            response.body.get("OwnerId").is_none(),
+            "Emby's Int64 OwnerId cannot contain a Jellyfin UUID: {}",
+            response.route,
+        );
+    }
+    for result in [
+        &responses[14].body["ThemeSongsResult"],
+        &responses[14].body["ThemeVideosResult"],
+        &responses[14].body["SoundtrackSongsResult"],
+    ] {
+        assert!(result.get("OwnerId").is_none());
+    }
+
+    for route in [
+        format!("/Items/{}/ThemeSongs", movie.id),
+        format!("/api/Items/{}/ThemeSongs", movie.id),
+    ] {
+        let jellyfin = response_json(
+            request(&app, Method::GET, &route, Some(&user_token), None, None).await,
+            &route,
+        )
+        .await;
+        assert_eq!(
+            jellyfin["OwnerId"],
+            movie.id.to_string(),
+            "Emby's numeric OwnerId adaptation must not change Jellyfin {route}",
+        );
+    }
 
     let jellyfin_sessions = response_json(
         request(
