@@ -1,7 +1,7 @@
 use axum::{
     Router,
     body::{Body, to_bytes},
-    http::{Request, StatusCode, header},
+    http::{Method, Request, StatusCode, header},
     response::Response,
 };
 use jellyfin_api::AppState;
@@ -61,6 +61,7 @@ async fn exercise(database_name: &str) {
     fixture.assert_emby_paging_and_binding().await;
     fixture.assert_signed_int32_contract().await;
     fixture.assert_jellyfin_isolation().await;
+    fixture.assert_emby_create_binding().await;
 
     database.close().await.expect("database close");
 }
@@ -136,6 +137,53 @@ impl Fixture {
                 .status(),
             StatusCode::FORBIDDEN
         );
+    }
+
+    async fn assert_emby_create_binding(&self) {
+        let malformed = "/emby/Auth/Keys?APP=%20%20";
+        assert_eq!(
+            request_method(&self.emby, Method::POST, malformed, None)
+                .await
+                .status(),
+            StatusCode::UNAUTHORIZED,
+        );
+        assert_eq!(
+            request_method(&self.emby, Method::POST, malformed, Some(&self.user_token))
+                .await
+                .status(),
+            StatusCode::FORBIDDEN,
+        );
+        for (token, name) in [
+            (&self.admin_token, "emby-create-admin-selected"),
+            (&self.api_key_token, "emby-create-api-key-selected"),
+        ] {
+            let path = format!("/emby/aUtH/kEyS?APP=discarded&aPp={name}&Unknown=ignored");
+            assert_eq!(
+                request_method(&self.emby, Method::POST, &path, Some(token))
+                    .await
+                    .status(),
+                StatusCode::OK,
+                "Emby create must accept {name}",
+            );
+        }
+
+        let keys =
+            response_json(request(&self.emby, "/emby/Auth/Keys", Some(&self.admin_token)).await)
+                .await;
+        assert!(find_app(&keys, "emby-create-admin-selected"));
+        assert!(find_app(&keys, "emby-create-api-key-selected"));
+        assert!(!find_app(&keys, "discarded"));
+
+        for prefix in ["", "/api"] {
+            let path = format!("{prefix}/Auth/Keys?app=discarded&App=selected");
+            assert_eq!(
+                request_method(&self.jellyfin, Method::POST, &path, Some(&self.admin_token))
+                    .await
+                    .status(),
+                StatusCode::BAD_REQUEST,
+                "Jellyfin duplicate handling must remain unchanged: {path}",
+            );
+        }
     }
 
     async fn assert_emby_paging_and_binding(&self) {
@@ -255,7 +303,14 @@ async fn session_token(devices: &DeviceRepository, user_id: Uuid, device_id: &st
 }
 
 async fn request(app: &Router, uri: &str, token: Option<&str>) -> Response {
-    let mut request = Request::get(uri).header(header::AUTHORIZATION, AUTHORIZATION);
+    request_method(app, Method::GET, uri, token).await
+}
+
+async fn request_method(app: &Router, method: Method, uri: &str, token: Option<&str>) -> Response {
+    let mut request = Request::builder()
+        .method(method)
+        .uri(uri)
+        .header(header::AUTHORIZATION, AUTHORIZATION);
     if let Some(token) = token {
         request = request.header("x-emby-token", token);
     }
@@ -287,4 +342,8 @@ fn app_names(page: &Value) -> Vec<String> {
                 .to_owned()
         })
         .collect()
+}
+
+fn find_app(page: &Value, expected: &str) -> bool {
+    app_names(page).iter().any(|name| name == expected)
 }

@@ -101,15 +101,33 @@ pub(crate) async fn create(
     query: Result<Query<CreateKeyQuery>, QueryRejection>,
 ) -> Result<StatusCode, ApiError> {
     require_elevated(&state, &headers, &uri).await?;
-    let Query(query) = query.map_err(|_| ApiError::InvalidRequest)?;
-    let app = query
-        .app
+    let app = if is_emby_request(&uri) {
+        emby_create_key_app(&uri)
+    } else {
+        let Query(query) = query.map_err(|_| ApiError::InvalidRequest)?;
+        query.app
+    };
+    let app = app
         .as_deref()
         .map(str::trim)
         .filter(|app| !app.is_empty())
         .ok_or(ApiError::InvalidRequest)?;
     state.api_keys.create(app).await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// Emby's generated clients require `App`, while ASP.NET query binding is
+/// case-insensitive and overwrites an earlier value when the same property is
+/// sent again with different casing. Serde aliases reject those duplicates,
+/// so keep this compatibility binder confined to the `/emby` protocol tree.
+fn emby_create_key_app(uri: &axum::http::Uri) -> Option<String> {
+    let mut app = None;
+    for (name, value) in form_urlencoded::parse(uri.query().unwrap_or_default().as_bytes()) {
+        if name.eq_ignore_ascii_case("App") {
+            app = Some(value.into_owned());
+        }
+    }
+    app
 }
 
 pub(crate) async fn revoke(
@@ -202,5 +220,13 @@ mod tests {
         .unwrap();
         assert!(result.items.is_empty());
         assert_eq!(result.total_record_count, 3);
+    }
+
+    #[test]
+    fn emby_create_app_query_is_case_insensitive_and_last_wins() {
+        let uri = "/emby/Auth/Keys?APP=discarded&aPp=selected%20app&Unknown=ignored"
+            .parse()
+            .unwrap();
+        assert_eq!(emby_create_key_app(&uri).as_deref(), Some("selected app"));
     }
 }

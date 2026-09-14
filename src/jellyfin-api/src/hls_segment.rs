@@ -515,7 +515,12 @@ pub(crate) async fn stop_active_encoding(
     query: Result<Query<ActiveEncodingQuery>, axum::extract::rejection::QueryRejection>,
 ) -> Result<StatusCode, ApiError> {
     authorization::require_default(&state, &headers, &uri).await?;
-    let Query(query) = query.map_err(|_| ApiError::InvalidRequest)?;
+    let query = if is_emby_request(&uri) {
+        parse_emby_active_encoding_query(&uri)?
+    } else {
+        let Query(query) = query.map_err(|_| ApiError::InvalidRequest)?;
+        query
+    };
     if query.device_id.trim().is_empty() || query.play_session_id.trim().is_empty() {
         return Err(ApiError::InvalidRequest);
     }
@@ -527,6 +532,33 @@ pub(crate) async fn stop_active_encoding(
         cleanup_transcode_job(&state.transcode_directory, job_id).await;
     }
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// Bind Emby's two generated required query values with ASP.NET semantics.
+/// This is intentionally selected only by the `/emby` original URI so the
+/// root and `/api` Jellyfin query contract remains unchanged.
+fn parse_emby_active_encoding_query(uri: &Uri) -> Result<ActiveEncodingQuery, ApiError> {
+    let mut device_id = None;
+    let mut play_session_id = None;
+    for (name, value) in form_urlencoded::parse(uri.query().unwrap_or_default().as_bytes()) {
+        let value = value.into_owned();
+        if name.eq_ignore_ascii_case("DeviceId") {
+            device_id = Some(value);
+        } else if name.eq_ignore_ascii_case("PlaySessionId") {
+            play_session_id = Some(value);
+        }
+    }
+    Ok(ActiveEncodingQuery {
+        device_id: device_id.ok_or(ApiError::InvalidRequest)?,
+        play_session_id: play_session_id.ok_or(ApiError::InvalidRequest)?,
+    })
+}
+
+fn is_emby_request(uri: &Uri) -> bool {
+    uri.path()
+        .split('/')
+        .nth(1)
+        .is_some_and(|segment| segment.eq_ignore_ascii_case("emby"))
 }
 
 pub(crate) async fn ensure_master_playlist(
@@ -1497,7 +1529,7 @@ mod tests {
 
     use super::{
         TranscodeQuery, cleanup_transcode_job, is_streaming_parameter, media_type_item_id,
-        segment_length_ms,
+        parse_emby_active_encoding_query, segment_length_ms,
     };
 
     #[test]
@@ -1538,6 +1570,16 @@ mod tests {
             let query = Query::<TranscodeQuery>::try_from_uri(&uri).unwrap().0;
             assert_eq!(query.container.as_deref(), Some("ts"), "{name}");
         }
+    }
+
+    #[test]
+    fn emby_active_encoding_query_is_case_insensitive_and_last_wins() {
+        let uri: Uri = "/emby/Videos/ActiveEncodings?DEVICEID=discarded&deviceId=selected-device&PlaySessionId=discarded&pLaYsEsSiOnId=selected-session&Unknown=ignored"
+            .parse()
+            .unwrap();
+        let query = parse_emby_active_encoding_query(&uri).unwrap();
+        assert_eq!(query.device_id, "selected-device");
+        assert_eq!(query.play_session_id, "selected-session");
     }
 
     #[test]

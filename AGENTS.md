@@ -183,6 +183,9 @@
   and `Limit` case-insensitively with last-duplicate-wins semantics, preserve deterministic key
   order and the pre-page `TotalRecordCount`, and authorize before binding. Jellyfin root and `/api`
   retain their unpaged behavior and ignore these query values.
+- Bind the generated required `App` query on `POST /emby/Auth/Keys` case-insensitively with the last
+  duplicate winning. Preserve elevated administrator/API-key authorization ahead of binding and
+  keep Jellyfin root and `/api` on their existing query behavior and empty-204 success contract.
 - Bind generated mobile credential JSON and password query fields case-insensitively with
   last-duplicate-wins semantics. Keep Emby's `/emby/Users/{Id}/Password` on its protocol-private
   `Id`/`NewPw`/`ResetPassword` body: the path id is authoritative, an authorized ordinary user may
@@ -193,6 +196,10 @@
   `Text` and `Header`, accept nullable signed `TimeoutMs`, bind names case-insensitively with the
   last duplicate winning, and return an empty 200 after normal session-control authorization.
   Keep Jellyfin's root and `/api` variants on their JSON `MessageCommand` body and 204 response.
+- Bind the required `ItemType`, `ItemId`, and `ItemName` queries on Emby's session `Viewing` command
+  case-insensitively with the last duplicate winning. Do the same for required `DeviceId` and
+  `PlaySessionId` on both generated ActiveEncodings stop routes, while retaining ordinary user and
+  API-key authentication. Keep root and `/api` duplicate-query and empty-204 behavior unchanged.
 - Treat Emby's `/LiveStreams/MediaInfo` as a lookup and access-time touch of a real entry in the
   shared live-stream registry. Match ids case-insensitively, reject missing ids, return not found for
   unknown, closed, or expired streams, and keep the authenticated empty-response operation under

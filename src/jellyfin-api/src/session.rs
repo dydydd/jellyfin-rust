@@ -463,7 +463,12 @@ pub(crate) async fn display_content(
 ) -> Result<StatusCode, ApiError> {
     let controller = authenticated_session_controller(&state, &headers, &uri).await?;
     let Path(session_id) = path.map_err(|_| ApiError::InvalidRequest)?;
-    let Query(query) = query.map_err(|_| ApiError::InvalidRequest)?;
+    let query = if is_emby_request(&uri) {
+        parse_emby_viewing_query(&uri)
+    } else {
+        let Query(query) = query.map_err(|_| ApiError::InvalidRequest)?;
+        query
+    };
     let item_type = required_query_value(query.ty)?;
     let item_id = required_query_value(query.id)?;
     let item_name = required_query_value(query.name)?;
@@ -483,6 +488,31 @@ pub(crate) async fn display_content(
     )
     .await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// Emby's generated `Viewing` operation uses three required query strings.
+/// ASP.NET binds their names without regard to casing and keeps the last
+/// occurrence; serde aliases instead reject differently-cased duplicates.
+fn parse_emby_viewing_query(uri: &axum::http::Uri) -> ViewingQuery {
+    let mut query = ViewingQuery::default();
+    for (name, value) in form_urlencoded::parse(uri.query().unwrap_or_default().as_bytes()) {
+        let value = value.into_owned();
+        if name.eq_ignore_ascii_case("ItemType") {
+            query.ty = Some(value);
+        } else if name.eq_ignore_ascii_case("ItemId") {
+            query.id = Some(value);
+        } else if name.eq_ignore_ascii_case("ItemName") {
+            query.name = Some(value);
+        }
+    }
+    query
+}
+
+fn is_emby_request(uri: &axum::http::Uri) -> bool {
+    uri.path()
+        .split('/')
+        .nth(1)
+        .is_some_and(|segment| segment.eq_ignore_ascii_case("emby"))
 }
 
 pub(crate) async fn report_viewing(
@@ -1668,12 +1698,23 @@ pub(crate) fn jellyfin_session_id(app_name: &str, device_id: &str) -> String {
 mod tests {
     use super::{
         adapt_emby_transcoding_info, can_access_session_device, can_control_session,
-        controlled_user_allows_session, queue_item_ids, transcoding_info,
+        controlled_user_allows_session, parse_emby_viewing_query, queue_item_ids, transcoding_info,
     };
     use crate::AppState;
     use jellyfin_model::{TranscodeReason, UserPolicy};
     use serde_json::json;
     use uuid::Uuid;
+
+    #[test]
+    fn emby_viewing_query_is_case_insensitive_and_last_wins() {
+        let uri = "/emby/Sessions/id/Viewing?ITEMTYPE=discarded&iTeMtYpE=Movie&ItemId=discarded&iTeMiD=selected-id&itemName=discarded&ITEMNAME=selected-name&Unknown=ignored"
+            .parse()
+            .unwrap();
+        let query = parse_emby_viewing_query(&uri);
+        assert_eq!(query.ty.as_deref(), Some("Movie"));
+        assert_eq!(query.id.as_deref(), Some("selected-id"));
+        assert_eq!(query.name.as_deref(), Some("selected-name"));
+    }
 
     #[test]
     fn public_and_associated_sessions_follow_official_control_rules() {
