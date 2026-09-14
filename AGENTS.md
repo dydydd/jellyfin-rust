@@ -149,6 +149,9 @@
   values onto every mapped response field while preserving protocol-only values, and preserve the
   nested documents when login counters or Jellyfin mutations rewrite shared policy/configuration.
   Do not buffer unrelated `/Users/**` item pages for this adaptation.
+- Keep Emby's `/Users/Query` response on its generated `QueryResult<UserDto>` wire shape: return
+  only `Items` and `TotalRecordCount`; use `StartIndex` solely to page and never serialize it into
+  the response. Do not alter Jellyfin user-list response models.
 - Bind generated mobile credential JSON and password query fields case-insensitively with
   last-duplicate-wins semantics. Keep Emby's `/emby/Users/{Id}/Password` on its protocol-private
   `Id`/`NewPw`/`ResetPassword` body: the path id is authoritative, an authorized ordinary user may

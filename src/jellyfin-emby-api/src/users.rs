@@ -102,7 +102,6 @@ impl<'de> Deserialize<'de> for UserQuery {
 struct UserQueryResult {
     items: Vec<UserDto>,
     total_record_count: i32,
-    start_index: i32,
 }
 
 #[derive(Debug, Serialize)]
@@ -708,7 +707,6 @@ fn page(mut users: Vec<UserDto>, query: UserQuery) -> UserQueryResult {
     UserQueryResult {
         items,
         total_record_count: total,
-        start_index: start,
     }
 }
 
@@ -738,9 +736,14 @@ mod tests {
                 ..Default::default()
             },
         );
-        assert_eq!(result.start_index, -2);
         assert_eq!(result.total_record_count, 3);
         assert_eq!(result.items.len(), 1);
+        let wire = serde_json::to_value(result).expect("user query response");
+        let wire = wire.as_object().expect("user query object");
+        assert_eq!(wire.len(), 2);
+        assert!(wire.contains_key("Items"));
+        assert_eq!(wire["TotalRecordCount"], 3);
+        assert!(!wire.contains_key("StartIndex"));
     }
 
     #[test]
