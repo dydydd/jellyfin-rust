@@ -210,6 +210,9 @@
   the start of each full or single-library scan so newly created `.ignore` files take effect without
   discarding the bounded parsed-rule cache; propagate rule-file I/O failures as scan failures.
 - Keep serial and concurrent media scans failure-equivalent: database writes, hierarchy creation, and filesystem/persistence errors must fail the scan with a bounded per-file failure report and accurate total, while FFprobe failures retain the item with fallback streams and are treated as partial success.
+- Serialize PostgreSQL integration tests that mutate the shared virtual-folder catalog while invoking
+  a full library scan. Otherwise one fixture can scan another fixture's folder after its temporary
+  media directory has been removed; do not hide that fixture race by weakening real scan failures.
 - Keep deterministic scan hierarchy creation idempotent under sibling-file concurrency. Series and
   season nodes must be checked and created while holding the PostgreSQL hierarchy lock so a
   duplicate-node race cannot silently drop one media item.

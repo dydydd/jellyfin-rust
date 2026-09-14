@@ -15,9 +15,11 @@ use tower::ServiceExt;
 use uuid::Uuid;
 
 const AUTHORIZATION: &str = "MediaBrowser Client=\"Virtual Folder Tests\", DeviceId=\"vf-tests\", Device=\"Test\", Version=\"1.0\"";
+static VIRTUAL_FOLDER_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 #[tokio::test]
 async fn library_structure_controller_contract_and_success_paths() {
+    let _test_guard = VIRTUAL_FOLDER_TEST_LOCK.lock().await;
     let fixture = Fixture::new().await;
     assert_library_access(&fixture).await;
     let (name, id) = create_library(&fixture).await;
@@ -28,6 +30,7 @@ async fn library_structure_controller_contract_and_success_paths() {
 
 #[tokio::test]
 async fn create_virtual_folder_binds_kotlin_sdk_repeated_paths() {
+    let _test_guard = VIRTUAL_FOLDER_TEST_LOCK.lock().await;
     let fixture = Fixture::new().await;
     fixture.complete_startup().await;
     let name = format!("Repeated paths {}", fixture.suffix);
@@ -66,6 +69,7 @@ async fn create_virtual_folder_binds_kotlin_sdk_repeated_paths() {
 
 #[tokio::test]
 async fn virtual_folder_options_match_official_defaults_and_normalize_legacy_rows() {
+    let _test_guard = VIRTUAL_FOLDER_TEST_LOCK.lock().await;
     let fixture = Fixture::new().await;
     fixture.complete_startup().await;
     let name = format!("Default options {}", fixture.suffix);
@@ -158,6 +162,7 @@ fn assert_official_library_option_defaults_except_enabled(options: &Value) {
 
 #[tokio::test]
 async fn library_structure_lowercase_routes_and_binding_match_canonical() {
+    let _test_guard = VIRTUAL_FOLDER_TEST_LOCK.lock().await;
     let fixture = Fixture::new().await;
     fixture.complete_startup().await;
 
@@ -512,7 +517,7 @@ fn assert_sdk_required_library_option_defaults(options: &Value) {
         "SaveSubtitlesWithMedia": true,
         "DisabledLyricFetchers": [],
         "LyricFetcherOrder": [],
-        "CustomTagDelimiters": ["/", "|", ";", "\\\\"],
+        "CustomTagDelimiters": ["/", "|", ";", "\\"],
         "DelimiterWhitelist": [],
         "AutomaticallyAddToCollection": false,
         "AllowEmbeddedSubtitles": "AllowAll",
@@ -605,6 +610,7 @@ async fn assert_library_deletion(fixture: &Fixture, name: &str) {
 
 #[tokio::test]
 async fn official_media_structure_controller_contract() {
+    let _test_guard = VIRTUAL_FOLDER_TEST_LOCK.lock().await;
     let fixture = Fixture::new().await;
     fixture.complete_startup().await;
     for (method, uri, body, expected) in [
@@ -665,6 +671,7 @@ async fn official_media_structure_controller_contract() {
 
 #[tokio::test]
 async fn media_path_mutations_validate_and_persist_real_directories() {
+    let _test_guard = VIRTUAL_FOLDER_TEST_LOCK.lock().await;
     let fixture = Fixture::new().await;
     fixture.complete_startup().await;
     let name = create_and_rename_folder(&fixture).await;
