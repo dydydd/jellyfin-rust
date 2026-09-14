@@ -1,14 +1,21 @@
-//! Read-only discovery for Emby's retired offline-sync subsystem.
+//! Read-only compatibility for Emby's retired offline-sync subsystem.
 //!
 //! Jellyfin removed the old sync provider and this Rust server does not yet
 //! register a replacement.  The generated Emby clients still probe these
 //! endpoints, so return the same collection shapes produced by the official
-//! service when no targets, jobs, or ready items exist.  Mutating sync routes
-//! deliberately remain unavailable until there is a real sync backend.
+//! service when no targets, jobs, or ready items exist. Object and file
+//! lookups return not found because there is no provider-owned record to
+//! resolve. Mutating sync routes deliberately remain unavailable until there
+//! is a real sync backend.
 
 use std::{fmt, sync::Arc};
 
-use axum::{Json, Router, extract::Query, routing::get};
+use axum::{
+    Json, Router,
+    extract::{Path, Query},
+    http::StatusCode,
+    routing::get,
+};
 use jellyfin_api::AppState;
 use serde::{Deserialize, Deserializer, Serialize, de};
 use serde_json::Value;
@@ -19,8 +26,14 @@ pub(crate) fn routes() -> Router<Arc<AppState>> {
         .route("/sync/targets", get(targets))
         .route("/Sync/Jobs", get(jobs))
         .route("/sync/jobs", get(jobs))
+        .route("/Sync/Jobs/{id}", get(sync_job))
         .route("/Sync/JobItems", get(job_items))
         .route("/sync/jobitems", get(job_items))
+        .route("/Sync/JobItems/{id}/File", get(job_item_file))
+        .route(
+            "/Sync/JobItems/{id}/AdditionalFiles",
+            get(job_item_additional_file),
+        )
         .route("/Sync/Items/Ready", get(ready_items))
         .route("/sync/items/ready", get(ready_items))
         .route("/Sync/Options", get(options))
@@ -35,6 +48,11 @@ struct UserIdQuery {
 #[derive(Debug)]
 struct TargetIdQuery {
     _target_id: String,
+}
+
+#[derive(Debug)]
+struct AdditionalFileQuery {
+    _name: String,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -88,6 +106,14 @@ impl<'de> Deserialize<'de> for TargetIdQuery {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         Ok(Self {
             _target_id: required_string(deserializer, "TargetId")?,
+        })
+    }
+}
+
+impl<'de> Deserialize<'de> for AdditionalFileQuery {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        Ok(Self {
+            _name: required_string(deserializer, "Name")?,
         })
     }
 }
@@ -207,6 +233,24 @@ async fn jobs() -> Json<QueryResult> {
     empty_query_result()
 }
 
+// The historical controller delegated these lookups to ISyncManager. With no
+// registered legacy sync provider there cannot be a matching job, job item,
+// or provider-owned output path, so a 404 is the only honest result.
+async fn sync_job(Path(_id): Path<String>) -> StatusCode {
+    StatusCode::NOT_FOUND
+}
+
+async fn job_item_file(Path(_id): Path<String>) -> StatusCode {
+    StatusCode::NOT_FOUND
+}
+
+async fn job_item_additional_file(
+    Path(_id): Path<String>,
+    Query(_query): Query<AdditionalFileQuery>,
+) -> StatusCode {
+    StatusCode::NOT_FOUND
+}
+
 async fn job_items(Query(_query): Query<TargetIdQuery>) -> Json<QueryResult> {
     empty_query_result()
 }
@@ -277,6 +321,41 @@ mod tests {
                 .unwrap();
             assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{path}");
         }
+    }
+
+    #[tokio::test]
+    async fn unavailable_object_and_file_lookups_are_not_found() {
+        for path in [
+            "/Sync/Jobs/job-id",
+            "/Sync/JobItems/item-id/File",
+            "/Sync/JobItems/item-id/AdditionalFiles?nAmE=first&NAME=second",
+        ] {
+            let response = app()
+                .oneshot(Request::get(path).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::NOT_FOUND, "{path}");
+        }
+
+        let response = app()
+            .oneshot(
+                Request::head("/Sync/JobItems/item-id/File")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+
+        let response = app()
+            .oneshot(
+                Request::get("/Sync/JobItems/item-id/AdditionalFiles")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
 
     #[tokio::test]

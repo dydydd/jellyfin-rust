@@ -7,15 +7,11 @@ GET /Dlna/{UuId}/description
 HEAD /Dlna/{UuId}/description
 GET /Dlna/icons/{Filename}
 POST /Sync/{ItemId}/Status
-GET /Sync/Jobs/{Id}
 POST /Sync/Jobs/{Id}
 DELETE /Sync/Jobs/{Id}
 POST /Sync/Items/Cancel
 DELETE /Sync/{TargetId}/Items
 DELETE /Sync/JobItems/{Id}
-GET /Sync/JobItems/{Id}/File
-HEAD /Sync/JobItems/{Id}/File
-GET /Sync/JobItems/{Id}/AdditionalFiles
 GET /Dlna/{UuId}/contentdirectory/contentdirectory.xml
 HEAD /Dlna/{UuId}/contentdirectory/contentdirectory.xml
 GET /Dlna/{UuId}/contentdirectory/contentdirectory
