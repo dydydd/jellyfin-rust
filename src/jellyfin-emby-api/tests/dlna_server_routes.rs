@@ -9,14 +9,13 @@ use tower::ServiceExt;
 const UDN: &str = "01234567-89ab-cdef-0123-456789abcdef";
 
 fn app() -> axum::Router {
-    jellyfin_emby_api::router(
-        AppState::new(
-            DatabaseConnection::Disconnected,
-            "Living Room & Music".to_owned(),
-            "http://127.0.0.1:18096".to_owned(),
-        )
-        .with_server_id("0123456789abcdef0123456789abcdef".to_owned()),
+    let state = AppState::new(
+        DatabaseConnection::Disconnected,
+        "Living Room & Music".to_owned(),
+        "http://127.0.0.1:18096".to_owned(),
     )
+    .with_server_id("0123456789abcdef0123456789abcdef".to_owned());
+    jellyfin_api::router(state.clone()).merge(jellyfin_emby_api::router(state))
 }
 
 #[tokio::test]

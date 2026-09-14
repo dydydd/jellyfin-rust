@@ -347,10 +347,12 @@ fn route_policy(method: &Method, path: &str) -> RoutePolicy {
     {
         return RoutePolicy::Elevated;
     }
-    // Emby's UPnP transport controller is deliberately unauthenticated. Keep
-    // only its concrete server resources public: the neighbouring DLNA
-    // profile-management routes remain administrator configuration.
-    if is_emby_protocol && is_public_emby_dlna_server_route(&segments) {
+    // Emby's UPnP transport controller is deliberately unauthenticated. Let
+    // the same concrete paths pass through the shared root and `/api` trees
+    // too, where no handler is registered and protocol isolation remains a
+    // real 404 instead of the unknown-route authentication fallback's 401.
+    // The neighbouring DLNA profile-management routes remain elevated.
+    if is_public_emby_dlna_server_route(&segments) {
         return RoutePolicy::Public;
     }
     // Emby's camera upload action uses its named `cameraupload` role. Apply
