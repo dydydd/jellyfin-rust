@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{fmt, sync::Arc};
 
 use axum::{
     Json, Router,
@@ -9,7 +9,7 @@ use axum::{
 };
 use jellyfin_api::AppState;
 use jellyfin_model::FileSystemEntryInfo;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, de};
 
 pub(crate) fn routes() -> Router<Arc<AppState>> {
     Router::new()
@@ -35,15 +35,43 @@ pub(crate) fn routes() -> Router<Arc<AppState>> {
         .route("/environment/validatepath", post(validate_path))
 }
 
-#[derive(Deserialize)]
-#[serde(rename_all = "PascalCase")]
+#[derive(Debug, Default, PartialEq, Eq)]
 struct PathQuery {
-    #[serde(alias = "path")]
     path: Option<String>,
-    #[serde(alias = "includeFiles", alias = "includefiles")]
     include_files: Option<bool>,
-    #[serde(alias = "includeDirectories", alias = "includedirectories")]
     include_directories: Option<bool>,
+}
+
+impl<'de> Deserialize<'de> for PathQuery {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Visitor;
+
+        impl<'de> de::Visitor<'de> for Visitor {
+            type Value = PathQuery;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("an Emby environment path query")
+            }
+
+            fn visit_map<M: de::MapAccess<'de>>(self, mut map: M) -> Result<Self::Value, M::Error> {
+                let mut query = PathQuery::default();
+                while let Some(name) = map.next_key::<String>()? {
+                    if name.eq_ignore_ascii_case("Path") {
+                        query.path = Some(map.next_value()?);
+                    } else if name.eq_ignore_ascii_case("IncludeFiles") {
+                        query.include_files = Some(map.next_value()?);
+                    } else if name.eq_ignore_ascii_case("IncludeDirectories") {
+                        query.include_directories = Some(map.next_value()?);
+                    } else {
+                        map.next_value::<de::IgnoredAny>()?;
+                    }
+                }
+                Ok(query)
+            }
+        }
+
+        deserializer.deserialize_map(Visitor)
+    }
 }
 
 #[derive(Deserialize)]
@@ -155,18 +183,45 @@ async fn parent_path(
     ))
 }
 
-#[derive(Deserialize)]
-#[serde(rename_all = "PascalCase")]
+#[derive(Debug, Default, PartialEq, Eq)]
 struct ValidatePath {
-    #[serde(alias = "isFile", alias = "isfile")]
     is_file: Option<bool>,
-    #[serde(
-        alias = "ValidateWriteable",
-        alias = "validateWriteable",
-        alias = "validateWritable",
-        alias = "validatewritable"
-    )]
     validate_writable: Option<bool>,
+}
+
+impl<'de> Deserialize<'de> for ValidatePath {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Visitor;
+
+        impl<'de> de::Visitor<'de> for Visitor {
+            type Value = ValidatePath;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("an Emby ValidatePath object")
+            }
+
+            fn visit_map<M: de::MapAccess<'de>>(self, mut map: M) -> Result<Self::Value, M::Error> {
+                let mut body = ValidatePath::default();
+                while let Some(name) = map.next_key::<String>()? {
+                    if name.eq_ignore_ascii_case("IsFile") {
+                        body.is_file = Some(map.next_value()?);
+                    } else if name.eq_ignore_ascii_case("ValidateWriteable")
+                        || name.eq_ignore_ascii_case("ValidateWritable")
+                    {
+                        // Emby spells the property `Writeable`; accepting the
+                        // corrected Jellyfin spelling keeps both generated
+                        // mobile contracts usable on the protocol adapter.
+                        body.validate_writable = Some(map.next_value()?);
+                    } else {
+                        map.next_value::<de::IgnoredAny>()?;
+                    }
+                }
+                Ok(body)
+            }
+        }
+
+        deserializer.deserialize_map(Visitor)
+    }
 }
 
 async fn validate_path(
@@ -184,4 +239,44 @@ async fn validate_path(
         body.validate_writable.unwrap_or(false),
     )?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn path_query_is_case_insensitive_and_last_duplicate_wins() {
+        let query: PathQuery = serde_json::from_str(
+            r#"{"Path":"first","pAtH":"second","IncludeFiles":false,"iNcLuDeFiLeS":true,"includeDirectories":true,"INCLUDEDIRECTORIES":false,"Ignored":"value"}"#,
+        )
+        .expect("environment path query");
+        assert_eq!(
+            query,
+            PathQuery {
+                path: Some("second".to_owned()),
+                include_files: Some(true),
+                include_directories: Some(false),
+            }
+        );
+    }
+
+    #[test]
+    fn validate_path_body_supports_both_mobile_spellings_and_last_wins() {
+        let body: ValidatePath = serde_json::from_str(
+            r#"{"IsFile":true,"iSfIlE":false,"ValidateWriteable":false,"vAlIdAtEwRiTaBlE":true,"Ignored":"value"}"#,
+        )
+        .expect("Emby ValidatePath body");
+        assert_eq!(
+            body,
+            ValidatePath {
+                is_file: Some(false),
+                validate_writable: Some(true),
+            }
+        );
+
+        let jellyfin_spelling: ValidatePath = serde_json::from_str(r#"{"vAlIdAtEwRiTaBlE":true}"#)
+            .expect("Jellyfin ValidateWritable spelling");
+        assert_eq!(jellyfin_spelling.validate_writable, Some(true));
+    }
 }
