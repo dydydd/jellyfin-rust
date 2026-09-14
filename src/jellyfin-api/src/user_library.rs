@@ -23,9 +23,9 @@ use jellyfin_data::{
 use jellyfin_model::{
     ChapterInfo, ExternalUrl, ImageOrientation, ImageType, IsoType, LocationType, MediaAttachment,
     MediaProtocol, MediaSourceInfo, MediaSourceType, MediaStream, MediaStreamType, MediaUrl,
-    MetadataField, NameIdPair, PersonKind, PlayAccess, SubtitlePlaybackMode,
-    TransportStreamTimestamp, UserConfiguration, UserItemDataDto, UserPolicy, Video3DFormat,
-    VideoType,
+    MetadataField, NameIdPair, PersonKind, PlayAccess, SubtitleDeliveryMethod,
+    SubtitlePlaybackMode, TransportStreamTimestamp, UserConfiguration, UserItemDataDto, UserPolicy,
+    Video3DFormat, VideoType,
 };
 use jellyfin_providers::external_url::{
     ExternalUrlItem, ExternalUrlItemKind, ExternalUrlProviderRegistry,
@@ -4094,6 +4094,15 @@ fn is_emby_game_type(item_type: &str) -> bool {
 
 fn retain_emby_media_streams(streams: &mut Vec<MediaStream>) {
     streams.retain(|stream| stream.stream_type != MediaStreamType::Lyric);
+    for stream in streams {
+        // `Drop` was added after Emby's generated 4.10 client contract. Its
+        // DeliveryMethod property is nullable, so omit only that unsupported
+        // value instead of making Swift reject the enclosing item or playback
+        // response. Keep the value on Jellyfin's unprefixed route tree.
+        if stream.delivery_method == Some(SubtitleDeliveryMethod::Drop) {
+            stream.delivery_method = None;
+        }
+    }
 }
 
 const fn is_emby_person_kind(kind: PersonKind) -> bool {
@@ -4165,6 +4174,11 @@ mod tests {
                     stream_type: MediaStreamType::Audio,
                     ..MediaStream::default()
                 },
+                MediaStream {
+                    stream_type: MediaStreamType::Subtitle,
+                    delivery_method: Some(SubtitleDeliveryMethod::Drop),
+                    ..MediaStream::default()
+                },
             ]),
             media_sources: Some(vec![MediaSourceInfo {
                 media_streams: vec![
@@ -4174,6 +4188,11 @@ mod tests {
                     },
                     MediaStream {
                         stream_type: MediaStreamType::Lyric,
+                        ..MediaStream::default()
+                    },
+                    MediaStream {
+                        stream_type: MediaStreamType::Subtitle,
+                        delivery_method: Some(SubtitleDeliveryMethod::Drop),
                         ..MediaStream::default()
                     },
                 ],
@@ -4211,6 +4230,16 @@ mod tests {
 
     #[derive(Debug, Deserialize, PartialEq)]
     #[serde(rename_all = "PascalCase")]
+    enum StrictEmbySubtitleDeliveryMethod {
+        Encode,
+        Embed,
+        External,
+        Hls,
+        VideoSideData,
+    }
+
+    #[derive(Debug, Deserialize, PartialEq)]
+    #[serde(rename_all = "PascalCase")]
     enum StrictEmbyLocationType {
         FileSystem,
         Virtual,
@@ -4228,6 +4257,7 @@ mod tests {
     struct StrictEmbyMediaStream {
         #[serde(rename = "Type")]
         stream_type: StrictEmbyMediaStreamType,
+        delivery_method: Option<StrictEmbySubtitleDeliveryMethod>,
     }
 
     #[derive(Debug, Deserialize)]
@@ -4270,15 +4300,20 @@ mod tests {
                     decoded.people[2].person_type,
                     Some(StrictEmbyPersonType::Actor)
                 );
-                assert_eq!(decoded.media_streams.len(), 1);
+                assert_eq!(decoded.media_streams.len(), 2);
                 assert_eq!(
                     decoded.media_streams[0].stream_type,
                     StrictEmbyMediaStreamType::Audio
                 );
-                assert_eq!(decoded.media_sources[0].media_streams.len(), 1);
+                assert_eq!(decoded.media_streams[1].delivery_method, None);
+                assert_eq!(decoded.media_sources[0].media_streams.len(), 2);
                 assert_eq!(
                     decoded.media_sources[0].media_streams[0].stream_type,
                     StrictEmbyMediaStreamType::Audio
+                );
+                assert_eq!(
+                    decoded.media_sources[0].media_streams[1].delivery_method,
+                    None
                 );
             }
         }
@@ -4304,8 +4339,13 @@ mod tests {
             assert_eq!(value["People"][1]["Type"], "Narrator", "{path}");
             assert_eq!(value["LocationType"], "Remote", "{path}");
             assert_eq!(value["MediaStreams"][0]["Type"], "Lyric", "{path}");
+            assert_eq!(value["MediaStreams"][2]["DeliveryMethod"], "Drop", "{path}");
             assert_eq!(
                 value["MediaSources"][0]["MediaStreams"][1]["Type"], "Lyric",
+                "{path}"
+            );
+            assert_eq!(
+                value["MediaSources"][0]["MediaStreams"][2]["DeliveryMethod"], "Drop",
                 "{path}"
             );
         }
@@ -4316,6 +4356,13 @@ mod tests {
         assert!(serde_json::from_value::<StrictEmbyPerson>(json!({ "Type": "Unknown" })).is_err());
         assert!(
             serde_json::from_value::<StrictEmbyMediaStream>(json!({ "Type": "Lyric" })).is_err()
+        );
+        assert!(
+            serde_json::from_value::<StrictEmbyMediaStream>(json!({
+                "Type": "Subtitle",
+                "DeliveryMethod": "Drop"
+            }))
+            .is_err()
         );
         assert!(
             serde_json::from_value::<StrictEmbyBaseItem>(json!({
@@ -4340,6 +4387,11 @@ mod tests {
                     stream_type: MediaStreamType::Lyric,
                     ..MediaStream::default()
                 },
+                MediaStream {
+                    stream_type: MediaStreamType::Subtitle,
+                    delivery_method: Some(SubtitleDeliveryMethod::Drop),
+                    ..MediaStream::default()
+                },
             ],
             ..MediaSourceInfo::default()
         };
@@ -4349,21 +4401,26 @@ mod tests {
             &"/emby/Items/id/PlaybackInfo".parse().unwrap(),
             &mut emby_sources,
         );
-        assert_eq!(emby_sources[0].media_streams.len(), 1);
+        assert_eq!(emby_sources[0].media_streams.len(), 2);
         assert_eq!(
             emby_sources[0].media_streams[0].stream_type,
             MediaStreamType::Audio
         );
+        assert_eq!(emby_sources[0].media_streams[1].delivery_method, None);
 
         let mut jellyfin_sources = vec![source()];
         omit_incompatible_emby_media_source_streams(
             &"/Items/id/PlaybackInfo".parse().unwrap(),
             &mut jellyfin_sources,
         );
-        assert_eq!(jellyfin_sources[0].media_streams.len(), 2);
+        assert_eq!(jellyfin_sources[0].media_streams.len(), 3);
         assert_eq!(
             jellyfin_sources[0].media_streams[1].stream_type,
             MediaStreamType::Lyric
+        );
+        assert_eq!(
+            jellyfin_sources[0].media_streams[2].delivery_method,
+            Some(SubtitleDeliveryMethod::Drop)
         );
     }
 

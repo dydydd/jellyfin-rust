@@ -27,9 +27,10 @@
   `GenreItems`, `TagItems`, and `Collections` relations; keep the names/ids unchanged on every
   unprefixed Jellyfin response and avoid whole-response buffering to adapt these fields.
 - Keep Emby BaseItem enum adaptation protocol-local as well: omit unsupported Person `Type` values,
-  filter Jellyfin-only `Lyric` media streams, and omit `Remote`/`Offline` `LocationType` values from
-  `/emby` responses. Preserve the person and every supported stream, and keep unprefixed Jellyfin
-  DTOs byte-shape compatible with the Jellyfin contract.
+  filter Jellyfin-only `Lyric` media streams, omit the Jellyfin-only `Drop` subtitle delivery method,
+  and omit `Remote`/`Offline` `LocationType` values from `/emby` responses. Preserve the person and
+  every supported stream, and keep unprefixed Jellyfin DTOs byte-shape compatible with the Jellyfin
+  contract.
 - Register generated-client literal routes ahead of shared dynamic fallbacks and dispatch every
   static segment case-insensitively without normalizing dynamic values or query strings. Build the
   normalization set from the full generated Emby operation inventory, including compound segments
