@@ -25,6 +25,7 @@ mod camera_uploads;
 mod collection_provider;
 mod connect;
 mod dlna;
+mod dlna_server;
 mod encoding;
 mod environment;
 mod generic_ui;
@@ -411,6 +412,7 @@ fn dedicated_routes() -> Router<Arc<AppState>> {
         .merge(collection_provider::routes())
         .merge(connect::routes())
         .merge(dlna::routes())
+        .merge(dlna_server::routes())
         .merge(encoding::routes())
         .merge(environment::routes())
         .merge(generic_ui::routes())

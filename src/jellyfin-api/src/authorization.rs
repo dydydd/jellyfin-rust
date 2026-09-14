@@ -347,6 +347,12 @@ fn route_policy(method: &Method, path: &str) -> RoutePolicy {
     {
         return RoutePolicy::Elevated;
     }
+    // Emby's UPnP transport controller is deliberately unauthenticated. Keep
+    // only its concrete server resources public: the neighbouring DLNA
+    // profile-management routes remain administrator configuration.
+    if is_emby_protocol && is_public_emby_dlna_server_route(&segments) {
+        return RoutePolicy::Public;
+    }
     // Emby's camera upload action uses its named `cameraupload` role. Apply
     // the protocol-private user-policy flag before the handler extracts the
     // required query or starts consuming a potentially large request body.
@@ -696,6 +702,28 @@ fn route_policy(method: &Method, path: &str) -> RoutePolicy {
         ["Plugins" | "plugins", ..] => RoutePolicy::Elevated,
         _ => RoutePolicy::Default,
     }
+}
+
+fn is_public_emby_dlna_server_route(segments: &[&str]) -> bool {
+    matches!(segments, [dlna, icons, _]
+        if dlna.eq_ignore_ascii_case("Dlna") && icons.eq_ignore_ascii_case("icons"))
+        || matches!(segments, [dlna, _, icons, _]
+            if dlna.eq_ignore_ascii_case("Dlna") && icons.eq_ignore_ascii_case("icons"))
+        || matches!(segments, [dlna, _, endpoint]
+            if dlna.eq_ignore_ascii_case("Dlna")
+                && ["description", "description.xml"]
+                    .iter()
+                    .any(|candidate| endpoint.eq_ignore_ascii_case(candidate)))
+        || matches!(segments, [dlna, _, service, endpoint]
+            if dlna.eq_ignore_ascii_case("Dlna")
+                && ((service.eq_ignore_ascii_case("contentdirectory")
+                    && ["contentdirectory", "contentdirectory.xml", "control"]
+                        .iter()
+                        .any(|candidate| endpoint.eq_ignore_ascii_case(candidate)))
+                    || (service.eq_ignore_ascii_case("connectionmanager")
+                        && ["connectionmanager", "connectionmanager.xml", "control"]
+                            .iter()
+                            .any(|candidate| endpoint.eq_ignore_ascii_case(candidate)))))
 }
 
 fn is_known_api_path(segments: &[&str]) -> bool {
