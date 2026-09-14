@@ -1,5 +1,8 @@
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-use std::sync::Arc;
+use std::{
+    borrow::Cow,
+    net::{IpAddr, Ipv4Addr, SocketAddr},
+    sync::Arc,
+};
 
 use axum::{
     body::Body,
@@ -157,16 +160,14 @@ pub(crate) async fn require_route_auth(
 ) -> Result<Response, ApiError> {
     let remote_ip = remote_ip(request.extensions().get::<ConnectInfo<SocketAddr>>());
     // `Router::nest` strips `/emby` from the request URI before this shared
-    // middleware runs. Axum retains the client-facing URI in `OriginalUri`;
-    // use it for protocol-aware route policy selection while continuing to
-    // pass the rewritten URI to authentication/query-token parsing below.
-    let policy_path = request
-        .extensions()
-        .get::<OriginalUri>()
-        .map(|uri| uri.0.path())
-        .filter(|path| *path == "/emby" || path.starts_with("/emby/"))
-        .unwrap_or_else(|| request.uri().path());
-    let policy = route_policy(request.method(), policy_path);
+    // middleware runs. Axum retains the client-facing URI in `OriginalUri`,
+    // while the Emby adapter has already normalized the routed URI's literal
+    // segments. Use the former only to select the protocol and the latter for
+    // policy matching. This gives mixed-case Emby operations their canonical
+    // policy without making those case-insensitive rules affect root or
+    // `/api` requests.
+    let policy_path = policy_path(&request);
+    let policy = route_policy(request.method(), &policy_path);
     match policy {
         RoutePolicy::Public => Ok(next.run(request).await),
         RoutePolicy::Optional => {
@@ -267,6 +268,19 @@ pub(crate) async fn require_route_auth(
     }
 }
 
+fn policy_path(request: &Request<Body>) -> Cow<'_, str> {
+    let is_emby_protocol = request
+        .extensions()
+        .get::<OriginalUri>()
+        .map(|uri| uri.0.path())
+        .is_some_and(|path| path == "/emby" || path.starts_with("/emby/"));
+    if is_emby_protocol {
+        Cow::Owned(format!("/emby{}", request.uri().path()))
+    } else {
+        Cow::Borrowed(request.uri().path())
+    }
+}
+
 async fn require_first_time_setup_or_elevated_with_remote(
     state: &AppState,
     headers: &HeaderMap,
@@ -347,12 +361,11 @@ fn route_policy(method: &Method, path: &str) -> RoutePolicy {
     {
         return RoutePolicy::Elevated;
     }
-    // Emby's UPnP transport controller is deliberately unauthenticated. Let
-    // the same concrete paths pass through the shared root and `/api` trees
-    // too, where no handler is registered and protocol isolation remains a
-    // real 404 instead of the unknown-route authentication fallback's 401.
-    // The neighbouring DLNA profile-management routes remain elevated.
-    if is_public_emby_dlna_server_route(&segments) {
+    // Emby's UPnP transport controller is deliberately unauthenticated. Keep
+    // this exception protocol-local so similarly shaped unknown requests in
+    // the Jellyfin root and `/api` trees retain their normal fail-closed
+    // authorization precedence. The neighbouring profile routes are elevated.
+    if is_emby_protocol && is_public_emby_dlna_server_route(&segments) {
         return RoutePolicy::Public;
     }
     // Emby's camera upload action uses its named `cameraupload` role. Apply
@@ -841,6 +854,43 @@ fn remote_ip(connect_info: Option<&ConnectInfo<SocketAddr>>) -> IpAddr {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn emby_policy_uses_normalized_routed_path_without_affecting_other_trees() {
+        let mut emby = Request::get("/Items/not-a-uuid/MetadataEditor")
+            .body(Body::empty())
+            .expect("request");
+        emby.extensions_mut().insert(OriginalUri(
+            "/emby/iTeMs/not-a-uuid/mEtAdAtAeDiToR"
+                .parse()
+                .expect("original URI"),
+        ));
+        let emby_path = policy_path(&emby);
+        assert_eq!(emby_path, "/emby/Items/not-a-uuid/MetadataEditor");
+        assert_eq!(
+            route_policy(emby.method(), &emby_path),
+            RoutePolicy::Elevated
+        );
+
+        for original in [
+            "/iTeMs/not-a-uuid/mEtAdAtAeDiToR",
+            "/api/iTeMs/not-a-uuid/mEtAdAtAeDiToR",
+        ] {
+            let mut jellyfin = Request::get("/iTeMs/not-a-uuid/mEtAdAtAeDiToR")
+                .body(Body::empty())
+                .expect("request");
+            jellyfin.extensions_mut().insert(OriginalUri(
+                original.parse().expect("Jellyfin original URI"),
+            ));
+            let jellyfin_path = policy_path(&jellyfin);
+            assert_eq!(jellyfin_path, "/iTeMs/not-a-uuid/mEtAdAtAeDiToR");
+            assert_eq!(
+                route_policy(jellyfin.method(), &jellyfin_path),
+                RoutePolicy::Default,
+                "Emby mixed-case authorization leaked into {original}",
+            );
+        }
+    }
 
     #[test]
     fn route_policy_defaults_to_authenticated_for_known_api_routes() {

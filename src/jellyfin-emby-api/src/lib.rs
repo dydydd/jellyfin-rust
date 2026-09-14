@@ -895,6 +895,77 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn generated_dedicated_operations_remain_owned_only_by_emby_tree() {
+        let contract: ClientContract =
+            serde_json::from_str(include_str!("../tests/fixtures/emby_operations.json"))
+                .expect("checked-in Emby operation inventory must be valid");
+        let state = AppState::new(
+            DatabaseConnection::Disconnected,
+            "API Test Server".to_owned(),
+            "http://127.0.0.1:8096".to_owned(),
+        );
+        let shared = jellyfin_api::unprefixed_router(state.clone());
+        let dedicated = dedicated_routes()
+            .merge(swagger_alias_routes(shared))
+            .with_state(Arc::new(state.clone()));
+        let marked_dedicated = dedicated
+            .clone()
+            .route_layer(middleware::from_fn(short_circuit_matched_route));
+        let emby = Router::new().nest(
+            EMBY_API_PREFIX,
+            case_insensitive_dedicated_routes(marked_dedicated),
+        );
+        let combined = jellyfin_api::router(state).merge(emby);
+
+        let mut checked = 0;
+        for operation in contract.operations {
+            if matches!(operation.tag.as_str(), "LiveTvService" | "PluginService")
+                || operation.path == "/LiveTv"
+                || operation.path.starts_with("/LiveTv/")
+            {
+                continue;
+            }
+            let method = Method::from_bytes(operation.method.as_bytes()).unwrap();
+            let canonical = materialize_path(&operation.path);
+            if !method_is_allowed(&dedicated, method.clone(), &canonical).await {
+                continue;
+            }
+            checked += 1;
+
+            for path in [canonical.clone(), alternating_ascii_case(&canonical)] {
+                let emby_path = format!("{EMBY_API_PREFIX}{path}");
+                assert!(
+                    matched_route(&combined, method.clone(), &emby_path)
+                        .await
+                        .is_some(),
+                    "dedicated Emby operation did not reach its owned tree: {} {} ({emby_path})",
+                    operation.method,
+                    operation.path,
+                );
+            }
+
+            for path in [
+                canonical.clone(),
+                format!("/api{canonical}"),
+                format!("/api{EMBY_API_PREFIX}{canonical}"),
+            ] {
+                assert!(
+                    matched_route(&combined, method.clone(), &path)
+                        .await
+                        .is_none(),
+                    "dedicated Emby operation leaked outside /emby: {} {} ({path})",
+                    operation.method,
+                    operation.path,
+                );
+            }
+        }
+        assert!(
+            checked > 50,
+            "expected to audit every dedicated Emby module"
+        );
+    }
+
+    #[tokio::test]
     async fn generated_emby_client_route_inventory_audit() {
         let contract: ClientContract =
             serde_json::from_str(include_str!("../tests/fixtures/emby_operations.json"))

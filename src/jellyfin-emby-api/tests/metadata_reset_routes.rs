@@ -162,6 +162,17 @@ async fn assert_authorization_precedes_binding(fixture: &Fixture) {
         StatusCode::FORBIDDEN,
         "administrator policy must precede ItemIds parsing",
     );
+    assert_eq!(
+        request(
+            &fixture.emby,
+            "/emby/iTeMs/mEtAdAtA/rEsEt?ItemIds=not-a-uuid",
+            Some(&fixture.user_token),
+        )
+        .await
+        .status(),
+        StatusCode::FORBIDDEN,
+        "mixed-case dispatch must retain the canonical administrator policy",
+    );
 }
 
 async fn assert_validation_and_batch_atomicity(fixture: &Fixture) {

@@ -75,10 +75,14 @@ async fn descriptions_are_public_xml_and_keep_emby_paths_isolated() {
         format!("/api/Dlna/{UDN}/description.xml"),
     ] {
         let response = app()
-            .oneshot(Request::get(path).body(Body::empty()).unwrap())
+            .oneshot(Request::get(&path).body(Body::empty()).unwrap())
             .await
             .unwrap();
-        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        assert_eq!(
+            response.status(),
+            StatusCode::UNAUTHORIZED,
+            "Emby-only public authorization must not leak into {path}"
+        );
     }
 }
 
