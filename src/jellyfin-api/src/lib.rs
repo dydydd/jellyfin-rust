@@ -169,6 +169,12 @@ pub fn emby_game_routes() -> Router<Arc<AppState>> {
         )
 }
 
+/// Emby-only item-image metadata routes whose response contract differs from
+/// Jellyfin's current `ImageType` surface.
+pub fn emby_item_image_routes() -> Router<Arc<AppState>> {
+    Router::new().route("/Items/{item_id}/Images", get(item_images::list_emby))
+}
+
 /// Host lifecycle commands exposed by the system API.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum SystemCommand {

@@ -31,6 +31,9 @@
   and omit `Remote`/`Offline` `LocationType` values from `/emby` responses. Preserve the person and
   every supported stream, and keep unprefixed Jellyfin DTOs byte-shape compatible with the Jellyfin
   contract.
+- Keep Emby's item-image info list on its generated closed `ImageType` contract: omit Jellyfin-only
+  `Profile` entries from `/emby/Items/{Id}/Images` instead of fabricating an Emby type, while
+  preserving them on Jellyfin root and `/api` responses.
 - Register generated-client literal routes ahead of shared dynamic fallbacks and dispatch every
   static segment case-insensitively without normalizing dynamic values or query strings. Build the
   normalization set from the full generated Emby operation inventory, including compound segments

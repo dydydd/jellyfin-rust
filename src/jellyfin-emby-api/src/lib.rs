@@ -158,6 +158,7 @@ const DEDICATED_ROUTE_TEMPLATES: &[&str] = &[
     "/Items/Shared/Leave",
     "/Items/Metadata/Reset",
     "/Items/RemoteSearch/Game",
+    "/Items/{item_id}/Images",
     "/Items/{item_id}/CriticReviews",
     "/Items/{item_id}/ThumbnailSet",
     "/Items/Intros",
@@ -417,6 +418,7 @@ fn dedicated_routes() -> Router<Arc<AppState>> {
         .merge(jellyfin_api::emby_legacy_subtitle_hls_routes())
         .merge(jellyfin_api::emby_game_genre_routes())
         .merge(jellyfin_api::emby_game_routes())
+        .merge(jellyfin_api::emby_item_image_routes())
         .merge(auth_user::routes())
         .merge(alternate_sources::routes())
         .merge(audiobooks::routes())

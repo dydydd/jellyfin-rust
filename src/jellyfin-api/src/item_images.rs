@@ -127,12 +127,33 @@ pub(crate) async fn list(
     headers: HeaderMap,
     Path(item_id): Path<Uuid>,
 ) -> Result<Json<Vec<ImageInfo>>, ApiError> {
-    let authenticated = authentication::authenticated_session(&state, &headers).await?;
+    list_internal(&state, &headers, item_id).await.map(Json)
+}
+
+pub(crate) async fn list_emby(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(item_id): Path<Uuid>,
+) -> Result<Json<Vec<ImageInfo>>, ApiError> {
+    let mut images = list_internal(&state, &headers, item_id).await?;
+    // Emby 4.10's generated clients use a closed ImageType enum which does
+    // not contain Jellyfin's later user-only Profile value. Item image infos
+    // have no compatible Emby representation for it, so omit that entry.
+    images.retain(|image| image.image_type != ImageType::Profile);
+    Ok(Json(images))
+}
+
+async fn list_internal(
+    state: &AppState,
+    headers: &HeaderMap,
+    item_id: Uuid,
+) -> Result<Vec<ImageInfo>, ApiError> {
+    let authenticated = authentication::authenticated_session(state, headers).await?;
     let item = state
         .user_library
         .item(&authenticated.user, authenticated.user.id, item_id)
         .await?;
-    Ok(Json(state.item_images.list(&item).await?))
+    Ok(state.item_images.list(&item).await?)
 }
 
 pub(crate) async fn get(
