@@ -1838,6 +1838,33 @@ impl AppState {
         Ok(StatusCode::OK)
     }
 
+    /// Closes an opened stream through Emby's generated mobile contract.
+    ///
+    /// The legacy Android and Swift clients require both query values even
+    /// though the removed server implementation only used `LiveStreamId`.
+    /// Validate `PlaySessionId` at the protocol boundary without inventing a
+    /// session-to-stream association that the official operation did not use.
+    #[allow(clippy::result_large_err)]
+    pub async fn close_emby_live_stream_for_request(
+        &self,
+        headers: &HeaderMap,
+        uri: &Uri,
+        live_stream_id: Option<&str>,
+        play_session_id: Option<&str>,
+    ) -> Result<StatusCode, Response> {
+        authorization::require_default(self, headers, uri)
+            .await
+            .map_err(IntoResponse::into_response)?;
+        let live_stream_id = live_stream_id
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| ApiError::InvalidRequest.into_response())?;
+        play_session_id
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| ApiError::InvalidRequest.into_response())?;
+        self.live_streams.close(live_stream_id);
+        Ok(StatusCode::OK)
+    }
+
     #[allow(clippy::result_large_err)]
     async fn resolve_emby_search_state_user(
         &self,

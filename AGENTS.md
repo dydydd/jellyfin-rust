@@ -536,6 +536,9 @@
   never register the typed-settings route on the unprefixed Jellyfin tree.
 - Keep login case-insensitive through both static segments: `/users/authenticatebyname` must retain
   the canonical route's public authorization policy as well as its handler.
+- Keep `/emby/LiveStreams/Close` on the generated Android and Swift two-query contract: bind
+  `LiveStreamId` and `PlaySessionId` case-insensitively with last-duplicate-wins semantics and
+  require both to be nonempty, while leaving Jellyfin's root and `/api` one-query behavior intact.
 - Keep Startup, external library-update reports, elevated Person remote search, and elevated remote
   search Apply reachable through fully lowercase static aliases. Bind their JSON properties and
   compound query names in PascalCase, camelCase, and representative lowercase form; lowercase

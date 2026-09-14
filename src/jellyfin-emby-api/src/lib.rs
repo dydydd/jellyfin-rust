@@ -164,6 +164,7 @@ const DEDICATED_ROUTE_TEMPLATES: &[&str] = &[
     "/Items/Intros",
     "/Items/Prefixes",
     "/ItemTypes",
+    "/LiveStreams/Close",
     "/LiveStreams/MediaInfo",
     "/Notifications/Admin",
     "/Notifications/Services/Defaults",

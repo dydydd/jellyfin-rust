@@ -280,7 +280,29 @@ async fn assert_live_stream_lookup_semantics(fixture: &Fixture, live_stream_id: 
 }
 
 async fn assert_close_makes_the_stream_unavailable(fixture: &Fixture, live_stream_id: &str) {
-    let close = format!("/emby/LiveStreams/Close?LiveStreamId={live_stream_id}");
+    for route in [
+        format!("/emby/LiveStreams/Close?LiveStreamId={live_stream_id}"),
+        format!("/emby/LiveStreams/Close?PlaySessionId=owner-play-session"),
+        format!("/emby/LiveStreams/Close?LiveStreamId={live_stream_id}&PlaySessionId="),
+    ] {
+        assert_eq!(
+            request(
+                &fixture.emby,
+                Method::POST,
+                &route,
+                Some(&fixture.owner_token),
+                None,
+            )
+            .await
+            .status(),
+            StatusCode::BAD_REQUEST,
+            "both generated-client query values are required: {route}",
+        );
+    }
+
+    let close = format!(
+        "/emby/lIvEsTrEaMs/cLoSe?LIVESTREAMID=wrong&PLAYSESSIONID=old&liveStreamId={live_stream_id}&playSessionId=owner-play-session"
+    );
     assert_eq!(
         request(
             &fixture.emby,
@@ -320,6 +342,19 @@ async fn assert_jellyfin_root_isolation(fixture: &Fixture, live_stream_id: &str)
         .await
         .status(),
         StatusCode::NOT_FOUND,
+    );
+    assert_eq!(
+        request(
+            &fixture.jellyfin,
+            Method::POST,
+            "/LiveStreams/Close?LiveStreamId=unknown",
+            Some(&fixture.owner_token),
+            None,
+        )
+        .await
+        .status(),
+        StatusCode::NO_CONTENT,
+        "the Jellyfin root route must not inherit Emby's PlaySessionId requirement",
     );
 }
 
