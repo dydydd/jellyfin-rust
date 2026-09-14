@@ -1,4 +1,4 @@
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, de};
 use uuid::Uuid;
 
 use crate::{
@@ -27,7 +27,7 @@ impl Default for ImageOption {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(default, rename_all = "PascalCase")]
 pub struct UserConfiguration {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -53,6 +53,125 @@ pub struct UserConfiguration {
     pub enable_next_episode_auto_play: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cast_receiver_id: Option<String>,
+}
+
+impl<'de> Deserialize<'de> for UserConfiguration {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(default, rename_all = "PascalCase")]
+        struct WireUserConfiguration {
+            audio_language_preference: Option<String>,
+            play_default_audio_track: bool,
+            subtitle_language_preference: Option<String>,
+            display_missing_episodes: bool,
+            #[serde(with = "crate::serde_guid::vec")]
+            grouped_folders: Vec<Uuid>,
+            subtitle_mode: SubtitlePlaybackMode,
+            display_collections_view: bool,
+            enable_local_password: bool,
+            #[serde(with = "crate::serde_guid::vec")]
+            ordered_views: Vec<Uuid>,
+            #[serde(with = "crate::serde_guid::vec")]
+            latest_items_excludes: Vec<Uuid>,
+            #[serde(with = "crate::serde_guid::vec")]
+            my_media_excludes: Vec<Uuid>,
+            hide_played_in_latest: bool,
+            remember_audio_selections: bool,
+            remember_subtitle_selections: bool,
+            enable_next_episode_auto_play: bool,
+            cast_receiver_id: Option<String>,
+        }
+
+        impl Default for WireUserConfiguration {
+            fn default() -> Self {
+                let configuration = UserConfiguration::default();
+                Self {
+                    audio_language_preference: configuration.audio_language_preference,
+                    play_default_audio_track: configuration.play_default_audio_track,
+                    subtitle_language_preference: configuration.subtitle_language_preference,
+                    display_missing_episodes: configuration.display_missing_episodes,
+                    grouped_folders: configuration.grouped_folders,
+                    subtitle_mode: configuration.subtitle_mode,
+                    display_collections_view: configuration.display_collections_view,
+                    enable_local_password: configuration.enable_local_password,
+                    ordered_views: configuration.ordered_views,
+                    latest_items_excludes: configuration.latest_items_excludes,
+                    my_media_excludes: configuration.my_media_excludes,
+                    hide_played_in_latest: configuration.hide_played_in_latest,
+                    remember_audio_selections: configuration.remember_audio_selections,
+                    remember_subtitle_selections: configuration.remember_subtitle_selections,
+                    enable_next_episode_auto_play: configuration.enable_next_episode_auto_play,
+                    cast_receiver_id: configuration.cast_receiver_id,
+                }
+            }
+        }
+
+        struct UserConfigurationVisitor;
+
+        impl<'de> de::Visitor<'de> for UserConfigurationVisitor {
+            type Value = UserConfiguration;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("a user configuration object")
+            }
+
+            fn visit_map<M: de::MapAccess<'de>>(self, mut map: M) -> Result<Self::Value, M::Error> {
+                const FIELDS: &[&str] = &[
+                    "AudioLanguagePreference",
+                    "PlayDefaultAudioTrack",
+                    "SubtitleLanguagePreference",
+                    "DisplayMissingEpisodes",
+                    "GroupedFolders",
+                    "SubtitleMode",
+                    "DisplayCollectionsView",
+                    "EnableLocalPassword",
+                    "OrderedViews",
+                    "LatestItemsExcludes",
+                    "MyMediaExcludes",
+                    "HidePlayedInLatest",
+                    "RememberAudioSelections",
+                    "RememberSubtitleSelections",
+                    "EnableNextEpisodeAutoPlay",
+                    "CastReceiverId",
+                ];
+
+                let mut normalized = serde_json::Map::new();
+                while let Some(key) = map.next_key::<String>()? {
+                    let value = map.next_value::<serde_json::Value>()?;
+                    if let Some(field) =
+                        FIELDS.iter().find(|field| field.eq_ignore_ascii_case(&key))
+                    {
+                        // System.Text.Json matches property names without regard to
+                        // case and applies duplicate JSON properties in source order.
+                        normalized.insert((*field).to_owned(), value);
+                    }
+                }
+                let wire: WireUserConfiguration =
+                    serde_json::from_value(serde_json::Value::Object(normalized))
+                        .map_err(de::Error::custom)?;
+                Ok(UserConfiguration {
+                    audio_language_preference: wire.audio_language_preference,
+                    play_default_audio_track: wire.play_default_audio_track,
+                    subtitle_language_preference: wire.subtitle_language_preference,
+                    display_missing_episodes: wire.display_missing_episodes,
+                    grouped_folders: wire.grouped_folders,
+                    subtitle_mode: wire.subtitle_mode,
+                    display_collections_view: wire.display_collections_view,
+                    enable_local_password: wire.enable_local_password,
+                    ordered_views: wire.ordered_views,
+                    latest_items_excludes: wire.latest_items_excludes,
+                    my_media_excludes: wire.my_media_excludes,
+                    hide_played_in_latest: wire.hide_played_in_latest,
+                    remember_audio_selections: wire.remember_audio_selections,
+                    remember_subtitle_selections: wire.remember_subtitle_selections,
+                    enable_next_episode_auto_play: wire.enable_next_episode_auto_play,
+                    cast_receiver_id: wire.cast_receiver_id,
+                })
+            }
+        }
+
+        deserializer.deserialize_map(UserConfigurationVisitor)
+    }
 }
 
 impl Default for UserConfiguration {

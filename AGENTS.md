@@ -538,6 +538,9 @@
 - Bind every top-level `UserPolicy` update property case-insensitively like ASP.NET JSON input,
   preserving the official last-duplicate-wins behavior and ignoring unknown properties. Do not let
   camelCase, lowercase, or mixed-case SDK payloads silently reset submitted policy values to defaults.
+- Bind every top-level shared `UserConfiguration` update property case-insensitively as well. Keep
+  the official constructor defaults for omitted fields, let the last case-insensitive duplicate win,
+  ignore unknown properties, and preserve PascalCase output for both modern and legacy user routes.
 - Keep `AccessSchedule` entries Kotlin-decodable: emit signed `Int32` `Id` and the owning compact
   `UserId` in addition to day/start/end fields. Backfill the owning user during DTO projection for
   historical policy JSON that predates those identity fields.

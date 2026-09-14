@@ -63,10 +63,48 @@ async fn exercise_user_configuration_routes(database_name: &str) {
 
     let fixture = Fixture::new(database.clone()).await;
     assert_auth_and_target_user_rules(&fixture).await;
+    assert_case_insensitive_configuration_body(&fixture).await;
     assert_self_update(&fixture).await;
     assert_admin_legacy_update(&fixture).await;
     assert_pascal_case_user_id_alias(&fixture).await;
     database.close().await.expect("database pool cleanup");
+}
+
+async fn assert_case_insensitive_configuration_body(fixture: &Fixture) {
+    let grouped_folder = Uuid::new_v4();
+    let body = format!(
+        r#"{{
+            "displaymissingepisodes": true,
+            "PLAYDEFAULTAUDIOTRACK": false,
+            "playDefaultAudioTrack": true,
+            "groupedfolders": ["{grouped_folder}"],
+            "subtitlemode": "Always",
+            "castreceiverid": "android-cast",
+            "IgnoredExtensionProperty": "ignored"
+        }}"#
+    );
+    let response = request_raw_json(
+        &fixture.app,
+        "POST",
+        &format!("/users/{}/configuration", fixture.other_user_id.simple()),
+        Some(&fixture.admin_token),
+        body,
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+
+    let other = get_user(&fixture.app, fixture.other_user_id, &fixture.admin_token).await;
+    let configuration = &other["Configuration"];
+    assert_eq!(configuration["DisplayMissingEpisodes"], true);
+    assert_eq!(configuration["PlayDefaultAudioTrack"], true);
+    assert_eq!(
+        configuration["GroupedFolders"],
+        json!([grouped_folder.simple().to_string()])
+    );
+    assert_eq!(configuration["SubtitleMode"], "Always");
+    assert_eq!(configuration["CastReceiverId"], "android-cast");
+    assert_eq!(configuration["HidePlayedInLatest"], true);
+    assert!(configuration.get("IgnoredExtensionProperty").is_none());
 }
 
 struct Fixture {
@@ -350,6 +388,29 @@ async fn request(
             .await
             .expect("route response")
     }
+}
+
+async fn request_raw_json(
+    app: &axum::Router,
+    method: &str,
+    uri: &str,
+    token: Option<&str>,
+    body: String,
+) -> axum::response::Response {
+    let mut request = Request::builder()
+        .method(method)
+        .uri(uri)
+        .header(header::CONTENT_TYPE, "application/json");
+    if let Some(token) = token {
+        request = request.header(
+            header::AUTHORIZATION,
+            format!("{AUTHORIZATION}, Token=\"{token}\""),
+        );
+    }
+    app.clone()
+        .oneshot(request.body(Body::from(body)).expect("request"))
+        .await
+        .expect("route response")
 }
 
 async fn session(devices: &DeviceRepository, user_id: Uuid, suffix: &str) -> String {
