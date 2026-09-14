@@ -957,7 +957,11 @@ pub(crate) async fn open_live_stream(
     let authenticated =
         authentication::authenticated_identity(&state, &headers, Some(&uri)).await?;
     let Query(query) = query.map_err(|_| ApiError::InvalidRequest)?;
-    let body = optional_open_live_stream_body(body)?.unwrap_or_default();
+    let body = optional_open_live_stream_body(body)?;
+    if is_emby_protocol_uri(&uri) && body.is_none() {
+        return Err(ApiError::InvalidRequest);
+    }
+    let body = body.unwrap_or_default();
     let identity = playback_request_identity_from_authenticated(
         &state,
         authenticated,

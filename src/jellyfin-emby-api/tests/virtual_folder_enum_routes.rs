@@ -1,7 +1,7 @@
 use axum::{
     Router,
     body::{Body, to_bytes},
-    http::{Request, StatusCode, header},
+    http::{Method, Request, StatusCode, header},
 };
 use jellyfin_api::AppState;
 use jellyfin_controller::{UserService, VirtualFolderService};
@@ -126,6 +126,44 @@ async fn exercise(database_name: &str) {
         );
     }
 
+    assert_eq!(
+        request_status(
+            &app,
+            Method::POST,
+            "/emby/Library/VirtualFolders?Name=Missing+Body",
+            &token,
+            None,
+        )
+        .await,
+        StatusCode::BAD_REQUEST,
+        "Emby's generated AddVirtualFolder body is required",
+    );
+    assert_eq!(
+        request_status(
+            &app,
+            Method::POST,
+            "/emby/lIbRaRy/vIrTuAlFoLdErS?Name=Emby+Body",
+            &token,
+            Some("{}"),
+        )
+        .await,
+        StatusCode::OK,
+    );
+    for (prefix, name) in [("", "Root+Bodyless"), ("/api", "Api+Bodyless")] {
+        assert_eq!(
+            request_status(
+                &app,
+                Method::POST,
+                &format!("{prefix}/Library/VirtualFolders?Name={name}"),
+                &token,
+                None,
+            )
+            .await,
+            StatusCode::NO_CONTENT,
+            "Jellyfin keeps its optional body at {prefix}",
+        );
+    }
+
     drop(app);
     drop(virtual_folders);
     database.close().await.expect("database cleanup");
@@ -152,6 +190,31 @@ async fn get_json(app: &Router, path: &str, token: &str) -> Value {
             .expect("bounded response body"),
     )
     .unwrap_or_else(|error| panic!("{path} returned invalid JSON: {error}"))
+}
+
+async fn request_status(
+    app: &Router,
+    method: Method,
+    path: &str,
+    token: &str,
+    body: Option<&str>,
+) -> StatusCode {
+    let mut request = Request::builder().method(method).uri(path).header(
+        header::AUTHORIZATION,
+        format!("{AUTHORIZATION}, Token=\"{token}\""),
+    );
+    if body.is_some() {
+        request = request.header(header::CONTENT_TYPE, "application/json");
+    }
+    app.clone()
+        .oneshot(
+            request
+                .body(Body::from(body.unwrap_or_default().to_owned()))
+                .expect("request"),
+        )
+        .await
+        .expect("route response")
+        .status()
 }
 
 fn first_folder(response: &Value) -> &Value {

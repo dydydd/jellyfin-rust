@@ -167,6 +167,35 @@ async fn assert_authentication_and_binding(fixture: &Fixture) {
         StatusCode::UNAUTHORIZED,
         "authentication must precede required-query validation",
     );
+    assert_eq!(
+        request(
+            &fixture.emby,
+            Method::POST,
+            "/emby/LiveStreams/Open",
+            None,
+            None,
+        )
+        .await
+        .status(),
+        StatusCode::UNAUTHORIZED,
+        "authentication must precede the generated required body",
+    );
+    assert_eq!(
+        request(
+            &fixture.emby,
+            Method::POST,
+            &format!(
+                "/emby/LiveStreams/Open?ItemId={}&UserId={}",
+                fixture.item_id, fixture.user_id
+            ),
+            Some(&fixture.owner_token),
+            None,
+        )
+        .await
+        .status(),
+        StatusCode::BAD_REQUEST,
+        "the generated LiveStreamRequest body is required",
+    );
     for route in [
         "/emby/LiveStreams/MediaInfo",
         "/emby/LiveStreams/MediaInfo?Other=value",
@@ -356,6 +385,24 @@ async fn assert_jellyfin_root_isolation(fixture: &Fixture, live_stream_id: &str)
         StatusCode::NO_CONTENT,
         "the Jellyfin root route must not inherit Emby's PlaySessionId requirement",
     );
+    for prefix in ["", "/api"] {
+        assert_eq!(
+            request(
+                &fixture.jellyfin,
+                Method::POST,
+                &format!(
+                    "{prefix}/LiveStreams/Open?ItemId={}&UserId={}&PlaySessionId=root-bodyless",
+                    fixture.item_id, fixture.user_id
+                ),
+                Some(&fixture.owner_token),
+                None,
+            )
+            .await
+            .status(),
+            StatusCode::OK,
+            "Jellyfin keeps its optional OpenLiveStream body at {prefix}",
+        );
+    }
 }
 
 async fn request(

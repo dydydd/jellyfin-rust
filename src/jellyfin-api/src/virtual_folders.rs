@@ -351,6 +351,9 @@ pub(crate) async fn create(
     let body = request
         .map_err(|_| ApiError::InvalidRequest)?
         .map(|body| body.0);
+    if is_emby_protocol_uri(&uri) && body.is_none() {
+        return Err(ApiError::InvalidRequest);
+    }
     let options = body
         .and_then(|body| body.library_options)
         .unwrap_or_else(|| json!({ "Enabled": true, "PathInfos": [] }));

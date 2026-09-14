@@ -572,6 +572,9 @@
 - Keep `/emby/LiveStreams/Close` on the generated Android and Swift two-query contract: bind
   `LiveStreamId` and `PlaySessionId` case-insensitively with last-duplicate-wins semantics and
   require both to be nonempty, while leaving Jellyfin's root and `/api` one-query behavior intact.
+- Require the generated JSON body on `/emby/LiveStreams/Open` and
+  `/emby/Library/VirtualFolders`; preserve the optional-body behavior of both shared handlers on
+  Jellyfin root and `/api`, including query-only live-stream opens and default library options.
 - Require a nonempty, non-nil `UserId` on `/emby/Shows/NextUp`, bind every generated scalar query
   case-insensitively with last-duplicate-wins semantics, and preserve repeated `Fields` and
   `EnableImageTypes`. Delegate to the shared policy-aware NextUp implementation without imposing
