@@ -636,6 +636,10 @@
   ordering, and item-count overlays.
 - Keep `/Persons` pagination signed as well, but preserve its different limit rule: a non-positive
   `Limit` is unlimited, while a non-positive `StartIndex` skips nothing and is still echoed.
+- Project `/Persons` DTO image options with the shared official collection semantics: when images
+  remain enabled, `ImageTypeLimit=0` or selectors that exclude every local single image still emit
+  an empty `ImageTags` object. Emit an empty `BackdropImageTags` array when Backdrop is selected but
+  absent, and omit these collections only when their corresponding projection is disabled.
 - Keep item-by-name pagination such as `/Genres`, `/MusicGenres`, and `/Studios` signed: a negative
   `StartIndex` skips nothing but is echoed, `Limit=0` is empty, and a negative `Limit` follows the
   official SQLite unlimited-limit behavior. When `EnableTotalRecordCount` is false, return zero

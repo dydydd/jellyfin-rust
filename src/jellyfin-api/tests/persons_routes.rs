@@ -670,10 +670,28 @@ async fn persons_list_projects_official_dto_options_in_all_supported_casings() {
         );
     }
 
+    for query in ["imageTypeLimit=0", "ImageTypeLimit=0", "imagetypelimit=0"] {
+        let page = body_json(
+            fixture
+                .request(
+                    &format!("/Persons?searchTerm={search}&{query}"),
+                    Some(&fixture.user_token),
+                )
+                .await,
+        )
+        .await;
+        assert_eq!(
+            page["Items"][0]["ImageTags"],
+            serde_json::json!({}),
+            "{query}"
+        );
+        assert!(
+            page["Items"][0].get("BackdropImageTags").is_none(),
+            "{query}"
+        );
+    }
+
     for query in [
-        "imageTypeLimit=0",
-        "ImageTypeLimit=0",
-        "imagetypelimit=0",
         "enableImageTypes=Backdrop",
         "EnableImageTypes=Backdrop",
         "enableimagetypes=Backdrop",
@@ -687,7 +705,16 @@ async fn persons_list_projects_official_dto_options_in_all_supported_casings() {
                 .await,
         )
         .await;
-        assert!(page["Items"][0].get("ImageTags").is_none(), "{query}");
+        assert_eq!(
+            page["Items"][0]["ImageTags"],
+            serde_json::json!({}),
+            "{query}"
+        );
+        assert_eq!(
+            page["Items"][0]["BackdropImageTags"],
+            serde_json::json!([]),
+            "{query}"
+        );
     }
 
     fixture.cleanup().await;
