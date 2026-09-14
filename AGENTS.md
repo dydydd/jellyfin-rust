@@ -1278,6 +1278,10 @@
   by atomic rename. Sanitize filesystem components without altering the original SDK-visible
   `LocalFileInfo`, keep all paths inside the internal camera-uploads root, and remove a published
   unique file if its PostgreSQL history append fails.
+- Bind `/emby/Sessions/{Id}/Playing/{Command}` from the generated `PlaystateRequest` JSON body,
+  with case-insensitive property names and last-duplicate-wins semantics while keeping the path
+  command authoritative. Return Emby's empty 200 response, but do not leak that body binding or
+  status into Jellyfin's root and `/api` query-based routes, which retain their empty 204 response.
 
 ## Validation
 

@@ -17,7 +17,7 @@ use jellyfin_model::{
     QueryResult, SessionInfoDto, SessionUserInfo, TranscodingInfo,
 };
 use md5::{Digest, Md5};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, de::IgnoredAny};
 use uuid::Uuid;
 
 use crate::{ApiError, AppState, authentication, user_library, user_primary_image_tags};
@@ -668,10 +668,23 @@ pub(crate) async fn send_playstate_command(
     headers: HeaderMap,
     path: Result<Path<(String, PlaystateCommand)>, PathRejection>,
     query: Result<Query<PlaystateCommandQuery>, QueryRejection>,
+    request: Request,
 ) -> Result<StatusCode, ApiError> {
     let controller = authenticated_session_controller(&state, &headers, &uri).await?;
     let Path((session_id, command)) = path.map_err(|_| ApiError::InvalidRequest)?;
-    let Query(query) = query.map_err(|_| ApiError::InvalidRequest)?;
+    let emby_protocol = uri.path() == "/emby" || uri.path().starts_with("/emby/");
+    let (seek_position_ticks, controlling_user_id) = if emby_protocol {
+        let Json(request) = Json::<EmbyPlaystateRequest>::from_request(request, &state)
+            .await
+            .map_err(|_| ApiError::InvalidRequest)?;
+        // Both the generated body and route carry Command. As in Jellyfin's
+        // SessionController, the required route value is authoritative.
+        let _ = request.command;
+        (request.seek_position_ticks, request.controlling_user_id)
+    } else {
+        let Query(query) = query.map_err(|_| ApiError::InvalidRequest)?;
+        (query.seek_position_ticks, query.controlling_user_id)
+    };
     enqueue_session_command(
         &state,
         &session_id,
@@ -679,14 +692,67 @@ pub(crate) async fn send_playstate_command(
         "Playstate",
         PlaystateRequest {
             command,
-            seek_position_ticks: query.seek_position_ticks,
+            seek_position_ticks,
             // The official endpoint binds this as a nullable string; keep
             // caller-supplied values, including omission, unchanged on wire.
-            controlling_user_id: query.controlling_user_id,
+            controlling_user_id,
         },
     )
     .await?;
-    Ok(StatusCode::NO_CONTENT)
+    Ok(if emby_protocol {
+        StatusCode::OK
+    } else {
+        StatusCode::NO_CONTENT
+    })
+}
+
+/// Emby's generated legacy route binds a complete `PlaystateRequest` body,
+/// unlike Jellyfin's query-based endpoint. A visitor is used instead of a
+/// derived struct so ASP.NET-style case-insensitive properties retain the
+/// last value when differently-cased duplicates are submitted.
+#[derive(Debug, Default)]
+struct EmbyPlaystateRequest {
+    command: Option<PlaystateCommand>,
+    seek_position_ticks: Option<i64>,
+    controlling_user_id: Option<String>,
+}
+
+impl<'de> Deserialize<'de> for EmbyPlaystateRequest {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct RequestVisitor;
+
+        impl<'de> serde::de::Visitor<'de> for RequestVisitor {
+            type Value = EmbyPlaystateRequest;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("an Emby PlaystateRequest object")
+            }
+
+            fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+            where
+                A: serde::de::MapAccess<'de>,
+            {
+                let mut request = EmbyPlaystateRequest::default();
+                while let Some(name) = map.next_key::<String>()? {
+                    if name.eq_ignore_ascii_case("Command") {
+                        request.command = map.next_value()?;
+                    } else if name.eq_ignore_ascii_case("SeekPositionTicks") {
+                        request.seek_position_ticks = map.next_value()?;
+                    } else if name.eq_ignore_ascii_case("ControllingUserId") {
+                        request.controlling_user_id = map.next_value()?;
+                    } else {
+                        map.next_value::<IgnoredAny>()?;
+                    }
+                }
+                Ok(request)
+            }
+        }
+
+        deserializer.deserialize_map(RequestVisitor)
+    }
 }
 
 pub(crate) async fn add_user_to_session(
