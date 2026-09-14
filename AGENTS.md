@@ -19,6 +19,15 @@
 - Normalize empty successful shared-handler responses to HTTP 200 only inside the `/emby` tree,
   because the generated 4.10.0.40 document declares 200 as the sole success status for all 548
   operations. Preserve Jellyfin's root and `/api` 204 mutation responses.
+- Bind Emby collection and playlist mutation `Ids`/`EntryIds` query strings case-insensitively,
+  using only the last repeated scalar value before applying their comma-delimited collection
+  semantics. Keep create-route ids optional, require add/remove ids, and do not change Jellyfin root
+  or `/api` query binding.
+- Require a nonblank, case-insensitively bound, last-duplicate-wins query `Container` on Emby's
+  extensionless and filename-form Audio/Video progressive routes and on their master/live/main HLS
+  manifests. Path-container stream routes satisfy the generated contract from their suffix, while
+  Universal audio and subtitle/BIF routes must not acquire this requirement; preserve Jellyfin root
+  and `/api` behavior.
 - Require `Size` on `/emby/Playback/BitrateTest`, bind it case-insensitively with the last duplicate
   winning, and accept API keys as generated-client authentication. Preserve Jellyfin root and
   `/api` default size 102400 and the shared inclusive 1..100000000 validation.

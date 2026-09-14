@@ -42,6 +42,7 @@ mod packages;
 mod parties;
 mod person_credits;
 mod plugins;
+mod query_contracts;
 mod recent_searches;
 mod remote_images;
 mod section_items;
@@ -66,6 +67,7 @@ pub fn router(state: AppState) -> Router {
     let routes = dedicated_routes()
         .merge(swagger_alias_routes(fallback.clone()))
         .fallback_service(fallback)
+        .layer(axum::middleware::from_fn(query_contracts::normalize))
         .layer(axum::middleware::from_fn_with_state(
             Arc::clone(&state),
             jellyfin_api::protocol_route_auth,
