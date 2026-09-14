@@ -463,6 +463,11 @@
   defined integer values. Reject unknown names and integer values as bad requests before resource
   lookup, including legacy user-image route parameters whose controller action otherwise ignores
   the value.
+- Bind the legacy indexed user-profile-image upload, canonical DELETE, and POST `/Delete` mutation
+  path `Index` as a signed `Int32` on Jellyfin root, `/api`, and `/emby`. The handler ignores every
+  in-range value, including negatives and both boundaries; reject only values outside `Int32`
+  without changing image-type, authorization, target, or body-validation precedence. Preserve root
+  and `/api` empty 204 responses, `/emby` empty 200 responses, and idempotent deletion.
 - Stream trickplay tile files with bounded chunks and preserve HEAD and byte-range semantics; never
   read an entire tile into a response buffer.
 - Keep playback-info route static segments compatible with ASP.NET's case-insensitive routing:

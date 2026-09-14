@@ -359,7 +359,7 @@ pub(crate) async fn post_user_image_legacy(
 pub(crate) async fn post_user_image_index_legacy(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    Path((target_id, image_type, _index)): Path<(Uuid, String, u32)>,
+    Path((target_id, image_type, _index)): Path<(Uuid, String, i32)>,
     request: Request<axum::body::Body>,
 ) -> Result<StatusCode, ApiError> {
     let identity = authentication::authenticated_identity(&state, &headers, None).await?;
@@ -451,7 +451,7 @@ pub(crate) async fn delete_user_image_legacy(
 pub(crate) async fn delete_user_image_index_legacy(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    Path((target_id, image_type, _index)): Path<(Uuid, String, u32)>,
+    Path((target_id, image_type, _index)): Path<(Uuid, String, i32)>,
 ) -> Result<StatusCode, ApiError> {
     let identity = authentication::authenticated_identity(&state, &headers, None).await?;
     parse_image_type(&image_type)?;
