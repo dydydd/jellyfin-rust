@@ -9,6 +9,7 @@ use axum::{
     Json, Router,
     extract::{OriginalUri, Request, State},
     http::{HeaderMap, StatusCode, Uri, uri::PathAndQuery},
+    middleware::Next,
     response::Response,
     routing::get,
 };
@@ -71,9 +72,22 @@ pub fn router(state: AppState) -> Router {
             Arc::clone(&state),
             users::adapt_user_responses,
         ))
+        .layer(axum::middleware::from_fn(normalize_empty_success))
         .with_state(state);
 
     Router::new().nest(EMBY_API_PREFIX, case_insensitive_dedicated_routes(routes))
+}
+
+/// Emby's generated 4.10.0.40 document declares HTTP 200 as the sole success
+/// status for every operation. Shared Jellyfin mutation handlers intentionally
+/// retain their modern 204 contract; only the nested `/emby` tree normalizes
+/// those empty successful responses.
+async fn normalize_empty_success(request: Request, next: Next) -> Response {
+    let mut response = next.run(request).await;
+    if response.status() == StatusCode::NO_CONTENT {
+        *response.status_mut() = StatusCode::OK;
+    }
+    response
 }
 
 // The shared Jellyfin document owns its OpenAPI bytes and response headers.

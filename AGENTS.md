@@ -16,6 +16,9 @@
   ordinary playback `LiveStreams` routes remain in scope. Track every other missing method/path in
   the explicit gap ledger, remove entries only with route and response-shape tests, and keep the
   combined server test proving `/emby` and Jellyfin root routes remain isolated.
+- Normalize empty successful shared-handler responses to HTTP 200 only inside the `/emby` tree,
+  because the generated 4.10.0.40 document declares 200 as the sole success status for all 548
+  operations. Preserve Jellyfin's root and `/api` 204 mutation responses.
 - Never serialize Jellyfin GUID strings into Emby's `NameLongIdPair.Id` fields. Until a stable Emby
   numeric-id mapping exists, `/emby` BaseItem responses must omit incompatible `Studios`,
   `GenreItems`, `TagItems`, and `Collections` relations; keep the names/ids unchanged on every
