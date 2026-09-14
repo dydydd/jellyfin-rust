@@ -544,6 +544,10 @@
 - Keep `/emby/LiveStreams/Close` on the generated Android and Swift two-query contract: bind
   `LiveStreamId` and `PlaySessionId` case-insensitively with last-duplicate-wins semantics and
   require both to be nonempty, while leaving Jellyfin's root and `/api` one-query behavior intact.
+- Require a nonempty, non-nil `UserId` on `/emby/Shows/NextUp`, bind every generated scalar query
+  case-insensitively with last-duplicate-wins semantics, and preserve repeated `Fields` and
+  `EnableImageTypes`. Delegate to the shared policy-aware NextUp implementation without imposing
+  this legacy requirement on Jellyfin's root or `/api` routes.
 - Keep Startup, external library-update reports, elevated Person remote search, and elevated remote
   search Apply reachable through fully lowercase static aliases. Bind their JSON properties and
   compound query names in PascalCase, camelCase, and representative lowercase form; lowercase

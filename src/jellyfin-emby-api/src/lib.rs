@@ -47,6 +47,7 @@ mod section_items;
 mod sync;
 mod system_misc;
 mod track_selections;
+mod tv_shows;
 mod typed_settings;
 mod users;
 mod web_strings;
@@ -182,6 +183,7 @@ const DEDICATED_ROUTE_TEMPLATES: &[&str] = &[
     "/Parties/{party_id}/Join",
     "/OfficialRatings",
     "/Shows/Missing",
+    "/Shows/NextUp",
     "/StreamLanguages",
     "/swagger",
     "/SubtitleCodecs",
@@ -449,6 +451,7 @@ fn dedicated_routes() -> Router<Arc<AppState>> {
         .merge(section_items::routes())
         .merge(sync::routes())
         .merge(system_misc::routes())
+        .merge(tv_shows::routes())
         .merge(track_selections::routes())
         .merge(typed_settings::routes())
         .merge(users::routes())
