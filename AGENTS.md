@@ -299,6 +299,9 @@
   through unplayed, version-grouping, and target-user policy rules, and project the merged candidate
   set once. Preserve the official double-weighted round robin, category ordering, signed Int32
   limits, UTF-16LE MD5 person category ids, and fully lowercase route/query compatibility.
+- Omit `CategoryId` only from `/emby/Movies/Recommendations`, because Emby's generated clients
+  declare that nullable field as a signed `Int64` and Jellyfin UUID/MD5 GUID values have no lossless
+  numeric mapping. Preserve the UUID string on Jellyfin root and `/api` recommendation responses.
 - Keep every InstantMix route on the official DTO-options contract. Accept signed limits and
   case-insensitive repeated fields/image options, report the pre-limit total, validate the Playlist
   route's seed type, collect Folder descendant-audio genres in one policy-aware query, and treat an

@@ -7,7 +7,10 @@ use axum::{
 };
 use jellyfin_api::AppState;
 use jellyfin_controller::UserService;
-use jellyfin_data::{BaseItemRepository, DatabaseConfig, DeviceRepository, NewBaseItem, NewDevice};
+use jellyfin_data::{
+    BaseItemRepository, DatabaseConfig, DeviceRepository, ItemValueRepository, NewBaseItem,
+    NewDevice, NewUserData, UserDataRepository, entities::item_value,
+};
 use jellyfin_model::TranscodeReason;
 use jellyfin_server_implementations::DefaultAuthenticationProvider;
 use sea_orm::ConnectionTrait;
@@ -93,6 +96,44 @@ async fn exercise(database_name: &str, dump_dir: Option<PathBuf>) {
     movie.sort_name = movie.name.clone();
     movie.parent_id = Some(root.id);
     let movie = items.create(movie).await.expect("theme owner item");
+    let mut recommendation_baseline = NewBaseItem::new(Uuid::new_v4(), "Movie");
+    recommendation_baseline.name = Some("Emby Swift Recommendation Baseline".to_owned());
+    recommendation_baseline.sort_name = recommendation_baseline.name.clone();
+    recommendation_baseline.parent_id = Some(root.id);
+    recommendation_baseline.media_type = Some("Video".to_owned());
+    recommendation_baseline.path = Some("/media/emby-swift/recommendation-baseline.mkv".to_owned());
+    let recommendation_baseline = items
+        .create(recommendation_baseline)
+        .await
+        .expect("recommendation baseline movie");
+    let mut recommended_movie = NewBaseItem::new(Uuid::new_v4(), "Movie");
+    recommended_movie.name = Some("Emby Swift Recommendation".to_owned());
+    recommended_movie.sort_name = recommended_movie.name.clone();
+    recommended_movie.parent_id = Some(root.id);
+    recommended_movie.media_type = Some("Video".to_owned());
+    recommended_movie.path = Some("/media/emby-swift/recommendation.mkv".to_owned());
+    let recommended_movie = items
+        .create(recommended_movie)
+        .await
+        .expect("recommended movie");
+    let item_values = ItemValueRepository::new(database.clone());
+    for item_id in [recommendation_baseline.id, recommended_movie.id] {
+        item_values
+            .link(item_id, item_value::ItemValueType::Genre, "EmbySwiftGenre")
+            .await
+            .expect("recommendation genre");
+    }
+    let mut played = NewUserData::new(
+        recommendation_baseline.id,
+        user.id,
+        recommendation_baseline.id.to_string(),
+    );
+    played.played = true;
+    played.last_played_date = Some(chrono::Utc::now());
+    UserDataRepository::new(database.clone())
+        .upsert(played)
+        .await
+        .expect("played recommendation baseline");
 
     let state = AppState::new(
         database.clone(),
@@ -184,6 +225,10 @@ async fn exercise(database_name: &str, dump_dir: Option<PathBuf>) {
             format!("/emby/Items/{}/ThemeMedia", movie.id),
             "AllThemeMediaResult",
         ),
+        (
+            "/emby/Movies/Recommendations?ItemLimit=1&CategoryLimit=1".to_owned(),
+            "[RecommendationDto]",
+        ),
     ] {
         let body = response_json(
             request(&app, Method::GET, &route, Some(&user_token), None, None).await,
@@ -197,7 +242,7 @@ async fn exercise(database_name: &str, dump_dir: Option<PathBuf>) {
         });
     }
 
-    assert_eq!(responses.len(), 15);
+    assert_eq!(responses.len(), 16);
     assert!(responses.iter().all(|response| !response.route.is_empty()));
     assert_eq!(responses[2].body["Id"], user_id.to_string());
     assert!(responses[3].body["Items"].is_array());
@@ -233,6 +278,22 @@ async fn exercise(database_name: &str, dump_dir: Option<PathBuf>) {
     ] {
         assert!(result.get("OwnerId").is_none());
     }
+    let recommendations = responses[15]
+        .body
+        .as_array()
+        .expect("Emby movie recommendations array");
+    assert!(!recommendations.is_empty());
+    assert!(
+        recommendations[0]["Items"]
+            .as_array()
+            .is_some_and(|items| !items.is_empty())
+    );
+    assert!(
+        recommendations
+            .iter()
+            .all(|category| category.get("CategoryId").is_none()),
+        "Emby's Int64 CategoryId cannot contain a Jellyfin UUID or MD5 GUID"
+    );
 
     for route in [
         format!("/Items/{}/ThemeSongs", movie.id),
@@ -247,6 +308,26 @@ async fn exercise(database_name: &str, dump_dir: Option<PathBuf>) {
             jellyfin["OwnerId"],
             movie.id.to_string(),
             "Emby's numeric OwnerId adaptation must not change Jellyfin {route}",
+        );
+    }
+
+    for route in [
+        "/Movies/Recommendations?ItemLimit=1&CategoryLimit=1",
+        "/api/Movies/Recommendations?ItemLimit=1&CategoryLimit=1",
+    ] {
+        let jellyfin = response_json(
+            request(&app, Method::GET, route, Some(&user_token), None, None).await,
+            route,
+        )
+        .await;
+        let category = jellyfin
+            .as_array()
+            .and_then(|categories| categories.first())
+            .unwrap_or_else(|| panic!("{route} must return a recommendation category"));
+        assert_eq!(
+            category["CategoryId"],
+            recommendation_baseline.id.simple().to_string(),
+            "Emby's numeric CategoryId adaptation must not change Jellyfin {route}",
         );
     }
 

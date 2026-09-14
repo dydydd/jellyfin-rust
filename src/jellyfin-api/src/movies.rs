@@ -54,7 +54,8 @@ pub(crate) struct RecommendationDto {
     items: Vec<user_library::BaseItemDto>,
     recommendation_type: RecommendationType,
     baseline_item_name: Option<String>,
-    category_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    category_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
@@ -347,11 +348,23 @@ pub(crate) async fn recommendations(
                 .collect(),
             recommendation_type: category.recommendation_type,
             baseline_item_name: category.baseline_item_name,
-            category_id: category.category_id,
+            category_id: Some(category.category_id),
         })
         .collect::<Vec<_>>();
+    let is_emby = uri
+        .path()
+        .split('/')
+        .nth(1)
+        .is_some_and(|segment| segment.eq_ignore_ascii_case("emby"));
     for category in &mut result {
         user_library::omit_incompatible_emby_relations(&uri, &mut category.items);
+        if is_emby {
+            // Emby's generated mobile clients model CategoryId as Int64,
+            // while Jellyfin derives this value from a UUID or MD5 GUID.
+            // The field is nullable, so omission is the only lossless wire
+            // adaptation until a stable Emby numeric-id mapping exists.
+            category.category_id = None;
+        }
     }
     Ok(Json(result))
 }

@@ -142,6 +142,26 @@ async fn exercise_movie_recommendations_route(database_name: &str) {
         fixture.actor_movie_id.simple().to_string()
     );
 
+    let api_body = body_json(
+        fixture
+            .get(
+                "/api/Movies/Recommendations?itemLimit=1&categoryLimit=6",
+                Some(&fixture.user_token),
+            )
+            .await,
+    )
+    .await;
+    let api_recommendations = api_body.as_array().expect("/api recommendations");
+    assert_eq!(
+        category(
+            api_recommendations,
+            "SimilarToRecentlyPlayed",
+            "B Recent Movie"
+        )["CategoryId"],
+        fixture.recent_movie_id.simple().to_string(),
+        "the Emby-only numeric-id adaptation must not alter /api"
+    );
+
     let limited = body_json(
         fixture
             .get(
