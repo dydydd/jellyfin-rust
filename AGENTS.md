@@ -54,6 +54,10 @@
   order for add/update/delete/move operations, and reject an invalid move before changing the
   stored sequence. Resolve and authorize the target user before binding mutation bodies; ordinary
   users may manage only themselves, while administrators and valid API keys may target any user.
+- Keep Emby DisplayPreferences and UserSettings mutations on their generated empty-200 contract.
+  Require the generated DisplayPreferences `UserId` and GET `Client` query values, bind query and
+  DTO names case-insensitively with last-duplicate-wins semantics, and keep Jellyfin's root and
+  `/api` DisplayPreferences binder and 204 mutation response unchanged.
 - Resolve Emby section-item queries from the target user's persisted `Emby.HomeSections`
   preference. Merge section defaults without overriding explicitly supplied case-insensitive query
   keys, then delegate to the shared authorized user-items path so policy filtering, signed

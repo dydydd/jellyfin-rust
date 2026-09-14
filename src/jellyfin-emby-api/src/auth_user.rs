@@ -5,7 +5,7 @@
 //! Android/iOS clients model `CustomPrefs` as a non-null string map, while
 //! Jellyfin permits null values internally.
 
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::HashMap, fmt, sync::Arc};
 
 use axum::{
     Json, Router,
@@ -96,7 +96,8 @@ async fn update_user_settings(
             Some(USER_SETTINGS_CLIENT.to_owned()),
             preferences,
         )
-        .await
+        .await?;
+    Ok(StatusCode::OK)
 }
 
 fn parse_user_settings(settings: Vec<String>) -> Result<HashMap<String, Option<String>>, ()> {
@@ -162,45 +163,99 @@ async fn partial_user_settings(
             Some(USER_SETTINGS_CLIENT.to_owned()),
             preferences,
         )
-        .await
+        .await?;
+    Ok(StatusCode::OK)
 }
 
-#[derive(Debug, Default, Deserialize)]
-#[serde(default)]
+#[derive(Debug, Default)]
 struct DisplayPreferencesQuery {
-    #[serde(rename = "userId", alias = "UserId", alias = "userid")]
     user_id: Option<String>,
-    #[serde(rename = "itemId", alias = "ItemId", alias = "itemid")]
     item_id: Option<String>,
-    #[serde(rename = "client", alias = "Client")]
     client: Option<String>,
 }
 
+impl<'de> Deserialize<'de> for DisplayPreferencesQuery {
+    fn deserialize<D: de::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Visitor;
+
+        impl<'de> de::Visitor<'de> for Visitor {
+            type Value = DisplayPreferencesQuery;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("an Emby display-preferences query")
+            }
+
+            fn visit_map<M: de::MapAccess<'de>>(self, mut map: M) -> Result<Self::Value, M::Error> {
+                let mut query = DisplayPreferencesQuery::default();
+                while let Some(name) = map.next_key::<String>()? {
+                    if name.eq_ignore_ascii_case("UserId") {
+                        query.user_id = map.next_value()?;
+                    } else if name.eq_ignore_ascii_case("ItemId") {
+                        query.item_id = map.next_value()?;
+                    } else if name.eq_ignore_ascii_case("Client") {
+                        query.client = map.next_value()?;
+                    } else {
+                        map.next_value::<de::IgnoredAny>()?;
+                    }
+                }
+                Ok(query)
+            }
+        }
+
+        deserializer.deserialize_map(Visitor)
+    }
+}
+
 /// Emby's `DisplayPreferences` wire contract used by local Android/iOS SDKs.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default, rename_all = "PascalCase")]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "PascalCase")]
 pub struct EmbyDisplayPreferences {
-    #[serde(rename = "Id", alias = "id")]
+    #[serde(rename = "Id")]
     pub id: Option<String>,
-    #[serde(alias = "sortBy", alias = "sortby")]
     pub sort_by: Option<String>,
-    #[serde(alias = "customPrefs", alias = "customprefs")]
     pub custom_prefs: HashMap<String, String>,
-    #[serde(
-        deserialize_with = "deserialize_sort_order",
-        alias = "sortOrder",
-        alias = "sortorder"
-    )]
     pub sort_order: SortOrder,
-    #[serde(alias = "client")]
     pub client: Option<String>,
 }
 
-fn deserialize_sort_order<'de, D>(deserializer: D) -> Result<SortOrder, D::Error>
-where
-    D: de::Deserializer<'de>,
-{
-    match serde_json::Value::deserialize(deserializer)? {
+impl<'de> Deserialize<'de> for EmbyDisplayPreferences {
+    fn deserialize<D: de::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Visitor;
+
+        impl<'de> de::Visitor<'de> for Visitor {
+            type Value = EmbyDisplayPreferences;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("an Emby DisplayPreferences object")
+            }
+
+            fn visit_map<M: de::MapAccess<'de>>(self, mut map: M) -> Result<Self::Value, M::Error> {
+                let mut preferences = EmbyDisplayPreferences::default();
+                while let Some(name) = map.next_key::<String>()? {
+                    if name.eq_ignore_ascii_case("Id") {
+                        preferences.id = map.next_value()?;
+                    } else if name.eq_ignore_ascii_case("SortBy") {
+                        preferences.sort_by = map.next_value()?;
+                    } else if name.eq_ignore_ascii_case("CustomPrefs") {
+                        preferences.custom_prefs = map.next_value()?;
+                    } else if name.eq_ignore_ascii_case("SortOrder") {
+                        preferences.sort_order = sort_order_from_value(map.next_value()?)?;
+                    } else if name.eq_ignore_ascii_case("Client") {
+                        preferences.client = map.next_value()?;
+                    } else {
+                        map.next_value::<de::IgnoredAny>()?;
+                    }
+                }
+                Ok(preferences)
+            }
+        }
+
+        deserializer.deserialize_map(Visitor)
+    }
+}
+
+fn sort_order_from_value<E: de::Error>(value: serde_json::Value) -> Result<SortOrder, E> {
+    match value {
         serde_json::Value::String(value) if value.eq_ignore_ascii_case("ascending") => {
             Ok(SortOrder::Ascending)
         }
@@ -210,9 +265,9 @@ where
         serde_json::Value::Number(value) => match value.as_i64() {
             Some(0) => Ok(SortOrder::Ascending),
             Some(1) => Ok(SortOrder::Descending),
-            _ => Err(de::Error::custom("invalid sort order")),
+            _ => Err(E::custom("invalid sort order")),
         },
-        _ => Err(de::Error::custom("invalid sort order")),
+        _ => Err(E::custom("invalid sort order")),
     }
 }
 
@@ -268,14 +323,21 @@ async fn get_display_preferences(
     Path(display_preferences_id): Path<String>,
     Query(query): Query<DisplayPreferencesQuery>,
 ) -> Result<Json<EmbyDisplayPreferences>, Response> {
+    let user_id = query
+        .user_id
+        .as_deref()
+        .ok_or_else(|| StatusCode::BAD_REQUEST.into_response())?;
+    let client = query
+        .client
+        .ok_or_else(|| StatusCode::BAD_REQUEST.into_response())?;
     let preferences = state
         .display_preferences_for_request(
             &headers,
             &uri,
             &display_preferences_id,
-            query.user_id.as_deref(),
+            Some(user_id),
             query.item_id.as_deref(),
-            query.client,
+            Some(client),
         )
         .await?;
     Ok(Json(display_preferences_response(preferences)))
@@ -290,6 +352,10 @@ async fn update_display_preferences(
     request: Result<Json<EmbyDisplayPreferences>, JsonRejection>,
 ) -> Result<StatusCode, Response> {
     let Json(preferences) = request.map_err(|_| StatusCode::BAD_REQUEST.into_response())?;
+    let user_id = query
+        .user_id
+        .as_deref()
+        .ok_or_else(|| StatusCode::BAD_REQUEST.into_response())?;
     // Emby's generated clients send Client in the DTO for updates.  Retain
     // query precedence for callers that explicitly provide both forms.
     let client = update_client(query.client, &preferences);
@@ -298,12 +364,13 @@ async fn update_display_preferences(
             &headers,
             &uri,
             &display_preferences_id,
-            query.user_id.as_deref(),
+            Some(user_id),
             query.item_id.as_deref(),
             client,
             display_preferences_request(preferences),
         )
-        .await
+        .await?;
+    Ok(StatusCode::OK)
 }
 
 fn update_client(
@@ -316,7 +383,20 @@ fn update_client(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::{
+        Router,
+        body::Body,
+        http::{Method, Request, header},
+    };
+    use jellyfin_controller::UserService;
+    use jellyfin_data::{DatabaseConfig, DeviceRepository, NewDevice};
+    use sea_orm::ConnectionTrait;
     use serde_json::json;
+    use tower::ServiceExt;
+    use uuid::Uuid;
+
+    const TEST_AUTHORIZATION: &str = "MediaBrowser Client=\"Emby Display Preferences Tests\", DeviceId=\"emby-display-preferences-tests\", Device=\"Test\", Version=\"1.0\"";
+    const TEST_DATABASE_PREFIX: &str = "jellyfin_emby_display_preferences_";
 
     #[test]
     fn emby_custom_prefs_never_serializes_null_values_or_jellyfin_fields() {
@@ -350,23 +430,53 @@ mod tests {
     }
 
     #[test]
-    fn emby_display_preferences_accept_case_insensitive_wire_names() {
-        let preferences: EmbyDisplayPreferences = serde_json::from_value(json!({
-            "id": "abc",
-            "sortby": "SortName",
-            "customprefs": {"theme": "dark"},
-            "sortorder": "descending",
-            "client": "Emby"
-        }))
+    fn emby_display_preferences_accept_case_insensitive_wire_names_and_last_value_wins() {
+        let preferences: EmbyDisplayPreferences = serde_json::from_str(
+            r#"{
+                "Id":"discarded",
+                "iD":"abc",
+                "SortBy":"Name",
+                "sOrTbY":"SortName",
+                "CustomPrefs":{"theme":"light"},
+                "cUsToMpReFs":{"theme":"dark"},
+                "SortOrder":"Ascending",
+                "sOrToRdEr":"descending",
+                "Client":"discarded",
+                "cLiEnT":"Emby",
+                "Unknown":true
+            }"#,
+        )
         .unwrap();
+        assert_eq!(preferences.id.as_deref(), Some("abc"));
+        assert_eq!(preferences.sort_by.as_deref(), Some("SortName"));
         assert_eq!(preferences.sort_order, SortOrder::Descending);
         assert_eq!(preferences.custom_prefs["theme"], "dark");
+        assert_eq!(preferences.client.as_deref(), Some("Emby"));
 
         let numeric: EmbyDisplayPreferences = serde_json::from_value(json!({
             "SortOrder": 1
         }))
         .unwrap();
         assert_eq!(numeric.sort_order, SortOrder::Descending);
+    }
+
+    #[test]
+    fn emby_display_preferences_query_is_case_insensitive_and_last_value_wins() {
+        let query: DisplayPreferencesQuery = serde_json::from_str(
+            r#"{
+                "UserId":"discarded",
+                "uSeRiD":"selected-user",
+                "ItemId":"discarded",
+                "iTeMiD":"selected-item",
+                "Client":"discarded",
+                "cLiEnT":"selected-client",
+                "Unknown":"ignored"
+            }"#,
+        )
+        .unwrap();
+        assert_eq!(query.user_id.as_deref(), Some("selected-user"));
+        assert_eq!(query.item_id.as_deref(), Some("selected-item"));
+        assert_eq!(query.client.as_deref(), Some("selected-client"));
     }
 
     #[test]
@@ -401,5 +511,223 @@ mod tests {
             Some("dark")
         );
         assert!(parse_settings_body(br#"{"theme":null}"#).is_err());
+    }
+
+    #[tokio::test]
+    async fn emby_display_preference_contract_is_protocol_local() {
+        let administrator = jellyfin_data::connect(&DatabaseConfig::default())
+            .await
+            .expect("local PostgreSQL must be available");
+        let database_name = format!("{TEST_DATABASE_PREFIX}{}", Uuid::new_v4().simple());
+        assert!(
+            database_name
+                .bytes()
+                .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_')
+        );
+        administrator
+            .execute_unprepared(&format!("CREATE DATABASE {database_name}"))
+            .await
+            .expect("temporary PostgreSQL database creation");
+
+        let task_database_name = database_name.clone();
+        let outcome = tokio::spawn(async move {
+            exercise_display_preference_contract(&task_database_name).await;
+        })
+        .await;
+
+        administrator
+            .execute_unprepared(&format!("DROP DATABASE {database_name} WITH (FORCE)"))
+            .await
+            .expect("temporary PostgreSQL database cleanup");
+        administrator.close().await.expect("administrator cleanup");
+        if let Err(error) = outcome {
+            if error.is_panic() {
+                std::panic::resume_unwind(error.into_panic());
+            }
+            panic!("temporary database test task was cancelled: {error}");
+        }
+    }
+
+    async fn exercise_display_preference_contract(database_name: &str) {
+        let mut config = DatabaseConfig::default();
+        let (prefix, _) = config
+            .url
+            .rsplit_once('/')
+            .expect("database URL must contain a database name");
+        config.url = format!("{prefix}/{database_name}");
+        config.max_connections = 8;
+        config.min_connections = 1;
+        let database = jellyfin_data::connect(&config)
+            .await
+            .expect("temporary PostgreSQL database");
+        jellyfin_data::migrate(&database)
+            .await
+            .expect("PostgreSQL migrations");
+
+        let user = UserService::new(database.clone())
+            .create_initial_administrator("emby-display-preferences-user")
+            .await
+            .expect("test user");
+        let token = DeviceRepository::new(database.clone())
+            .create_session(NewDevice::new(
+                user.id,
+                "Emby Display Preferences Tests",
+                "1.0",
+                "Test",
+                Uuid::new_v4().simple().to_string(),
+            ))
+            .await
+            .expect("test session")
+            .access_token;
+        let state = AppState::new(
+            database.clone(),
+            "Emby Display Preferences Test Server".to_owned(),
+            "http://127.0.0.1:8096".to_owned(),
+        );
+        let app = jellyfin_api::router(state.clone()).merge(crate::router(state));
+
+        let update_route = format!(
+            "/emby/dIsPlAyPrEfErEnCeS/mobile?UserId=not-a-guid&uSeRiD={}",
+            user.id
+        );
+        let response = contract_request(
+            &app,
+            Method::POST,
+            &update_route,
+            &token,
+            Body::from(
+                r#"{
+                    "SortBy":"Name",
+                    "sOrTbY":"DateCreated",
+                    "CustomPrefs":{"theme":"light"},
+                    "cUsToMpReFs":{"theme":"dark"},
+                    "SortOrder":"Ascending",
+                    "sOrToRdEr":"Descending",
+                    "Client":"discarded",
+                    "cLiEnT":"selected-client"
+                }"#,
+            ),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK, "{update_route}");
+
+        let get_route = format!(
+            "/emby/DisplayPreferences/mobile?UserId=not-a-guid&uSeRiD={}&Client=discarded&cLiEnT=selected-client",
+            user.id
+        );
+        let response = contract_request(&app, Method::GET, &get_route, &token, Body::empty()).await;
+        assert_eq!(response.status(), StatusCode::OK, "{get_route}");
+        let value: serde_json::Value = serde_json::from_slice(
+            &axum::body::to_bytes(response.into_body(), 1024 * 1024)
+                .await
+                .expect("display preferences response"),
+        )
+        .expect("display preferences JSON");
+        assert_eq!(value["SortBy"], "DateCreated");
+        assert_eq!(value["SortOrder"], "Descending");
+        assert_eq!(value["CustomPrefs"]["theme"], "dark");
+        assert_eq!(value["Client"], "selected-client");
+
+        for route in [
+            "/emby/DisplayPreferences/mobile?Client=selected-client",
+            "/emby/DisplayPreferences/mobile",
+        ] {
+            let method = if route.contains("Client=") {
+                Method::GET
+            } else {
+                Method::POST
+            };
+            let response = contract_request(
+                &app,
+                method,
+                route,
+                &token,
+                Body::from(r#"{"Client":"selected-client"}"#),
+            )
+            .await;
+            assert_eq!(
+                response.status(),
+                StatusCode::BAD_REQUEST,
+                "generated Emby operation requires UserId: {route}"
+            );
+        }
+
+        let settings_route = format!("/emby/uSeRsEtTiNgS/{}", user.id);
+        let response = contract_request(
+            &app,
+            Method::POST,
+            &settings_route,
+            &token,
+            Body::from(r#"["theme=dark"]"#),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK, "{settings_route}");
+        let partial_route = format!("{settings_route}/pArTiAl");
+        let response = contract_request(
+            &app,
+            Method::POST,
+            &partial_route,
+            &token,
+            Body::from(r#"["density=compact"]"#),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK, "{partial_route}");
+
+        for route in [
+            "/DisplayPreferences/root-contract?client=web",
+            "/api/DisplayPreferences/api-contract?client=web",
+        ] {
+            let response = contract_request(
+                &app,
+                Method::POST,
+                route,
+                &token,
+                Body::from(r#"{"SortBy":"DateCreated"}"#),
+            )
+            .await;
+            assert_eq!(
+                response.status(),
+                StatusCode::NO_CONTENT,
+                "Jellyfin mutation status must remain unchanged: {route}"
+            );
+        }
+        for route in [
+            "/DisplayPreferences/root-contract?cLiEnT=web",
+            "/api/DisplayPreferences/api-contract?cLiEnT=web",
+        ] {
+            let response = contract_request(&app, Method::GET, route, &token, Body::empty()).await;
+            assert_eq!(
+                response.status(),
+                StatusCode::BAD_REQUEST,
+                "Emby query normalization must not change Jellyfin binding: {route}"
+            );
+        }
+
+        drop(app);
+        database.close().await.expect("database cleanup");
+    }
+
+    async fn contract_request(
+        app: &Router,
+        method: Method,
+        uri: &str,
+        token: &str,
+        body: Body,
+    ) -> axum::response::Response {
+        app.clone()
+            .oneshot(
+                Request::builder()
+                    .method(method)
+                    .uri(uri)
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .header(
+                        header::AUTHORIZATION,
+                        format!("{TEST_AUTHORIZATION}, Token=\"{token}\""),
+                    )
+                    .body(body)
+                    .expect("request"),
+            )
+            .await
+            .expect("response")
     }
 }
