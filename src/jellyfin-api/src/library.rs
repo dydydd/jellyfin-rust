@@ -1067,7 +1067,11 @@ pub(crate) async fn delete_items(
     OriginalUri(uri): OriginalUri,
     headers: HeaderMap,
 ) -> Result<StatusCode, ApiError> {
-    let ids = delete_item_ids(&uri);
+    let ids = if is_emby_request(&uri) {
+        required_emby_delete_item_ids(&uri)?
+    } else {
+        delete_item_ids(&uri)
+    };
     delete_for(state, headers, &uri, ids).await
 }
 
@@ -1299,6 +1303,34 @@ fn delete_item_ids(uri: &axum::http::Uri) -> Vec<Uuid> {
     }
 }
 
+fn required_emby_delete_item_ids(uri: &axum::http::Uri) -> Result<Vec<Uuid>, ApiError> {
+    // Emby's generated clients expose Ids as one required string rather than
+    // a repeated collection. Retain only the last case-insensitive scalar and
+    // then apply the server's comma-delimited Guid[] binding strictly.
+    let value = uri
+        .query()
+        .into_iter()
+        .flat_map(|query| form_urlencoded::parse(query.as_bytes()))
+        .filter(|(key, _)| key.eq_ignore_ascii_case("ids"))
+        .map(|(_, value)| value.into_owned())
+        .last()
+        .ok_or(ApiError::InvalidRequest)?;
+    if value.trim().is_empty() {
+        return Err(ApiError::InvalidRequest);
+    }
+
+    value
+        .split(',')
+        .map(|value| {
+            let value = value.trim();
+            if value.is_empty() {
+                return Err(ApiError::InvalidRequest);
+            }
+            Uuid::parse_str(value).map_err(|_| ApiError::InvalidRequest)
+        })
+        .collect()
+}
+
 fn counts_to_dto(counts: BaseItemCounts) -> ItemCounts {
     ItemCounts {
         movie_count: saturating_i32(counts.movie_count),
@@ -1465,7 +1497,7 @@ mod tests {
     use axum::http::Uri;
     use uuid::Uuid;
 
-    use super::{delete_item_ids, movie_update_provider};
+    use super::{delete_item_ids, movie_update_provider, required_emby_delete_item_ids};
 
     const FIRST: &str = "00112233-4455-6677-8899-aabbccddeeff";
     const SECOND: &str = "11223344-5566-7788-99aa-bbccddeeff00";
@@ -1503,6 +1535,26 @@ mod tests {
             parse(&format!("/Items?ids={FIRST},{SECOND}&ids={THIRD}")),
             [Uuid::parse_str(THIRD).unwrap()]
         );
+    }
+
+    #[test]
+    fn emby_delete_item_ids_require_one_strict_last_scalar() {
+        let parse =
+            |uri: &str| required_emby_delete_item_ids(&uri.parse::<Uri>().expect("valid test URI"));
+
+        assert!(parse("/emby/Items").is_err());
+        assert!(parse("/emby/Items?ids=").is_err());
+        assert!(parse("/emby/Items?Ids=invalid").is_err());
+        assert!(parse(&format!("/emby/Items?Ids={FIRST},,{SECOND}")).is_err());
+        assert_eq!(
+            parse(&format!("/emby/Items?ids=invalid&IDS={FIRST},{SECOND}"))
+                .expect("last Ids scalar is valid"),
+            [
+                Uuid::parse_str(FIRST).unwrap(),
+                Uuid::parse_str(SECOND).unwrap()
+            ]
+        );
+        assert!(parse(&format!("/emby/Items?ids={FIRST}&IDS=invalid")).is_err());
     }
 
     #[test]

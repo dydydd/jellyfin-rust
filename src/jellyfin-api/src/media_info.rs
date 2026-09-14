@@ -871,7 +871,11 @@ pub(crate) async fn post_playback_info(
     body: Result<Option<Json<PlaybackInfoDto>>, JsonRejection>,
 ) -> Result<Json<PlaybackInfoResponse>, ApiError> {
     let Query(query) = query.map_err(|_| ApiError::InvalidRequest)?;
-    let body = optional_playback_body(body)?.unwrap_or_default();
+    let body = optional_playback_body(body)?;
+    if is_emby_protocol_uri(&uri) && body.is_none() {
+        return Err(ApiError::InvalidRequest);
+    }
+    let body = body.unwrap_or_default();
     let identity =
         playback_request_identity(&state, &headers, &uri, query.user_id.or(body.user_id)).await?;
     let device_profile = match body.device_profile {

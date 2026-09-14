@@ -1,6 +1,6 @@
 use axum::{
     body::Body,
-    http::{Request, StatusCode, header},
+    http::{Method, Request, StatusCode, header},
 };
 use jellyfin_api::AppState;
 use jellyfin_controller::UserService;
@@ -105,19 +105,71 @@ async fn exercise(database_name: &str) {
             "{route}"
         );
     }
+
+    assert_eq!(
+        request_method(&app, Method::POST, &emby_route, None, None).await,
+        StatusCode::UNAUTHORIZED,
+        "authentication must precede the generated required body"
+    );
+    for body in [None, Some(""), Some("null"), Some("{")] {
+        assert_eq!(
+            request_method(&app, Method::POST, &emby_route, Some(&token), body).await,
+            StatusCode::BAD_REQUEST,
+            "Emby PlaybackInfo body {body:?}"
+        );
+    }
+    assert_eq!(
+        request_method(
+            &app,
+            Method::POST,
+            &format!("/emby/iTeMs/{}/pLaYbAcKiNfO", item.id),
+            Some(&token),
+            Some("{}"),
+        )
+        .await,
+        StatusCode::OK,
+    );
+
+    for route in [
+        format!("/Items/{}/PlaybackInfo", item.id),
+        format!("/api/Items/{}/PlaybackInfo", item.id),
+    ] {
+        assert_eq!(
+            request_method(&app, Method::POST, &route, Some(&token), None).await,
+            StatusCode::OK,
+            "Jellyfin optional POST body at {route}"
+        );
+    }
     database.close().await.expect("database pool cleanup");
 }
 
 async fn request(app: &axum::Router, uri: &str, token: Option<&str>) -> StatusCode {
-    let mut request = Request::builder().uri(uri);
+    request_method(app, Method::GET, uri, token, None).await
+}
+
+async fn request_method(
+    app: &axum::Router,
+    method: Method,
+    uri: &str,
+    token: Option<&str>,
+    body: Option<&str>,
+) -> StatusCode {
+    let mut request = Request::builder().method(method).uri(uri);
     if let Some(token) = token {
         request = request.header(
             header::AUTHORIZATION,
             format!("{AUTHORIZATION}, Token=\"{token}\""),
         );
     }
+    if body.is_some() {
+        request = request.header(header::CONTENT_TYPE, "application/json");
+    }
     app.clone()
-        .oneshot(request.body(Body::empty()).expect("request"))
+        .oneshot(
+            request
+                .body(body.map_or_else(Body::empty, |value| Body::from(value.to_owned())))
+                .expect("request"),
+        )
         .await
         .expect("response")
         .status()

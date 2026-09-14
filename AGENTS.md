@@ -29,6 +29,13 @@
   last duplicate winning on Jellyfin root, `/api`, and `/emby`. Apply the same semantics to every
   known `DeviceOptionsDto` JSON property, including `CustomName`, and ignore unknown properties
   without changing the existing authorization and success-status differences between protocols.
+- Require one nonempty, strictly valid comma-delimited `Ids` scalar on Emby's DELETE `/Items` and
+  POST `/Items/Delete`. Bind its name case-insensitively with the last duplicate scalar winning,
+  reject invalid or empty collection elements before deleting anything, and preserve Jellyfin root
+  and `/api` omitted/repeated-query behavior.
+- Require a valid JSON `PlaybackInfoRequest` body on Emby's POST
+  `/Items/{Id}/PlaybackInfo`, while preserving the optional body accepted by Jellyfin root and
+  `/api`. Do not impose this POST-only body requirement on the generated GET operation.
 - Never serialize Jellyfin GUID strings into Emby's `NameLongIdPair.Id` fields. Until a stable Emby
   numeric-id mapping exists, `/emby` BaseItem responses must omit incompatible `Studios`,
   `GenreItems`, `TagItems`, and `Collections` relations; keep the names/ids unchanged on every
