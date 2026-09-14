@@ -343,6 +343,28 @@ impl ItemImageService {
         extension: &str,
         bytes: &[u8],
     ) -> Result<(), ItemImageError> {
+        self.upload_at_index(item_id, image_type, extension, bytes, None)
+            .await
+    }
+
+    /// Persists image bytes at an explicit public image ordinal.
+    ///
+    /// A missing ordinal retains normal upload behavior. Backdrop ordinals
+    /// replace an existing position or append when the signed ordinal is
+    /// negative or outside the current image set. Single-image types keep
+    /// replacing index zero.
+    ///
+    /// # Errors
+    ///
+    /// Returns unsupported-type, missing-item, file-system, or persistence errors.
+    pub async fn upload_at_index(
+        &self,
+        item_id: Uuid,
+        image_type: ImageType,
+        extension: &str,
+        bytes: &[u8],
+        image_index: Option<i32>,
+    ) -> Result<(), ItemImageError> {
         let image_type = persisted_image_type(image_type);
         if image_type == BaseItemImageType::Chapter {
             return Err(ItemImageError::UnsupportedImageType);
@@ -386,7 +408,11 @@ impl ItemImageService {
             height: dimensions.map(|(_, height)| height),
             blurhash: None,
         };
-        let mutation = match self.images.set_or_append(item_id, image).await {
+        let mutation = match self
+            .images
+            .set_or_append_at_ordinal(item_id, image, image_index)
+            .await
+        {
             Ok(mutation) => mutation,
             Err(error) => {
                 let _ = fs::remove_file(&target).await;
@@ -428,9 +454,36 @@ impl ItemImageService {
         image_type: ImageType,
         url: &str,
     ) -> Result<(), ItemImageError> {
-        let download = self.download_image(url).await?;
-        self.upload(item_id, image_type, &download.extension, &download.bytes)
+        self.download_remote_image_at_index(item_id, image_type, url, None)
             .await
+    }
+
+    /// Downloads a remote image and persists it at a public image ordinal.
+    ///
+    /// Download coordination is shared with ordinary remote-image writes, so
+    /// same-URL callers still use one flight and distinct leaders still obey
+    /// the global four-download cap.
+    ///
+    /// # Errors
+    ///
+    /// Returns invalid-URL, download, size, unsupported-type, file-system, or
+    /// persistence errors.
+    pub async fn download_remote_image_at_index(
+        &self,
+        item_id: Uuid,
+        image_type: ImageType,
+        url: &str,
+        image_index: Option<i32>,
+    ) -> Result<(), ItemImageError> {
+        let download = self.download_image(url).await?;
+        self.upload_at_index(
+            item_id,
+            image_type,
+            &download.extension,
+            &download.bytes,
+            image_index,
+        )
+        .await
     }
 
     /// Downloads a replacement before pruning the previously managed images.

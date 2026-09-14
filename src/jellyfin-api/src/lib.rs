@@ -1233,6 +1233,41 @@ impl AppState {
             .map_err(IntoResponse::into_response)
     }
 
+    /// Downloads an Emby remote image into the requested public image slot.
+    ///
+    /// Emby's generated body carries a nullable signed image index while its
+    /// query carries the source URL and image type. The historical service
+    /// passes that index to `ProviderManager.SaveImage`; it is a destination
+    /// ordinal, not an index into provider search results. Authentication and
+    /// wire binding remain in the protocol adapter so Jellyfin's root routes
+    /// keep their current query-only contract.
+    #[allow(clippy::result_large_err)]
+    pub async fn download_emby_remote_image(
+        &self,
+        item_id: Uuid,
+        image_type: &str,
+        image_url: Option<&str>,
+        image_index: Option<i32>,
+    ) -> Result<StatusCode, Response> {
+        let image_type =
+            item_images::parse_image_type(image_type).map_err(IntoResponse::into_response)?;
+        let image_url = image_url
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| ApiError::NotFound.into_response())?;
+        self.base_items
+            .get(item_id)
+            .await
+            .map_err(ApiError::from)
+            .map_err(IntoResponse::into_response)?
+            .ok_or_else(|| ApiError::NotFound.into_response())?;
+        self.item_images
+            .download_remote_image_at_index(item_id, image_type, image_url, image_index)
+            .await
+            .map_err(ApiError::from)
+            .map_err(IntoResponse::into_response)?;
+        Ok(StatusCode::NO_CONTENT)
+    }
+
     /// Enforces Emby's administrator boundary before resolving a target user.
     ///
     /// Protocol handlers use this ordering so malformed or unknown targets do

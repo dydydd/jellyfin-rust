@@ -323,6 +323,11 @@
   corresponding search provider or a TMDb API key. Advertise only remote-image providers whose
   search implementation can actually return images for that item; provider selection must never
   lead an SDK into a permanently empty provider that the server only implements for metadata.
+- Keep Emby remote-image downloads on their generated required JSON-body contract. Bind `Type`,
+  `ProviderName`, `ImageUrl`, and nullable signed `ImageIndex` case-insensitively with
+  last-duplicate-wins semantics; pass `ImageIndex` as the destination image ordinal while
+  preserving explicit-URL downloads, administrator/API-key authorization, and the shared
+  single-flight/four-download cap. Jellyfin root and `/api` remain query-only with optional bodies.
 - Expose TMDb Person profile artwork as the item's `Primary` remote-image type, matching the
   official Person image provider; never advertise or map it as the user-only `Profile` type. When
   `IncludeAllLanguages` is false and a preferred metadata language is nonblank, retain that language,

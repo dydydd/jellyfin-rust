@@ -678,7 +678,28 @@ impl BaseItemImageRepository {
     pub async fn set_or_append(
         &self,
         item_id: Uuid,
+        image: NewBaseItemImage,
+    ) -> Result<StoredImageMutation, BaseItemImageStoreError> {
+        self.set_or_append_at_ordinal(item_id, image, None).await
+    }
+
+    /// Replaces an image at a public zero-based ordinal or appends it.
+    ///
+    /// A missing ordinal keeps the ordinary upload behavior. For Backdrop
+    /// images, a nonnegative ordinal replaces the row currently exposed at
+    /// that position; an absent, negative, or out-of-range ordinal appends.
+    /// Single-image types continue to replace index zero. The owning item row
+    /// serializes ordinal resolution with concurrent image mutations.
+    ///
+    /// # Errors
+    ///
+    /// Returns typed input, missing-item, unsupported-type, corrupt-row, or
+    /// database errors.
+    pub async fn set_or_append_at_ordinal(
+        &self,
+        item_id: Uuid,
         mut image: NewBaseItemImage,
+        ordinal: Option<i32>,
     ) -> Result<StoredImageMutation, BaseItemImageStoreError> {
         if image.image_type == BaseItemImageType::Chapter {
             return Err(BaseItemImageStoreError::UnsupportedUploadImageType {
@@ -709,24 +730,53 @@ impl BaseItemImageRepository {
         }
 
         let image_index = if image_type == BaseItemImageType::Backdrop {
-            let row = transaction
-                .query_one(Statement::from_sql_and_values(
-                    DbBackend::Postgres,
-                    r"
-                    SELECT COALESCE(MAX(image_index)::bigint + 1, 0) AS next_index
-                    FROM jellyfin.base_item_images
-                    WHERE item_id = $1 AND image_type = $2
-                    ",
-                    [item_id.into(), image_type.as_i16().into()],
-                ))
-                .await?
-                .ok_or_else(|| DbErr::Custom("backdrop index aggregate was missing".to_owned()))?;
-            let next_index: i64 = row.try_get("", "next_index")?;
-            i32::try_from(next_index).map_err(|_| {
-                BaseItemImageStoreError::ImageIndexOutOfRange {
-                    value: u32::try_from(next_index).unwrap_or(u32::MAX),
-                }
-            })?
+            let existing_index = if let Some(ordinal) = ordinal.filter(|ordinal| *ordinal >= 0) {
+                transaction
+                    .query_one(Statement::from_sql_and_values(
+                        DbBackend::Postgres,
+                        r"
+                        SELECT image_index
+                        FROM jellyfin.base_item_images
+                        WHERE item_id = $1 AND image_type = $2
+                        ORDER BY image_index
+                        OFFSET $3 LIMIT 1
+                        ",
+                        [
+                            item_id.into(),
+                            image_type.as_i16().into(),
+                            i64::from(ordinal).into(),
+                        ],
+                    ))
+                    .await?
+                    .map(|row| row.try_get::<i32>("", "image_index"))
+                    .transpose()?
+            } else {
+                None
+            };
+            if let Some(existing_index) = existing_index {
+                existing_index
+            } else {
+                let row = transaction
+                    .query_one(Statement::from_sql_and_values(
+                        DbBackend::Postgres,
+                        r"
+                        SELECT COALESCE(MAX(image_index)::bigint + 1, 0) AS next_index
+                        FROM jellyfin.base_item_images
+                        WHERE item_id = $1 AND image_type = $2
+                        ",
+                        [item_id.into(), image_type.as_i16().into()],
+                    ))
+                    .await?
+                    .ok_or_else(|| {
+                        DbErr::Custom("backdrop index aggregate was missing".to_owned())
+                    })?;
+                let next_index: i64 = row.try_get("", "next_index")?;
+                i32::try_from(next_index).map_err(|_| {
+                    BaseItemImageStoreError::ImageIndexOutOfRange {
+                        value: u32::try_from(next_index).unwrap_or(u32::MAX),
+                    }
+                })?
+            }
         } else {
             0
         };

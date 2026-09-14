@@ -43,6 +43,7 @@ mod parties;
 mod person_credits;
 mod plugins;
 mod recent_searches;
+mod remote_images;
 mod section_items;
 mod sync;
 mod system_misc;
@@ -160,6 +161,7 @@ const DEDICATED_ROUTE_TEMPLATES: &[&str] = &[
     "/Items/Metadata/Reset",
     "/Items/RemoteSearch/Game",
     "/Items/{item_id}/Images",
+    "/Items/{item_id}/RemoteImages/Download",
     "/Items/{item_id}/CriticReviews",
     "/Items/{item_id}/ThumbnailSet",
     "/Items/Intros",
@@ -448,6 +450,7 @@ fn dedicated_routes() -> Router<Arc<AppState>> {
         .merge(person_credits::routes())
         .merge(plugins::routes())
         .merge(recent_searches::routes())
+        .merge(remote_images::routes())
         .merge(section_items::routes())
         .merge(sync::routes())
         .merge(system_misc::routes())
