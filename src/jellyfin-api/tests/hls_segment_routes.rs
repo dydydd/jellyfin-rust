@@ -667,7 +667,7 @@ async fn universal_audio_hls_uses_the_authenticated_audio_playlist_pipeline() {
         .find(|line| line.starts_with("main.m3u8?"))
         .expect("Universal Audio HLS master must select the main playlist");
     assert!(main_url.contains("audioBitrate=128000"));
-    assert!(main_url.contains("transcodingMaxAudioChannels=2"));
+    assert!(main_url.contains("maxAudioChannels=2"));
 
     let response = fixture
         .get(
