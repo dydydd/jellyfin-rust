@@ -103,6 +103,10 @@
   `/emby/Packages/Updates` administrator/API-key-only, require its case-insensitive `PackageType`,
   and return an SDK-decodable empty array when no package-update provider exists; mixed-case Emby
   authorization must not weaken this boundary or expose either route under Jellyfin root or `/api`.
+- Keep all 16 generated Emby offline-Sync mutations mounted only below `/emby`, including their
+  lowercase static aliases. Validate required query, path, and JSON body bindings before reporting
+  the retired provider as not found; do not fabricate target, job, or job-item state. `Sync/Data`
+  may return an empty `ItemIdsToRemove` collection because no legacy target has removal state.
 - Implement `/emby/AudioBooks/NextUp` as the target user's policy-aware resumable AudioBook query,
   not a permanent empty placeholder. Bind the complete generated query surface case-insensitively,
   preserve signed `Int32` paging, map `AlbumId` to the shared album filter, and reuse the batched
