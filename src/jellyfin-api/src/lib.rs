@@ -1593,6 +1593,74 @@ impl AppState {
             .map_err(IntoResponse::into_response)
     }
 
+    /// Lists the protocol-private DLNA user profiles persisted by the Emby
+    /// compatibility adapter. These documents deliberately do not share
+    /// Jellyfin's runtime playback-profile namespace.
+    pub async fn emby_dlna_profiles(&self) -> Result<Vec<serde_json::Value>, Response> {
+        let repository = self
+            .named_configurations
+            .as_ref()
+            .ok_or_else(|| ApiError::Internal.into_response())?;
+        repository
+            .list_prefix("emby-dlna-profile-")
+            .await
+            .map(|rows| {
+                rows.into_iter()
+                    .map(|configuration| configuration.configuration)
+                    .collect()
+            })
+            .map_err(ApiError::from)
+            .map_err(IntoResponse::into_response)
+    }
+
+    /// Loads one Emby DLNA user profile using the official
+    /// case-insensitive profile-id comparison.
+    pub async fn emby_dlna_profile(
+        &self,
+        id: &str,
+    ) -> Result<Option<serde_json::Value>, Response> {
+        let repository = self
+            .named_configurations
+            .as_ref()
+            .ok_or_else(|| ApiError::Internal.into_response())?;
+        match repository.load(&format!("emby-dlna-profile-{id}")).await {
+            Ok(configuration) => Ok(Some(configuration.configuration)),
+            Err(NamedConfigurationStoreError::NotFound(_)) => Ok(None),
+            Err(error) => Err(ApiError::from(error).into_response()),
+        }
+    }
+
+    /// Atomically creates or replaces one protocol-private Emby DLNA user
+    /// profile.
+    pub async fn save_emby_dlna_profile(
+        &self,
+        id: &str,
+        profile: serde_json::Value,
+    ) -> Result<(), Response> {
+        if !profile.is_object() {
+            return Err(ApiError::InvalidRequest.into_response());
+        }
+        self.named_configurations
+            .as_ref()
+            .ok_or_else(|| ApiError::Internal.into_response())?
+            .save(&format!("emby-dlna-profile-{id}"), profile)
+            .await
+            .map(|_| ())
+            .map_err(ApiError::from)
+            .map_err(IntoResponse::into_response)
+    }
+
+    /// Deletes one protocol-private Emby DLNA user profile.
+    pub async fn delete_emby_dlna_profile(&self, id: &str) -> Result<bool, Response> {
+        self.named_configurations
+            .as_ref()
+            .ok_or_else(|| ApiError::Internal.into_response())?
+            .delete(&format!("emby-dlna-profile-{id}"))
+            .await
+            .map_err(ApiError::from)
+            .map_err(IntoResponse::into_response)
+    }
+
     /// Clears a video's real alternate-source relationships for an Emby
     /// protocol adapter while retaining the shared elevated authorization and
     /// typed-video not-found semantics.

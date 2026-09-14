@@ -12,6 +12,7 @@ chrono.workspace = true
 form_urlencoded = "1.2"
 jellyfin-api = { path = "../jellyfin-api" }
 jellyfin-model = { path = "../jellyfin-model" }
+md-5 = "0.10"
 multer = "3"
 serde.workspace = true
 serde_json.workspace = true
@@ -24,7 +25,6 @@ uuid.workspace = true
 jellyfin-controller = { path = "../jellyfin-controller" }
 jellyfin-data = { path = "../jellyfin-data" }
 jellyfin-server-implementations = { path = "../jellyfin-server-implementations" }
-md-5 = "0.10"
 sea-orm.workspace = true
 tokio.workspace = true
 

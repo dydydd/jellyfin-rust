@@ -80,6 +80,49 @@ impl NamedConfigurationRepository {
             .await?
             .ok_or_else(|| NamedConfigurationStoreError::NotFound("<upsert>".to_owned()))
     }
+
+    /// Lists named configurations whose canonical keys begin with `prefix`.
+    ///
+    /// The comparison uses `left` rather than `LIKE`, so an otherwise valid
+    /// prefix containing `%` or `_` is never interpreted as a pattern. Rows
+    /// are returned in key order; protocol adapters can apply their own
+    /// domain-specific ordering to the decoded documents.
+    ///
+    /// # Errors
+    ///
+    /// Returns a blank-key or database error.
+    pub async fn list_prefix(
+        &self,
+        prefix: &str,
+    ) -> Result<Vec<named_configuration::Model>, NamedConfigurationStoreError> {
+        let prefix = canonical_key(prefix)?;
+        let statement = Statement::from_sql_and_values(
+            DbBackend::Postgres,
+            r"
+            SELECT key, configuration, row_version, created_at, updated_at
+            FROM jellyfin.named_configurations
+            WHERE left(key, char_length($1)) = $1
+            ORDER BY key
+            ",
+            [prefix.into()],
+        );
+        Ok(named_configuration::Model::find_by_statement(statement)
+            .all(self.database.as_ref())
+            .await?)
+    }
+
+    /// Deletes one named configuration by canonical key.
+    ///
+    /// # Errors
+    ///
+    /// Returns a blank-key or database error.
+    pub async fn delete(&self, key: &str) -> Result<bool, NamedConfigurationStoreError> {
+        let key = canonical_key(key)?;
+        let result = named_configuration::Entity::delete_by_id(key)
+            .exec(self.database.as_ref())
+            .await?;
+        Ok(result.rows_affected != 0)
+    }
 }
 
 fn canonical_key(key: &str) -> Result<String, NamedConfigurationStoreError> {

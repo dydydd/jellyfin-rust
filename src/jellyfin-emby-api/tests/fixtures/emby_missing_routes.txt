@@ -1,4 +1,3 @@
-POST /Dlna/Profiles
 POST /Sync/Jobs
 POST /Sync/OfflineActions
 POST /Sync/Data
@@ -7,10 +6,6 @@ HEAD /Dlna/{UuId}/description.xml
 GET /Dlna/{UuId}/description
 HEAD /Dlna/{UuId}/description
 GET /Dlna/icons/{Filename}
-GET /Dlna/Profiles/{Id}
-POST /Dlna/Profiles/{Id}
-DELETE /Dlna/Profiles/{Id}
-GET /Dlna/Profiles/Default
 POST /Sync/{ItemId}/Status
 GET /Sync/Jobs/{Id}
 POST /Sync/Jobs/{Id}
