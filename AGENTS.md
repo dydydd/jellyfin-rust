@@ -19,6 +19,9 @@
 - Normalize empty successful shared-handler responses to HTTP 200 only inside the `/emby` tree,
   because the generated 4.10.0.40 document declares 200 as the sole success status for all 548
   operations. Preserve Jellyfin's root and `/api` 204 mutation responses.
+- Require one nonblank, case-insensitively bound, last-duplicate-wins `Id` for Emby's DELETE
+  `/Devices` and POST `/Devices/Delete`. Keep Jellyfin's root and `/api` repeated/comma-separated
+  device-id binder and its omitted-id no-op behavior unchanged.
 - Never serialize Jellyfin GUID strings into Emby's `NameLongIdPair.Id` fields. Until a stable Emby
   numeric-id mapping exists, `/emby` BaseItem responses must omit incompatible `Studios`,
   `GenreItems`, `TagItems`, and `Collections` relations; keep the names/ids unchanged on every

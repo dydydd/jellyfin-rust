@@ -163,9 +163,17 @@ pub(crate) async fn delete(
     State(state): State<Arc<AppState>>,
     OriginalUri(uri): OriginalUri,
     headers: HeaderMap,
-    Query(query): Query<DeleteDevicesQuery>,
 ) -> Result<StatusCode, ApiError> {
     require_elevated(&state, &headers, &uri).await?;
+    let query = if is_emby_protocol_uri(&uri) {
+        DeleteDevicesQuery {
+            id: vec![emby_required_device_id(&uri)?],
+        }
+    } else {
+        Query::<DeleteDevicesQuery>::try_from_uri(&uri)
+            .map_err(|_| ApiError::InvalidRequest)?
+            .0
+    };
     for id in &query.id {
         if id.is_empty() || state.devices.latest_by_device_id(id).await?.is_none() {
             return Err(ApiError::InvalidRequest);
@@ -175,6 +183,21 @@ pub(crate) async fn delete(
         state.devices.delete_by_device_id(&id).await?;
     }
     Ok(StatusCode::NO_CONTENT)
+}
+
+fn emby_required_device_id(uri: &axum::http::Uri) -> Result<String, ApiError> {
+    let mut id = None;
+    for (name, value) in form_urlencoded::parse(uri.query().unwrap_or_default().as_bytes()) {
+        if name.eq_ignore_ascii_case("Id") {
+            id = Some(value.into_owned());
+        }
+    }
+    id.filter(|id| !id.is_empty())
+        .ok_or(ApiError::InvalidRequest)
+}
+
+fn is_emby_protocol_uri(uri: &axum::http::Uri) -> bool {
+    uri.path() == "/emby" || uri.path().starts_with("/emby/")
 }
 
 async fn elevated_target_user_id(
