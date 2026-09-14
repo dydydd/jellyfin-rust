@@ -1128,7 +1128,7 @@ async fn assert_latest_dto_options_and_image_fields(fixture: &Fixture) {
     .await;
     assert_eq!(disabled.as_array().unwrap().len(), 1);
     assert_eq!(disabled[0]["Id"], fixture.new_movie_id.simple().to_string());
-    assert_eq!(disabled[0]["PrimaryImageAspectRatio"], 1.5);
+    assert_eq!(disabled[0]["PrimaryImageAspectRatio"], 2.0 / 3.0);
     assert_eq!(disabled[0]["MediaSourceCount"], 2);
     assert!(disabled[0].get("ImageTags").is_none());
     assert!(disabled[0].get("UserData").is_none());

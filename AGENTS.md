@@ -245,6 +245,10 @@
 - Project `ImageBlurHashes` only from persisted image metadata in the same batched DTO-image lookup
   that produces the exposed image tags. Keep the top-level map present when empty, include hashes
   for inherited and Series primary tags, and never decode images or issue per-item lookups to fill it.
+- Derive a requested `PrimaryImageAspectRatio` from persisted positive dimensions for a local
+  Primary image even when DTO image projection is disabled. Use the item's default ratio only when
+  those local dimensions are unavailable or the Primary image is remote, and omit the field when
+  the item has no Primary image; never decode the image to calculate it.
 - When DTO image projection is enabled (including the default `/UserViews` and legacy
   `/Users/{userId}/Views` bootstrap paths), emit `ImageTags` as an object even when empty, and
   emit `BackdropImageTags` as an array when the Backdrop image type is enabled even when it is
