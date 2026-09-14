@@ -1,5 +1,3 @@
-POST /BackupRestore/Restore
-POST /BackupRestore/RestoreData
 POST /Dlna/Profiles
 POST /Sync/Jobs
 POST /Sync/OfflineActions
