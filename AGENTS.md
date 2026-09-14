@@ -1164,6 +1164,12 @@
   Full capabilities bind only their official `Id` query and ignore unrelated query keys. Treat API
   keys as privileged user-less controllers for capabilities, general commands, and messages while
   retaining the request client's session id and a nil controlling user id.
+- Keep Emby's generated session-capability contract protocol-local. Require its case-insensitive
+  `Id`, bind query and top-level JSON duplicates with last-value-wins semantics, persist short-form
+  `SupportsSync` and Full `PushToken`, `PushTokenType`, `SupportsSync`, and `AppId` in the device
+  JSONB without teaching Jellyfin's shared DTO about them, and preserve omitted Emby-private fields
+  across short, Full, and modern Jellyfin reports. Emby returns an empty 200; root and `/api` retain
+  their optional session-id fallback, `SupportsPersistentIdentifier`, typed projection, and 204.
 - Bind general-command and message JSON properties case-insensitively; accept official command enum
   names, integers, and numeric strings, and reject whitespace-only required message text. Apply the
   same enum rules to play and playstate query/path commands, preserve the collection binder's

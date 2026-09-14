@@ -529,6 +529,58 @@ impl DeviceRepository {
             .rows_affected)
     }
 
+    /// Persists capabilities while retaining Emby-only device fields that
+    /// are absent from Jellyfin's shared strongly typed DTO.
+    ///
+    /// The filtering and merge happen in one PostgreSQL update so a modern
+    /// Jellyfin capabilities report cannot race with an Emby report and
+    /// silently discard push, sync, or application identifiers.
+    ///
+    /// # Errors
+    ///
+    /// Returns a validation error for non-object capabilities, or a database
+    /// error when updating fails.
+    pub async fn update_capabilities_preserving_emby_fields_by_token(
+        &self,
+        access_token: &str,
+        capabilities: Value,
+    ) -> Result<u64, AuthenticationStoreError> {
+        if !capabilities.is_object() {
+            return Err(AuthenticationStoreError::InvalidCapabilities);
+        }
+        let result = self
+            .database
+            .execute(Statement::from_sql_and_values(
+                DbBackend::Postgres,
+                r#"
+                UPDATE jellyfin.devices
+                SET capabilities = COALESCE(
+                        (
+                            SELECT jsonb_object_agg(
+                                CASE lower(entry.key)
+                                    WHEN 'pushtoken' THEN 'PushToken'
+                                    WHEN 'pushtokentype' THEN 'PushTokenType'
+                                    WHEN 'supportssync' THEN 'SupportsSync'
+                                    WHEN 'appid' THEN 'AppId'
+                                END,
+                                entry.value
+                            )
+                            FROM jsonb_each(COALESCE(capabilities, '{}'::jsonb)) AS entry
+                            WHERE lower(entry.key) IN (
+                                'pushtoken', 'pushtokentype', 'supportssync', 'appid'
+                            )
+                        ),
+                        '{}'::jsonb
+                    ) || $1::jsonb,
+                    date_modified = clock_timestamp()
+                WHERE access_token = $2
+                "#,
+                [capabilities.into(), access_token.to_owned().into()],
+            ))
+            .await?;
+        Ok(result.rows_affected())
+    }
+
     /// Persists the currently playing item and player state for an active session.
     ///
     /// `PostgreSQL` keeps the JSONB session snapshot in one row with object/array

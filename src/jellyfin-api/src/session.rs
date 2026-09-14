@@ -17,7 +17,8 @@ use jellyfin_model::{
     QueryResult, SessionInfoDto, SessionUserInfo, TranscodingInfo,
 };
 use md5::{Digest, Md5};
-use serde::{Deserialize, Deserializer, Serialize, de::IgnoredAny};
+use serde::{Deserialize, Deserializer, Serialize, de::Error as _, de::IgnoredAny};
+use serde_json::Value;
 use uuid::Uuid;
 
 use crate::{ApiError, AppState, authentication, user_library, user_primary_image_tags};
@@ -828,20 +829,49 @@ pub(crate) async fn post_capabilities(
     query: Result<Query<CapabilitiesQuery>, QueryRejection>,
 ) -> Result<StatusCode, ApiError> {
     let identity = authentication::authenticated_identity(&state, &headers, Some(&uri)).await?;
-    let Query(query) = query.map_err(|_| ApiError::InvalidRequest)?;
-    let access_token =
-        authorized_capabilities_access_token(&state, &identity, &headers, query.id.as_deref())
-            .await?;
-    let capabilities = ClientCapabilitiesDto {
-        playable_media_types: query.playable_media_types,
-        supported_commands: query.supported_commands,
-        supports_media_control: query.supports_media_control,
-        supports_persistent_identifier: query.supports_persistent_identifier,
-        ..ClientCapabilitiesDto::default()
+    let emby_protocol = is_emby_protocol_uri(&uri);
+    let (requested_id, capabilities) = if emby_protocol {
+        let query = emby_capabilities_query(&uri)?;
+        let capabilities = ClientCapabilitiesDto {
+            playable_media_types: query.playable_media_types,
+            supported_commands: query.supported_commands,
+            supports_media_control: query.supports_media_control,
+            // This property does not exist in Emby's generated DTO. Keep the
+            // modern Jellyfin property at its wire default in stored JSON.
+            supports_persistent_identifier: false,
+            ..ClientCapabilitiesDto::default()
+        };
+        let mut capabilities =
+            serde_json::to_value(capabilities).map_err(|_| ApiError::Internal)?;
+        capabilities
+            .as_object_mut()
+            .expect("ClientCapabilitiesDto serializes as an object")
+            .insert("SupportsSync".to_owned(), Value::Bool(query.supports_sync));
+        (Some(query.id), capabilities)
+    } else {
+        let Query(query) = query.map_err(|_| ApiError::InvalidRequest)?;
+        let capabilities = ClientCapabilitiesDto {
+            playable_media_types: query.playable_media_types,
+            supported_commands: query.supported_commands,
+            supports_media_control: query.supports_media_control,
+            supports_persistent_identifier: query.supports_persistent_identifier,
+            ..ClientCapabilitiesDto::default()
+        };
+        (
+            query.id,
+            serde_json::to_value(capabilities).map_err(|_| ApiError::Internal)?,
+        )
     };
+    let access_token =
+        authorized_capabilities_access_token(&state, &identity, &headers, requested_id.as_deref())
+            .await?;
     persist_capabilities(&state, &access_token, capabilities).await?;
     crate::websocket::broadcast_sessions(&state).await;
-    Ok(StatusCode::NO_CONTENT)
+    Ok(if emby_protocol {
+        StatusCode::OK
+    } else {
+        StatusCode::NO_CONTENT
+    })
 }
 
 pub(crate) async fn post_full_capabilities(
@@ -849,17 +879,227 @@ pub(crate) async fn post_full_capabilities(
     OriginalUri(uri): OriginalUri,
     headers: HeaderMap,
     query: Result<Query<FullCapabilitiesQuery>, QueryRejection>,
-    request: Result<Json<ClientCapabilitiesDto>, JsonRejection>,
+    request: Request,
 ) -> Result<StatusCode, ApiError> {
     let identity = authentication::authenticated_identity(&state, &headers, Some(&uri)).await?;
-    let Query(query) = query.map_err(|_| ApiError::InvalidRequest)?;
-    let Json(capabilities) = request.map_err(|_| ApiError::InvalidRequest)?;
+    let emby_protocol = is_emby_protocol_uri(&uri);
+    let (requested_id, capabilities) = if emby_protocol {
+        let requested_id = emby_required_capabilities_id(&uri)?;
+        let Json(capabilities) = Json::<EmbyClientCapabilities>::from_request(request, &state)
+            .await
+            .map_err(|_| ApiError::InvalidRequest)?;
+        (Some(requested_id), capabilities.into_stored_value()?)
+    } else {
+        let Query(query) = query.map_err(|_| ApiError::InvalidRequest)?;
+        let Json(capabilities) = Json::<ClientCapabilitiesDto>::from_request(request, &state)
+            .await
+            .map_err(|_| ApiError::InvalidRequest)?;
+        (
+            query.id,
+            serde_json::to_value(capabilities).map_err(|_| ApiError::Internal)?,
+        )
+    };
     let access_token =
-        authorized_capabilities_access_token(&state, &identity, &headers, query.id.as_deref())
+        authorized_capabilities_access_token(&state, &identity, &headers, requested_id.as_deref())
             .await?;
     persist_capabilities(&state, &access_token, capabilities).await?;
     crate::websocket::broadcast_sessions(&state).await;
-    Ok(StatusCode::NO_CONTENT)
+    Ok(if emby_protocol {
+        StatusCode::OK
+    } else {
+        StatusCode::NO_CONTENT
+    })
+}
+
+#[derive(Debug)]
+struct EmbyCapabilitiesQuery {
+    id: String,
+    playable_media_types: Vec<MediaType>,
+    supported_commands: Vec<GeneralCommandType>,
+    supports_media_control: bool,
+    supports_sync: bool,
+}
+
+fn emby_capabilities_query(uri: &axum::http::Uri) -> Result<EmbyCapabilitiesQuery, ApiError> {
+    let mut id = None;
+    let mut playable_media_types = Vec::new();
+    let mut supported_commands = Vec::new();
+    let mut supports_media_control = None;
+    let mut supports_sync = None;
+
+    for (name, value) in form_urlencoded::parse(uri.query().unwrap_or_default().as_bytes()) {
+        if name.eq_ignore_ascii_case("Id") {
+            id = Some(value.into_owned());
+        } else if name.eq_ignore_ascii_case("PlayableMediaTypes") {
+            playable_media_types = emby_capability_list(&value);
+        } else if name.eq_ignore_ascii_case("SupportedCommands") {
+            supported_commands = emby_capability_list(&value);
+        } else if name.eq_ignore_ascii_case("SupportsMediaControl") {
+            supports_media_control = Some(value.into_owned());
+        } else if name.eq_ignore_ascii_case("SupportsSync") {
+            supports_sync = Some(value.into_owned());
+        }
+    }
+
+    let id = id
+        .filter(|id| !id.trim().is_empty())
+        .ok_or(ApiError::InvalidRequest)?;
+    Ok(EmbyCapabilitiesQuery {
+        id,
+        playable_media_types,
+        supported_commands,
+        supports_media_control: supports_media_control
+            .as_deref()
+            .map(emby_bool)
+            .transpose()?
+            .unwrap_or(false),
+        supports_sync: supports_sync
+            .as_deref()
+            .map(emby_bool)
+            .transpose()?
+            .unwrap_or(false),
+    })
+}
+
+fn emby_required_capabilities_id(uri: &axum::http::Uri) -> Result<String, ApiError> {
+    let mut id = None;
+    for (name, value) in form_urlencoded::parse(uri.query().unwrap_or_default().as_bytes()) {
+        if name.eq_ignore_ascii_case("Id") {
+            id = Some(value.into_owned());
+        }
+    }
+    id.filter(|id| !id.trim().is_empty())
+        .ok_or(ApiError::InvalidRequest)
+}
+
+fn emby_capability_list<T>(value: &str) -> Vec<T>
+where
+    T: std::str::FromStr,
+{
+    value
+        .split(',')
+        .filter_map(|value| value.trim().parse().ok())
+        .collect()
+}
+
+fn emby_bool(value: &str) -> Result<bool, ApiError> {
+    if value.eq_ignore_ascii_case("true") {
+        Ok(true)
+    } else if value.eq_ignore_ascii_case("false") {
+        Ok(false)
+    } else {
+        Err(ApiError::InvalidRequest)
+    }
+}
+
+fn is_emby_protocol_uri(uri: &axum::http::Uri) -> bool {
+    uri.path()
+        .split('/')
+        .find(|segment| !segment.is_empty())
+        .is_some_and(|segment| segment.eq_ignore_ascii_case("emby"))
+}
+
+/// Emby's generated legacy model owns push, sync, and application identifiers
+/// which are intentionally absent from Jellyfin's modern capabilities DTO.
+/// The visitor also matches ASP.NET's case-insensitive, last-value-wins
+/// top-level JSON binding without teaching the shared DTO about Emby fields.
+#[derive(Debug)]
+struct EmbyClientCapabilities {
+    shared: ClientCapabilitiesDto,
+    protocol_fields: serde_json::Map<String, Value>,
+}
+
+impl EmbyClientCapabilities {
+    fn into_stored_value(self) -> Result<Value, ApiError> {
+        let mut value = serde_json::to_value(self.shared).map_err(|_| ApiError::Internal)?;
+        value
+            .as_object_mut()
+            .expect("ClientCapabilitiesDto serializes as an object")
+            .extend(self.protocol_fields);
+        Ok(value)
+    }
+}
+
+impl<'de> Deserialize<'de> for EmbyClientCapabilities {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct CapabilitiesVisitor;
+
+        impl<'de> serde::de::Visitor<'de> for CapabilitiesVisitor {
+            type Value = EmbyClientCapabilities;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("an Emby ClientCapabilities object")
+            }
+
+            fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+            where
+                A: serde::de::MapAccess<'de>,
+            {
+                let mut shared = serde_json::Map::new();
+                let mut protocol_fields = serde_json::Map::new();
+                while let Some(name) = map.next_key::<String>()? {
+                    let canonical_shared = if name.eq_ignore_ascii_case("PlayableMediaTypes") {
+                        Some("PlayableMediaTypes")
+                    } else if name.eq_ignore_ascii_case("SupportedCommands") {
+                        Some("SupportedCommands")
+                    } else if name.eq_ignore_ascii_case("SupportsMediaControl") {
+                        Some("SupportsMediaControl")
+                    } else if name.eq_ignore_ascii_case("DeviceProfile") {
+                        Some("DeviceProfile")
+                    } else if name.eq_ignore_ascii_case("IconUrl") {
+                        Some("IconUrl")
+                    } else {
+                        None
+                    };
+                    if let Some(canonical) = canonical_shared {
+                        shared.insert(canonical.to_owned(), map.next_value()?);
+                        continue;
+                    }
+
+                    let canonical_protocol = if name.eq_ignore_ascii_case("PushToken") {
+                        Some(("PushToken", false))
+                    } else if name.eq_ignore_ascii_case("PushTokenType") {
+                        Some(("PushTokenType", false))
+                    } else if name.eq_ignore_ascii_case("SupportsSync") {
+                        Some(("SupportsSync", true))
+                    } else if name.eq_ignore_ascii_case("AppId") {
+                        Some(("AppId", false))
+                    } else {
+                        None
+                    };
+                    if let Some((canonical, _is_boolean)) = canonical_protocol {
+                        let value: Value = map.next_value()?;
+                        protocol_fields.insert(canonical.to_owned(), value);
+                    } else {
+                        map.next_value::<IgnoredAny>()?;
+                    }
+                }
+                for (name, value) in &protocol_fields {
+                    let valid = if name == "SupportsSync" {
+                        value.is_boolean()
+                    } else {
+                        value.is_string() || value.is_null()
+                    };
+                    if !valid {
+                        return Err(A::Error::custom(format!(
+                            "invalid Emby ClientCapabilities property {name}"
+                        )));
+                    }
+                }
+                let shared =
+                    serde_json::from_value(Value::Object(shared)).map_err(A::Error::custom)?;
+                Ok(EmbyClientCapabilities {
+                    shared,
+                    protocol_fields,
+                })
+            }
+        }
+
+        deserializer.deserialize_map(CapabilitiesVisitor)
+    }
 }
 
 pub(crate) async fn password_reset_providers(
@@ -1112,12 +1352,11 @@ async fn session_user_details(
 async fn persist_capabilities(
     state: &AppState,
     access_token: &str,
-    capabilities: ClientCapabilitiesDto,
+    capabilities: Value,
 ) -> Result<(), ApiError> {
-    let capabilities = serde_json::to_value(capabilities).map_err(|_| ApiError::Internal)?;
     if state
         .devices
-        .update_capabilities_by_token(access_token, capabilities)
+        .update_capabilities_preserving_emby_fields_by_token(access_token, capabilities)
         .await?
         != 1
     {
