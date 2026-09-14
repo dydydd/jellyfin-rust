@@ -1,5 +1,5 @@
 use std::{
-    io,
+    fmt, io,
     pin::Pin,
     sync::Arc,
     task::{Context, Poll},
@@ -19,7 +19,10 @@ use jellyfin_model::{
     MediaStreamProtocol, MediaStreamType, PlayMethod, PlaybackErrorCode, StreamBuilder,
     SubtitleDeliveryMethod, UserPolicy,
 };
-use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use serde::{
+    Deserialize, Deserializer, Serialize,
+    de::{self, DeserializeOwned},
+};
 use serde_json::Value;
 use tokio::io::{AsyncRead, ReadBuf};
 use tokio_util::io::ReaderStream;
@@ -35,10 +38,43 @@ const REPEATING_BLOCK_SIZE: usize = 4 * 1024;
 const OCTET_STREAM: HeaderValue = HeaderValue::from_static("application/octet-stream");
 static REPEATING_BLOCK: [u8; REPEATING_BLOCK_SIZE] = bitrate_test_block();
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default)]
 pub(crate) struct BitrateTestQuery {
-    #[serde(alias = "Size", alias = "SIZE")]
     size: Option<i64>,
+}
+
+impl<'de> Deserialize<'de> for BitrateTestQuery {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Visitor;
+
+        impl<'de> de::Visitor<'de> for Visitor {
+            type Value = BitrateTestQuery;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("an optional Emby/Jellyfin bitrate-test size query")
+            }
+
+            fn visit_map<M: de::MapAccess<'de>>(self, mut map: M) -> Result<Self::Value, M::Error> {
+                let mut size = None;
+                while let Some(name) = map.next_key::<String>()? {
+                    if name.eq_ignore_ascii_case("Size") {
+                        // Retain the last raw value before parsing, matching
+                        // ASP.NET's case-insensitive last-assignment binder.
+                        size = Some(map.next_value::<String>()?);
+                    } else {
+                        map.next_value::<de::IgnoredAny>()?;
+                    }
+                }
+                Ok(BitrateTestQuery {
+                    size: size
+                        .map(|value| value.parse::<i64>().map_err(de::Error::custom))
+                        .transpose()?,
+                })
+            }
+        }
+
+        deserializer.deserialize_map(Visitor)
+    }
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -749,10 +785,14 @@ fn canonical_device_profile_key(name: &str) -> Option<&'static str> {
 
 pub(crate) async fn bitrate_test(
     State(state): State<Arc<AppState>>,
+    OriginalUri(uri): OriginalUri,
     headers: axum::http::HeaderMap,
     Query(query): Query<BitrateTestQuery>,
 ) -> Result<Response<Body>, ApiError> {
-    authentication::authenticated_session(&state, &headers).await?;
+    crate::authorization::require_default(&state, &headers, &uri).await?;
+    if is_emby_protocol_uri(&uri) && query.size.is_none() {
+        return Err(ApiError::InvalidRequest);
+    }
     let size = query.size.unwrap_or(DEFAULT_BITRATE_TEST_SIZE);
     if !(1..=MAX_BITRATE_TEST_SIZE).contains(&size) {
         return Err(ApiError::InvalidRequest);

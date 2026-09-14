@@ -56,6 +56,7 @@ async fn exercise(database_name: &str) {
 
     fixture.assert_system_lifecycle_contract().await;
     fixture.assert_generated_resource_contract().await;
+    fixture.assert_bitrate_test_contract().await;
     fixture.assert_jellyfin_isolation().await;
 
     database.close().await.expect("database cleanup");
@@ -194,6 +195,48 @@ impl Fixture {
         }
     }
 
+    async fn assert_bitrate_test_contract(&self) {
+        assert_eq!(
+            request(
+                &self.emby,
+                Method::GET,
+                "/emby/Playback/BitrateTest?Size=1",
+                None,
+            )
+            .await,
+            StatusCode::UNAUTHORIZED,
+        );
+        assert_eq!(
+            request(
+                &self.emby,
+                Method::GET,
+                "/emby/Playback/BitrateTest",
+                Some(&self.user_token),
+            )
+            .await,
+            StatusCode::BAD_REQUEST,
+            "the generated Emby operation requires Size",
+        );
+        for token in [&self.user_token, &self.admin_token, &self.api_key] {
+            let response = request_response(
+                &self.emby,
+                Method::GET,
+                "/emby/pLaYbAcK/bItRaTeTeSt?Size=5&sIzE=1",
+                Some(token),
+            )
+            .await;
+            assert_eq!(response.status(), StatusCode::OK);
+            assert_eq!(response.headers()[header::CONTENT_LENGTH], "1");
+        }
+
+        for route in ["/Playback/BitrateTest", "/api/Playback/BitrateTest"] {
+            let response =
+                request_response(&self.jellyfin, Method::GET, route, Some(&self.api_key)).await;
+            assert_eq!(response.status(), StatusCode::OK, "{route}");
+            assert_eq!(response.headers()[header::CONTENT_LENGTH], "102400");
+        }
+    }
+
     async fn assert_jellyfin_isolation(&self) {
         for route in ["/System/Restart", "/api/System/Restart"] {
             assert_eq!(
@@ -242,6 +285,15 @@ fn mixed_case(kind: &str) -> &str {
 }
 
 async fn request(app: &Router, method: Method, uri: &str, token: Option<&str>) -> StatusCode {
+    request_response(app, method, uri, token).await.status()
+}
+
+async fn request_response(
+    app: &Router,
+    method: Method,
+    uri: &str,
+    token: Option<&str>,
+) -> axum::response::Response {
     let mut request = Request::builder().method(method).uri(uri);
     if let Some(token) = token {
         request = request.header(
@@ -253,7 +305,6 @@ async fn request(app: &Router, method: Method, uri: &str, token: Option<&str>) -
         .oneshot(request.body(Body::empty()).expect("request"))
         .await
         .expect("route response")
-        .status()
 }
 
 async fn session(devices: &DeviceRepository, user_id: Uuid, suffix: &str) -> String {

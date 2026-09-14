@@ -19,6 +19,9 @@
 - Normalize empty successful shared-handler responses to HTTP 200 only inside the `/emby` tree,
   because the generated 4.10.0.40 document declares 200 as the sole success status for all 548
   operations. Preserve Jellyfin's root and `/api` 204 mutation responses.
+- Require `Size` on `/emby/Playback/BitrateTest`, bind it case-insensitively with the last duplicate
+  winning, and accept API keys as generated-client authentication. Preserve Jellyfin root and
+  `/api` default size 102400 and the shared inclusive 1..100000000 validation.
 - Require one nonblank, case-insensitively bound, last-duplicate-wins `Id` for Emby's DELETE
   `/Devices` and POST `/Devices/Delete`. Keep Jellyfin's root and `/api` repeated/comma-separated
   device-id binder and its omitted-id no-op behavior unchanged.
