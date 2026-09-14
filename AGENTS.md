@@ -144,6 +144,12 @@
   values onto every mapped response field while preserving protocol-only values, and preserve the
   nested documents when login counters or Jellyfin mutations rewrite shared policy/configuration.
   Do not buffer unrelated `/Users/**` item pages for this adaptation.
+- Bind generated mobile credential JSON and password query fields case-insensitively with
+  last-duplicate-wins semantics. Keep Emby's `/emby/Users/{Id}/Password` on its protocol-private
+  `Id`/`NewPw`/`ResetPassword` body: the path id is authoritative, an authorized ordinary user may
+  change their own password without the absent `CurrentPw` field, and success is an empty 200.
+  Preserve the unprefixed Jellyfin self-service requirement for `CurrentPw` and its 204 response;
+  password changes revoke other user sessions while resets preserve them in both protocols.
 - Treat Emby's `/LiveStreams/MediaInfo` as a lookup and access-time touch of a real entry in the
   shared live-stream registry. Match ids case-insensitively, reject missing ids, return not found for
   unknown, closed, or expired streams, and keep the authenticated empty-response operation under

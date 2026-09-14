@@ -23,7 +23,7 @@ async fn api_keys_create_and_delete_users_with_the_official_admin_role() {
     for (route, lowercase) in [("/Users/New", false), ("/users/new", true)] {
         let name = format!("key-created-{}", Uuid::new_v4().simple());
         let body = if lowercase {
-            json!({"name": name, "password": "initial password"})
+            json!({"nAmE": name, "pAsSwOrD": "initial password"})
         } else {
             json!({"Name": name, "Password": "initial password"})
         };
@@ -166,7 +166,7 @@ async fn api_key_password_changes_revoke_user_sessions_but_resets_preserve_them(
         "POST",
         &format!("/users/{}/password", fixture.user_id),
         Some(&fixture.key_token),
-        json!({"resetpassword": true}),
+        json!({"rEsEtPaSsWoRd": true}),
     )
     .await;
     assert_eq!(reset.status(), StatusCode::NO_CONTENT);
@@ -199,7 +199,7 @@ async fn api_key_password_changes_revoke_user_sessions_but_resets_preserve_them(
             fixture.user_id, fixture.key_token
         ),
         None,
-        json!({"newPw": new_password}),
+        json!({"nEwPw": new_password}),
     )
     .await;
     assert_eq!(changed.status(), StatusCode::NO_CONTENT);

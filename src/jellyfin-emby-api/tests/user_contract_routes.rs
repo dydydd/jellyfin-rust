@@ -271,12 +271,26 @@ async fn assert_user_details_lists_and_authentication(fixture: &Fixture) {
         .expect("updated user in query result");
     assert_emby_user_contract(listed);
 
+    let password_route = format!("/emby/uSeRs/{}/pAsSwOrD", fixture.user_id);
+    let response = request(
+        &fixture.app,
+        "POST",
+        &password_route,
+        Some(&fixture.user_token),
+        Body::from(format!(
+            r#"{{"Id":"{}","NewPw":"wrong-password","nEwPw":"updated-password","ResetPassword":true,"rEsEtPaSsWoRd":false}}"#,
+            fixture.user_id.simple()
+        )),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK, "{password_route}");
+
     let response = request(
         &fixture.app,
         "POST",
         "/emby/Users/AuthenticateByName",
         None,
-        Body::from(json!({ "Username": fixture.username, "Pw": "correct-password" }).to_string()),
+        Body::from(json!({ "uSeRnAmE": fixture.username, "pW": "updated-password" }).to_string()),
     )
     .await;
     assert_eq!(response.status(), StatusCode::OK);
@@ -285,7 +299,7 @@ async fn assert_user_details_lists_and_authentication(fixture: &Fixture) {
     assert_emby_user_contract(&authentication["User"]);
 
     let direct_route = format!(
-        "/emby/uSeRs/{}/aUtHeNtIcAtE?Pw=correct-password",
+        "/emby/uSeRs/{}/aUtHeNtIcAtE?pW=updated-password",
         fixture.user_id
     );
     let response = request(&fixture.app, "POST", &direct_route, None, Body::empty()).await;
@@ -331,6 +345,19 @@ async fn assert_restart_and_jellyfin_isolation(fixture: &Fixture, database: Data
         "Jellyfin User Contract Isolation Test Server".to_owned(),
         "http://127.0.0.1:8096".to_owned(),
     ));
+    let response = request(
+        &jellyfin,
+        "POST",
+        &format!("/Users/{}/Password", fixture.user_id),
+        Some(&fixture.user_token),
+        Body::from(r#"{"NewPw":"must-not-change"}"#),
+    )
+    .await;
+    assert_eq!(
+        response.status(),
+        StatusCode::FORBIDDEN,
+        "Jellyfin self-service still requires CurrentPw"
+    );
     let mut shared = get_json(
         &jellyfin,
         &format!("/Users/{}", fixture.user_id),

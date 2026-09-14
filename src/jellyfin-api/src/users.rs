@@ -116,13 +116,40 @@ fn can_access_device(
         || !supports_persistent_identifier
 }
 
-#[derive(Debug, Default, Deserialize)]
-#[serde(default, rename_all = "PascalCase")]
+#[derive(Debug, Default)]
 pub struct CreateUserByName {
-    #[serde(alias = "name")]
     pub name: Option<String>,
-    #[serde(alias = "password")]
     pub password: Option<String>,
+}
+
+impl<'de> Deserialize<'de> for CreateUserByName {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Visitor;
+
+        impl<'de> de::Visitor<'de> for Visitor {
+            type Value = CreateUserByName;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("a CreateUserByName object")
+            }
+
+            fn visit_map<M: de::MapAccess<'de>>(self, mut map: M) -> Result<Self::Value, M::Error> {
+                let mut request = CreateUserByName::default();
+                while let Some(name) = map.next_key::<String>()? {
+                    if name.eq_ignore_ascii_case("Name") {
+                        request.name = map.next_value()?;
+                    } else if name.eq_ignore_ascii_case("Password") {
+                        request.password = map.next_value()?;
+                    } else {
+                        map.next_value::<de::IgnoredAny>()?;
+                    }
+                }
+                Ok(request)
+            }
+        }
+
+        deserializer.deserialize_map(Visitor)
+    }
 }
 
 pub(crate) async fn create(
@@ -584,15 +611,43 @@ async fn update_configuration_with_id(
     Ok(StatusCode::NO_CONTENT)
 }
 
-#[derive(Debug, Default, Deserialize)]
-#[serde(default, rename_all = "PascalCase")]
+#[derive(Debug, Default)]
 pub struct UpdateUserPassword {
-    #[serde(alias = "currentPw", alias = "currentpw")]
     pub current_pw: Option<String>,
-    #[serde(alias = "newPw", alias = "newpw")]
     pub new_pw: Option<String>,
-    #[serde(alias = "resetPassword", alias = "resetpassword")]
     pub reset_password: bool,
+}
+
+impl<'de> Deserialize<'de> for UpdateUserPassword {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Visitor;
+
+        impl<'de> de::Visitor<'de> for Visitor {
+            type Value = UpdateUserPassword;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("an UpdateUserPassword object")
+            }
+
+            fn visit_map<M: de::MapAccess<'de>>(self, mut map: M) -> Result<Self::Value, M::Error> {
+                let mut request = UpdateUserPassword::default();
+                while let Some(name) = map.next_key::<String>()? {
+                    if name.eq_ignore_ascii_case("CurrentPw") {
+                        request.current_pw = map.next_value()?;
+                    } else if name.eq_ignore_ascii_case("NewPw") {
+                        request.new_pw = map.next_value()?;
+                    } else if name.eq_ignore_ascii_case("ResetPassword") {
+                        request.reset_password = map.next_value()?;
+                    } else {
+                        map.next_value::<de::IgnoredAny>()?;
+                    }
+                }
+                Ok(request)
+            }
+        }
+
+        deserializer.deserialize_map(Visitor)
+    }
 }
 
 pub(crate) async fn update_password(
@@ -806,6 +861,65 @@ fn assert_identity_can_update_user(
 }
 
 impl AppState {
+    /// Resolves and authorizes an Emby password target before parsing the
+    /// generated protocol body. Emby's DTO has no current-password field, so
+    /// an authorized user may change their own password without the Jellyfin
+    /// protocol's separate `CurrentPw` requirement.
+    pub async fn emby_password_update_target(
+        &self,
+        headers: &HeaderMap,
+        uri: &axum::http::Uri,
+        target_id: Uuid,
+    ) -> Result<String, Response> {
+        let identity = authentication::authenticated_identity(self, headers, Some(uri))
+            .await
+            .map_err(IntoResponse::into_response)?;
+        let target = self
+            .users
+            .get(target_id)
+            .await
+            .map_err(ApiError::from)
+            .map_err(IntoResponse::into_response)?;
+        assert_identity_can_update_user(&identity, &target).map_err(IntoResponse::into_response)?;
+        Ok(identity.access_token().to_owned())
+    }
+
+    /// Persists an Emby password mutation while retaining Jellyfin's token
+    /// revocation distinction between password changes and resets.
+    pub async fn persist_emby_password(
+        &self,
+        target_id: Uuid,
+        new_password: String,
+        reset_password: bool,
+        current_token: &str,
+    ) -> Result<StatusCode, Response> {
+        let target = self
+            .users
+            .get(target_id)
+            .await
+            .map_err(ApiError::from)
+            .map_err(IntoResponse::into_response)?;
+        hash_and_save_password(
+            self,
+            target,
+            if reset_password {
+                String::new()
+            } else {
+                new_password
+            },
+        )
+        .await
+        .map_err(IntoResponse::into_response)?;
+        if !reset_password {
+            self.devices
+                .revoke_user_tokens(target_id, Some(current_token))
+                .await
+                .map_err(ApiError::from)
+                .map_err(IntoResponse::into_response)?;
+        }
+        Ok(StatusCode::OK)
+    }
+
     /// Resolves and authorizes an Emby configuration target before the
     /// protocol adapter parses its request body, preserving official lookup
     /// and authorization precedence.
@@ -1050,5 +1164,52 @@ mod user_policy_request_tests {
             policy.password_reset_provider_id.as_deref(),
             Some("reset-provider")
         );
+    }
+}
+
+#[cfg(test)]
+mod user_password_request_tests {
+    use super::UpdateUserPassword;
+
+    #[test]
+    fn password_properties_bind_case_insensitively_and_last_value_wins() {
+        let request: UpdateUserPassword = serde_json::from_str(
+            r#"{
+                "CurrentPw":"old-first",
+                "cUrReNtPw":"old-last",
+                "NewPw":"new-first",
+                "nEwPw":"new-last",
+                "ResetPassword":true,
+                "rEsEtPaSsWoRd":false,
+                "Ignored":"value"
+            }"#,
+        )
+        .expect("case-insensitive password update");
+
+        assert_eq!(request.current_pw.as_deref(), Some("old-last"));
+        assert_eq!(request.new_pw.as_deref(), Some("new-last"));
+        assert!(!request.reset_password);
+    }
+}
+
+#[cfg(test)]
+mod create_user_request_tests {
+    use super::CreateUserByName;
+
+    #[test]
+    fn create_properties_bind_case_insensitively_and_last_value_wins() {
+        let request: CreateUserByName = serde_json::from_str(
+            r#"{
+                "Name":"first",
+                "nAmE":"last",
+                "Password":"old",
+                "pAsSwOrD":"new",
+                "Ignored":"value"
+            }"#,
+        )
+        .expect("case-insensitive user creation");
+
+        assert_eq!(request.name.as_deref(), Some("last"));
+        assert_eq!(request.password.as_deref(), Some("new"));
     }
 }

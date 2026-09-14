@@ -33,6 +33,8 @@ pub(crate) fn routes() -> Router<Arc<AppState>> {
         .route("/users/{user_id}/copydata", post(copy_data))
         .route("/Users/New", post(create_user))
         .route("/users/new", post(create_user))
+        .route("/Users/{user_id}/Password", post(update_password))
+        .route("/users/{user_id}/password", post(update_password))
         .route("/Users/Prefixes", get(prefixes))
         .route("/users/prefixes", get(prefixes))
         .route("/Users/{user_id}/Configuration", post(update_configuration))
@@ -124,6 +126,51 @@ struct CreateUserRequest {
     name: Option<String>,
     copy_from_user_id: Option<String>,
     user_copy_options: Option<Vec<String>>,
+}
+
+#[derive(Debug, Default, PartialEq, Eq)]
+struct UpdateUserPasswordRequest {
+    id: Option<String>,
+    new_pw: Option<String>,
+    reset_password: bool,
+}
+
+impl<'de> Deserialize<'de> for UpdateUserPasswordRequest {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct Visitor;
+
+        impl<'de> de::Visitor<'de> for Visitor {
+            type Value = UpdateUserPasswordRequest;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("an Emby UpdateUserPassword object")
+            }
+
+            fn visit_map<M>(self, mut map: M) -> Result<Self::Value, M::Error>
+            where
+                M: de::MapAccess<'de>,
+            {
+                let mut request = UpdateUserPasswordRequest::default();
+                while let Some(name) = map.next_key::<String>()? {
+                    if name.eq_ignore_ascii_case("Id") {
+                        request.id = map.next_value()?;
+                    } else if name.eq_ignore_ascii_case("NewPw") {
+                        request.new_pw = map.next_value()?;
+                    } else if name.eq_ignore_ascii_case("ResetPassword") {
+                        request.reset_password = map.next_value()?;
+                    } else {
+                        map.next_value::<de::IgnoredAny>()?;
+                    }
+                }
+                Ok(request)
+            }
+        }
+
+        deserializer.deserialize_map(Visitor)
+    }
 }
 
 impl<'de> Deserialize<'de> for CreateUserRequest {
@@ -239,6 +286,27 @@ impl<'de> Deserialize<'de> for CopyDataRequest {
 
         deserializer.deserialize_map(CopyDataVisitor)
     }
+}
+
+async fn update_password(
+    State(state): State<Arc<AppState>>,
+    OriginalUri(uri): OriginalUri,
+    headers: HeaderMap,
+    Path(user_id): Path<Uuid>,
+    request: Result<Json<UpdateUserPasswordRequest>, axum::extract::rejection::JsonRejection>,
+) -> Result<StatusCode, Response> {
+    let current_token = state
+        .emby_password_update_target(&headers, &uri, user_id)
+        .await?;
+    let Json(request) = request.map_err(|_| StatusCode::BAD_REQUEST.into_response())?;
+    state
+        .persist_emby_password(
+            user_id,
+            request.new_pw.unwrap_or_default(),
+            request.reset_password,
+            &current_token,
+        )
+        .await
 }
 
 async fn query_users(
@@ -743,6 +811,29 @@ mod tests {
         assert_eq!(request.user_id.as_deref(), Some("ignored"));
         assert_eq!(request.to_user_ids, Some(vec!["new".to_owned()]));
         assert_eq!(request.copy_options, Some(vec!["UserData".to_owned()]));
+    }
+
+    #[test]
+    fn password_body_matches_generated_fields_case_insensitively_and_last_wins() {
+        let request: UpdateUserPasswordRequest = serde_json::from_str(
+            r#"{
+                "Id":"body-id",
+                "NewPw":"old",
+                "nEwPw":"new",
+                "ResetPassword":true,
+                "rEsEtPaSsWoRd":false,
+                "Ignored":"value"
+            }"#,
+        )
+        .expect("Emby password request");
+        assert_eq!(
+            request,
+            UpdateUserPasswordRequest {
+                id: Some("body-id".to_owned()),
+                new_pw: Some("new".to_owned()),
+                reset_password: false,
+            }
+        );
     }
 
     #[test]

@@ -1,6 +1,7 @@
 use std::{
     collections::HashMap,
     convert::Infallible,
+    fmt,
     net::{IpAddr, Ipv4Addr, SocketAddr},
     sync::Arc,
 };
@@ -21,16 +22,45 @@ use jellyfin_model::{
     SyncPlayUserAccessType, UserPolicy,
 };
 use percent_encoding::percent_decode_str;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, de};
 use uuid::Uuid;
 
 use crate::{ApiError, AppState, user_primary_image_tags, user_to_dto, user_to_dto_with_server_id};
 
-#[derive(Debug, Default, Deserialize)]
-#[serde(default, rename_all = "PascalCase")]
+#[derive(Debug, Default)]
 pub struct AuthenticateUserByName {
     pub username: Option<String>,
     pub pw: Option<String>,
+}
+
+impl<'de> Deserialize<'de> for AuthenticateUserByName {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Visitor;
+
+        impl<'de> de::Visitor<'de> for Visitor {
+            type Value = AuthenticateUserByName;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("an AuthenticateUserByName object")
+            }
+
+            fn visit_map<M: de::MapAccess<'de>>(self, mut map: M) -> Result<Self::Value, M::Error> {
+                let mut request = AuthenticateUserByName::default();
+                while let Some(name) = map.next_key::<String>()? {
+                    if name.eq_ignore_ascii_case("Username") {
+                        request.username = map.next_value()?;
+                    } else if name.eq_ignore_ascii_case("Pw") {
+                        request.pw = map.next_value()?;
+                    } else {
+                        map.next_value::<de::IgnoredAny>()?;
+                    }
+                }
+                Ok(request)
+            }
+        }
+
+        deserializer.deserialize_map(Visitor)
+    }
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -39,11 +69,37 @@ pub struct QuickConnectDto {
     pub secret: Option<String>,
 }
 
-#[derive(Debug, Default, Deserialize)]
-#[serde(default)]
+#[derive(Debug, Default)]
 pub struct AuthenticateUserQuery {
-    #[serde(rename = "pw", alias = "Pw")]
     pub pw: Option<String>,
+}
+
+impl<'de> Deserialize<'de> for AuthenticateUserQuery {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Visitor;
+
+        impl<'de> de::Visitor<'de> for Visitor {
+            type Value = AuthenticateUserQuery;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("an AuthenticateUser query")
+            }
+
+            fn visit_map<M: de::MapAccess<'de>>(self, mut map: M) -> Result<Self::Value, M::Error> {
+                let mut query = AuthenticateUserQuery::default();
+                while let Some(name) = map.next_key::<String>()? {
+                    if name.eq_ignore_ascii_case("Pw") {
+                        query.pw = map.next_value()?;
+                    } else {
+                        map.next_value::<de::IgnoredAny>()?;
+                    }
+                }
+                Ok(query)
+            }
+        }
+
+        deserializer.deserialize_map(Visitor)
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -738,6 +794,22 @@ mod tests {
     use axum::http::HeaderValue;
     use chrono::{TimeZone, Timelike};
     use jellyfin_model::AccessSchedule;
+
+    #[test]
+    fn credential_inputs_bind_case_insensitively_and_last_value_wins() {
+        let body: AuthenticateUserByName = serde_json::from_str(
+            r#"{"Username":"first","uSeRnAmE":"last","Pw":"old","pW":"new","Ignored":true}"#,
+        )
+        .expect("case-insensitive authentication body");
+        assert_eq!(body.username.as_deref(), Some("last"));
+        assert_eq!(body.pw.as_deref(), Some("new"));
+
+        let uri = "http://localhost/?Pw=old&pW=new".parse().unwrap();
+        let query = axum_extra::extract::Query::<AuthenticateUserQuery>::try_from_uri(&uri)
+            .expect("case-insensitive authentication query")
+            .0;
+        assert_eq!(query.pw.as_deref(), Some("new"));
+    }
 
     #[test]
     fn parses_official_media_browser_header() {

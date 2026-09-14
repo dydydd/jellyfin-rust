@@ -104,8 +104,8 @@ async fn exercise(database_name: &str, dump_dir: Option<PathBuf>) {
             None,
             Some(LOGIN_AUTHORIZATION),
             Some(json!({
-                "Username": "emby-swift-user",
-                "Pw": "emby-swift-password"
+                "uSeRnAmE": "emby-swift-user",
+                "pW": "emby-swift-password"
             })),
         )
         .await,
