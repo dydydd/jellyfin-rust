@@ -776,6 +776,11 @@ pub(crate) async fn get_playback_info(
     query: Result<Query<PlaybackInfoQuery>, QueryRejection>,
 ) -> Result<Json<PlaybackInfoResponse>, ApiError> {
     let Query(query) = query.map_err(|_| ApiError::InvalidRequest)?;
+    // Emby's generated GET contract requires UserId, while Jellyfin's modern
+    // endpoint intentionally falls back to the authenticated session user.
+    if is_emby_protocol_uri(&uri) && query.user_id.is_none() {
+        return Err(ApiError::InvalidRequest);
+    }
     let identity = playback_request_identity(&state, &headers, &uri, query.user_id).await?;
     let live_stream_id = query.live_stream_id;
     let _auto_open_live_stream = query.auto_open_live_stream.unwrap_or_default();
@@ -807,6 +812,13 @@ pub(crate) async fn get_playback_info(
     .await?;
     user_library::omit_incompatible_emby_media_source_streams(&uri, &mut result.media_sources);
     Ok(Json(result))
+}
+
+fn is_emby_protocol_uri(uri: &axum::http::Uri) -> bool {
+    uri.path()
+        .split('/')
+        .find(|segment| !segment.is_empty())
+        .is_some_and(|segment| segment.eq_ignore_ascii_case("emby"))
 }
 
 pub(crate) async fn post_playback_info(

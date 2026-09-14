@@ -445,6 +445,9 @@
 - Keep playback-info route static segments compatible with ASP.NET's case-insensitive routing:
   register both `/Items/{itemId}/PlaybackInfo` and `/items/{itemId}/playbackinfo` (including GET
   and POST) so generated Android and Swift SDK requests never depend on URL casing.
+- Keep the generated Emby GET `/emby/Items/{itemId}/PlaybackInfo` contract protocol-local: require
+  its case-insensitive `UserId` query before item lookup, while root and `/api` Jellyfin GET routes
+  retain their authenticated-session user fallback. POST continues to use its query/body contract.
 - Keep the authenticated bitrate-test route available as `/playback/bitratetest`, with the same
   bounded payload, query binding, and error semantics as `/Playback/BitrateTest`.
 - Keep Open/Close LiveStreams available through fully lowercase static-path aliases; these are
