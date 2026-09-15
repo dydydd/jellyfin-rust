@@ -53,7 +53,9 @@ async fn exercise_scan(database_name: &str) {
     std::fs::create_dir_all(&library_root).expect("movie fixture directory");
     let strm_path = library_root.join("Pointer Movie.strm");
     let target = "/CloudNAS/Movies/Pointer Movie.mkv";
-    std::fs::write(&strm_path, format!("\n {target} \r\n")).expect("STRM fixture write");
+    let initial_strm_contents = format!("\n {target} \r\n");
+    std::fs::write(&strm_path, &initial_strm_contents).expect("STRM fixture write");
+    let initial_strm_size = i64::try_from(initial_strm_contents.len()).unwrap();
     let probe_fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../jellyfin-media-encoding/tests/fixtures/probing/video_metadata.json");
     let probe_script = library_root.join("fake-ffprobe");
@@ -91,6 +93,11 @@ async fn exercise_scan(database_name: &str) {
     assert_eq!(movie.path.as_deref(), strm_path.to_str());
     assert_eq!(movie.data.as_ref().unwrap()["StrmTarget"], target);
     assert_eq!(movie.data.as_ref().unwrap()["Container"], "mkv");
+    assert_eq!(
+        movie.data.as_ref().unwrap()["Size"].as_i64(),
+        Some(initial_strm_size),
+        "STRM size is the local pointer file length, not the remote target size"
+    );
 
     let stream_repository = MediaStreamRepository::new(database.clone());
     let streams = stream_repository
@@ -145,6 +152,25 @@ async fn exercise_scan(database_name: &str) {
             .hydrate_strm_media_streams(movie.id)
             .await
             .expect("hydrated STRM is cached")
+    );
+
+    let updated_strm_contents = format!("\n\n   {target}    \r\n");
+    assert_ne!(updated_strm_contents.len(), initial_strm_contents.len());
+    std::fs::write(&strm_path, &updated_strm_contents).expect("updated STRM fixture write");
+    let updated_strm_size = i64::try_from(updated_strm_contents.len()).unwrap();
+    let updated_summary = scan.scan_all().await.expect("updated STRM rescan");
+    assert!(updated_summary.added_ids.is_empty());
+    assert!(updated_summary.changed_ids.contains(&movie.id));
+    let rescanned_movie = BaseItemRepository::new(database.clone())
+        .get(movie.id)
+        .await
+        .expect("rescanned movie lookup")
+        .expect("rescanned STRM movie");
+    assert_eq!(rescanned_movie.data.as_ref().unwrap()["StrmTarget"], target);
+    assert_eq!(
+        rescanned_movie.data.as_ref().unwrap()["Size"].as_i64(),
+        Some(updated_strm_size),
+        "rescanning must refresh the local STRM pointer file length"
     );
 
     let stable_summary = scan.scan_all().await.expect("stable STRM rescan");

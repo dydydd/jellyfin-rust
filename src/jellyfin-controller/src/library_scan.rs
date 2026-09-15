@@ -2580,9 +2580,7 @@ impl LibraryScanService {
                 }
                 changed |= apply_scanned_file_size(
                     &mut existing.data,
-                    (!is_strm)
-                        .then(|| directory_snapshot.file_size(path_str))
-                        .flatten(),
+                    directory_snapshot.file_size(path_str),
                 );
                 if media_kind == MediaKind::Photo
                     && let Some(metadata) = self.photo_metadata(existing.id, path).await?
@@ -2675,12 +2673,7 @@ impl LibraryScanService {
             media_source_path,
             strm_target.as_deref(),
         ));
-        apply_scanned_file_size(
-            &mut item.data,
-            (!is_strm)
-                .then(|| directory_snapshot.file_size(path_str))
-                .flatten(),
-        );
+        apply_scanned_file_size(&mut item.data, directory_snapshot.file_size(path_str));
         if media_kind == MediaKind::Photo
             && let Some(metadata) = self.photo_metadata(item.id, path).await?
         {
@@ -2833,12 +2826,7 @@ impl LibraryScanService {
             if is_strm {
                 apply_strm_metadata(&mut existing, media_source_path, strm_target);
             }
-            apply_scanned_file_size(
-                &mut existing.data,
-                (!is_strm)
-                    .then(|| directory_snapshot.file_size(path_str))
-                    .flatten(),
-            );
+            apply_scanned_file_size(&mut existing.data, directory_snapshot.file_size(path_str));
             apply_episode_nfo_metadata(&mut existing, path, resolved_series_name.as_deref());
             self.persist_scan_relations(existing.id, path_str, &existing.item_type, season_number)
                 .await?;
@@ -2884,12 +2872,7 @@ impl LibraryScanService {
         item.season_id = season_id;
         item.series_presentation_unique_key = series_puk;
         item.data = Some(media_item_data_with_strm(media_source_path, strm_target));
-        apply_scanned_file_size(
-            &mut item.data,
-            (!is_strm)
-                .then(|| directory_snapshot.file_size(path_str))
-                .flatten(),
-        );
+        apply_scanned_file_size(&mut item.data, directory_snapshot.file_size(path_str));
         let mut item = self.items.create(item).await?;
         if apply_episode_nfo_metadata(&mut item, path, resolved_series_name.as_deref()) {
             item = self.items.update(item).await?;
