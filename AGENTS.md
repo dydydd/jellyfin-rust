@@ -45,10 +45,17 @@
 - Require a valid JSON `PlaybackInfoRequest` body on Emby's POST
   `/Items/{Id}/PlaybackInfo`, while preserving the optional body accepted by Jellyfin root and
   `/api`. Do not impose this POST-only body requirement on the generated GET operation.
-- Never serialize Jellyfin GUID strings into Emby's `NameLongIdPair.Id` fields. Until a stable Emby
-  numeric-id mapping exists, `/emby` BaseItem responses must omit incompatible `Studios`,
-  `GenreItems`, `TagItems`, and `Collections` relations; keep the names/ids unchanged on every
-  unprefixed Jellyfin response and avoid whole-response buffering to adapt these fields.
+- Never serialize Jellyfin GUID strings into Emby's `NameLongIdPair.Id` fields. Project BaseItem
+  `Studios` and `GenreItems` on `/emby` with the stable private `item_values.emby_id` BIGINT identity,
+  preserving the accompanying string `Genres`; relations without a stable numeric mapping such as
+  `TagItems` and `Collections` must remain omitted. Keep names and GUID ids unchanged on every
+  unprefixed Jellyfin response, batch-load the numeric ids with the normal relation query, and avoid
+  whole-response buffering to adapt these fields.
+- Project Emby's top-level BaseItem `Size`, `Bitrate`, and `FileName` only on `/emby`: source them
+  from persisted media metadata and the local item path, with inferred projected-source bitrate as
+  a fallback. Keep Jellyfin root and `/api` responses unchanged. Persist the local `.strm` shortcut
+  file length during scans and rescans, matching the official server; do not stat the remote target
+  or perform filesystem I/O in the item-detail request path.
 - Keep Emby BaseItem enum adaptation protocol-local as well: omit unsupported Person `Type` values,
   filter Jellyfin-only `Lyric` media streams, omit the Jellyfin-only `Drop` subtitle delivery method,
   and omit `Remote`/`Offline` `LocationType` values from `/emby` responses. Preserve the person and

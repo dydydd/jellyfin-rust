@@ -31,6 +31,10 @@ pub struct TrickplayInfoDto {
 pub struct NameIdPair {
     pub name: String,
     pub id: String,
+    /// Stable private numeric relation id used only by the Emby protocol
+    /// adapter. Jellyfin serializes the normal string `Id` above.
+    #[serde(skip)]
+    pub emby_id: Option<i64>,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]

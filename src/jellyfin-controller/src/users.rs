@@ -92,6 +92,7 @@ impl UserService {
         vec![NameIdPair {
             name: DEFAULT_AUTHENTICATION_PROVIDER_NAME.to_owned(),
             id: UserPolicy::DEFAULT_AUTHENTICATION_PROVIDER_ID.to_owned(),
+            emby_id: None,
         }]
     }
 
@@ -104,6 +105,7 @@ impl UserService {
         vec![NameIdPair {
             name: DEFAULT_PASSWORD_RESET_PROVIDER_NAME.to_owned(),
             id: UserPolicy::DEFAULT_PASSWORD_RESET_PROVIDER_ID.to_owned(),
+            emby_id: None,
         }]
     }
 

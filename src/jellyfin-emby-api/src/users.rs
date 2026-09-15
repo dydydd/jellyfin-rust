@@ -589,14 +589,17 @@ async fn copy_data_options(
             NameIdPair {
                 name: "User Policy".to_owned(),
                 id: "UserPolicy".to_owned(),
+                emby_id: None,
             },
             NameIdPair {
                 name: "User Configuration".to_owned(),
                 id: "UserConfiguration".to_owned(),
+                emby_id: None,
             },
             NameIdPair {
                 name: "User Data".to_owned(),
                 id: "UserData".to_owned(),
+                emby_id: None,
             },
         ],
     }))
@@ -710,6 +713,7 @@ async fn prefixes(
             prefixes.push(NameIdPair {
                 name: prefix.clone(),
                 id: prefix,
+                emby_id: None,
             });
         }
     }
@@ -853,14 +857,17 @@ mod tests {
                 NameIdPair {
                     name: "User Policy".to_owned(),
                     id: "UserPolicy".to_owned(),
+                    emby_id: None,
                 },
                 NameIdPair {
                     name: "User Configuration".to_owned(),
                     id: "UserConfiguration".to_owned(),
+                    emby_id: None,
                 },
                 NameIdPair {
                     name: "User Data".to_owned(),
                     id: "UserData".to_owned(),
+                    emby_id: None,
                 },
             ],
         })

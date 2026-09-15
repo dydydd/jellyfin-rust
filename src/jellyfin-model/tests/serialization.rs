@@ -48,6 +48,7 @@ fn name_id_pair_uses_official_pascal_case_contract() {
     let pair = NameIdPair {
         name: "Default".to_owned(),
         id: "Jellyfin.Server.Implementations.Users.DefaultAuthenticationProvider".to_owned(),
+        emby_id: None,
     };
 
     assert_eq!(

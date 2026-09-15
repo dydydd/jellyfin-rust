@@ -265,10 +265,17 @@ impl Fixture {
             self.favorite_zulu_id.simple().to_string()
         );
         assert!(
-            page["Items"][0].get("Studios").is_none(),
-            "the shared Emby BaseItem adapter must remove GUID NameLongIdPair relations"
+            page["Items"][0]["Studios"][0]["Id"]
+                .as_i64()
+                .is_some_and(|id| id > 0),
+            "the shared Emby BaseItem adapter must project stable numeric Studio ids"
         );
-        assert!(page["Items"][0].get("GenreItems").is_none());
+        assert!(
+            page["Items"][0]["GenreItems"][0]["Id"]
+                .as_i64()
+                .is_some_and(|id| id > 0),
+            "the shared Emby BaseItem adapter must project stable numeric Genre ids"
+        );
 
         let override_route = format!(
             "/emby/Users/{}/Sections/Featured/Items?parentid={}&ISFAVORITE=false&sortorder=Ascending",

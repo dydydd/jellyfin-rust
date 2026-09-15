@@ -95,6 +95,18 @@ async fn exercise(database_name: &str, dump_dir: Option<PathBuf>) {
     movie.name = Some("Emby Swift Theme Owner".to_owned());
     movie.sort_name = movie.name.clone();
     movie.parent_id = Some(root.id);
+    movie.media_type = Some("Video".to_owned());
+    movie.path = Some("/media/emby-swift/101-dalmatians.strm".to_owned());
+    movie.production_year = Some(1961);
+    movie.premiere_date = Some("1961-01-24T00:00:00+00:00".parse().unwrap());
+    movie.runtime_ticks = Some(6_841_000_000);
+    movie.data = Some(json!({
+        "Genres": ["Adventure", "Animation", "Comedy", "Family"],
+        "Size": 5_000_000_000_i64,
+        "Bitrate": 6_035_519,
+        "Container": "mkv",
+        "StrmTarget": "/CloudNAS/Movies/101-dalmatians.mkv"
+    }));
     let movie = items.create(movie).await.expect("theme owner item");
     let mut recommendation_baseline = NewBaseItem::new(Uuid::new_v4(), "Movie");
     recommendation_baseline.name = Some("Emby Swift Recommendation Baseline".to_owned());
@@ -117,6 +129,12 @@ async fn exercise(database_name: &str, dump_dir: Option<PathBuf>) {
         .await
         .expect("recommended movie");
     let item_values = ItemValueRepository::new(database.clone());
+    for genre in ["Adventure", "Animation", "Comedy", "Family"] {
+        item_values
+            .link(movie.id, item_value::ItemValueType::Genre, genre)
+            .await
+            .expect("detail genre");
+    }
     for item_id in [recommendation_baseline.id, recommended_movie.id] {
         item_values
             .link(item_id, item_value::ItemValueType::Genre, "EmbySwiftGenre")
@@ -229,6 +247,11 @@ async fn exercise(database_name: &str, dump_dir: Option<PathBuf>) {
             "/emby/Movies/Recommendations?ItemLimit=1&CategoryLimit=1".to_owned(),
             "[RecommendationDto]",
         ),
+        (
+            format!("/emby/Users/{user_id}/Items/{}", movie.id),
+            "BaseItemDto",
+        ),
+        (format!("/emby/Items/{}", movie.id), "BaseItemDto"),
     ] {
         let body = response_json(
             request(&app, Method::GET, &route, Some(&user_token), None, None).await,
@@ -242,7 +265,7 @@ async fn exercise(database_name: &str, dump_dir: Option<PathBuf>) {
         });
     }
 
-    assert_eq!(responses.len(), 16);
+    assert_eq!(responses.len(), 18);
     assert!(responses.iter().all(|response| !response.route.is_empty()));
     assert_eq!(responses[2].body["Id"], user_id.to_string());
     assert!(responses[3].body["Items"].is_array());
@@ -295,6 +318,41 @@ async fn exercise(database_name: &str, dump_dir: Option<PathBuf>) {
         "Emby's Int64 CategoryId cannot contain a Jellyfin UUID or MD5 GUID"
     );
 
+    for detail in &responses[16..18] {
+        assert_eq!(detail.body["ProductionYear"], 1961, "{}", detail.route);
+        assert_eq!(
+            detail.body["PremiereDate"], "1961-01-24T00:00:00+00:00",
+            "{}",
+            detail.route
+        );
+        assert_eq!(detail.body["Size"], 5_000_000_000_i64, "{}", detail.route);
+        assert_eq!(detail.body["Bitrate"], 6_035_519, "{}", detail.route);
+        assert_eq!(
+            detail.body["FileName"], "101-dalmatians.strm",
+            "{}",
+            detail.route
+        );
+        assert_eq!(
+            detail.body["Genres"],
+            json!(["Adventure", "Animation", "Comedy", "Family"]),
+            "{}",
+            detail.route
+        );
+        let genre_items = detail.body["GenreItems"]
+            .as_array()
+            .unwrap_or_else(|| panic!("{} must project GenreItems", detail.route));
+        assert_eq!(genre_items.len(), 4, "{}", detail.route);
+        assert!(
+            genre_items
+                .iter()
+                .all(|genre| genre["Id"].as_i64().is_some_and(|id| id > 0)),
+            "{} must use Emby Int64 genre ids",
+            detail.route
+        );
+        assert_eq!(detail.body["MediaSources"][0]["Size"], 5_000_000_000_i64);
+        assert_eq!(detail.body["MediaSources"][0]["Bitrate"], 6_035_519);
+    }
+
     for route in [
         format!("/Items/{}/ThemeSongs", movie.id),
         format!("/api/Items/{}/ThemeSongs", movie.id),
@@ -308,6 +366,26 @@ async fn exercise(database_name: &str, dump_dir: Option<PathBuf>) {
             jellyfin["OwnerId"],
             movie.id.to_string(),
             "Emby's numeric OwnerId adaptation must not change Jellyfin {route}",
+        );
+    }
+
+    for route in [
+        format!("/Users/{user_id}/Items/{}", movie.id),
+        format!("/api/Users/{user_id}/Items/{}", movie.id),
+        format!("/Items/{}", movie.id),
+        format!("/api/Items/{}", movie.id),
+    ] {
+        let jellyfin = response_json(
+            request(&app, Method::GET, &route, Some(&user_token), None, None).await,
+            &route,
+        )
+        .await;
+        assert!(jellyfin.get("Size").is_none(), "{route}");
+        assert!(jellyfin.get("Bitrate").is_none(), "{route}");
+        assert!(jellyfin.get("FileName").is_none(), "{route}");
+        assert!(
+            jellyfin["GenreItems"][0]["Id"].as_str().is_some(),
+            "{route} must retain Jellyfin string relation ids"
         );
     }
 

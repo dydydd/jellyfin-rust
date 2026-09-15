@@ -324,6 +324,13 @@ impl BaseItemDtoFields {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub(crate) struct EmbyNameLongIdPair {
+    name: String,
+    id: i64,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "PascalCase")]
 #[derive(Default)]
@@ -362,6 +369,16 @@ pub struct BaseItemDto {
     pub(crate) media_source_container: Option<String>,
     #[serde(skip)]
     pub(crate) media_source_size: Option<i64>,
+    /// Emby-only top-level file size. The Jellyfin BaseItemDto contract keeps
+    /// this value on MediaSources, so protocol adapters opt in explicitly.
+    #[serde(rename = "Size", skip_serializing_if = "Option::is_none")]
+    pub(crate) emby_size: Option<i64>,
+    /// Emby-only top-level aggregate bitrate.
+    #[serde(rename = "Bitrate", skip_serializing_if = "Option::is_none")]
+    pub(crate) emby_bitrate: Option<i32>,
+    /// Emby-only name of the item's local media/shortcut file.
+    #[serde(rename = "FileName", skip_serializing_if = "Option::is_none")]
+    pub(crate) emby_file_name: Option<String>,
     #[serde(skip)]
     pub(crate) media_source_etag: Option<String>,
     #[serde(skip)]
@@ -472,12 +489,16 @@ pub struct BaseItemDto {
     pub genres: Vec<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub genre_items: Vec<NameIdPair>,
+    #[serde(rename = "GenreItems", skip_serializing_if = "Vec::is_empty")]
+    pub(crate) emby_genre_items: Vec<EmbyNameLongIdPair>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub people: Vec<BaseItemPerson>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub tags: Vec<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub studios: Vec<NameIdPair>,
+    #[serde(rename = "Studios", skip_serializing_if = "Vec::is_empty")]
+    pub(crate) emby_studios: Vec<EmbyNameLongIdPair>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub community_rating: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1350,6 +1371,9 @@ pub(crate) fn item_to_dto(item: base_item::Model, server_id: &str) -> BaseItemDt
         media_source_bitrate,
         media_source_container,
         media_source_size,
+        emby_size: None,
+        emby_bitrate: None,
+        emby_file_name: None,
         media_source_etag,
         media_source_timestamp,
         media_source_required_http_headers,
@@ -1419,9 +1443,11 @@ pub(crate) fn item_to_dto(item: base_item::Model, server_id: &str) -> BaseItemDt
         user_data: None,
         genres: metadata_strings(item.data.as_ref(), &["Genres", "genres"]),
         genre_items: Vec::new(),
+        emby_genre_items: Vec::new(),
         people: Vec::new(),
         tags: metadata_strings(item.data.as_ref(), &["Tags", "tags"]),
         studios: Vec::new(),
+        emby_studios: Vec::new(),
         community_rating: metadata_f64(
             item.data.as_ref(),
             &["CommunityRating", "community_rating"],
@@ -2635,6 +2661,7 @@ pub(crate) async fn load_relation_metadata(
                 .map(|genre| NameIdPair {
                     name: genre.value,
                     id: genre.id.simple().to_string(),
+                    emby_id: Some(genre.emby_id),
                 })
                 .collect(),
             artist_items: music.artist_items.remove(&item.id).unwrap_or_default(),
@@ -2678,6 +2705,7 @@ pub(crate) async fn load_relation_metadata(
                 .map(|studio| NameIdPair {
                     name: studio.value,
                     id: studio.id.simple().to_string(),
+                    emby_id: Some(studio.emby_id),
                 })
                 .collect(),
         };
@@ -2783,6 +2811,7 @@ fn item_value_pairs_to_dto(pairs: Vec<jellyfin_data::ItemValuePair>) -> Vec<Name
         .map(|pair| NameIdPair {
             name: pair.value,
             id: pair.id.simple().to_string(),
+            emby_id: Some(pair.emby_id),
         })
         .collect()
 }
@@ -2838,6 +2867,7 @@ fn ordered_name_id_pairs(names: &[String], pairs: &[NameIdPair]) -> Vec<NameIdPa
                 .map(|pair| NameIdPair {
                     name: name.clone(),
                     id: pair.id.clone(),
+                    emby_id: pair.emby_id,
                 })
         })
         .collect()
@@ -4021,8 +4051,50 @@ pub(crate) fn omit_incompatible_emby_relations(uri: &axum::http::Uri, items: &mu
     }
 
     for item in items {
-        // These are the NameLongIdPair collections currently projected by the
-        // shared Rust DTO. TagItems and Collections do not exist on this DTO.
+        // Emby exposes these item-level fields even though Jellyfin keeps the
+        // corresponding values on MediaSourceInfo. Prefer the item's own
+        // persisted values and use its first projected source only for bitrate
+        // inference from persisted streams.
+        let first_source = item
+            .media_sources
+            .as_ref()
+            .and_then(|sources| sources.first());
+        item.emby_size = item
+            .media_source_size
+            .or_else(|| first_source.and_then(|source| source.size));
+        item.emby_bitrate = item
+            .media_source_bitrate
+            .or_else(|| first_source.and_then(|source| source.bitrate));
+        item.emby_file_name = item
+            .path
+            .as_deref()
+            .and_then(|path| path.rsplit(['/', '\\']).next())
+            .filter(|name| !name.is_empty())
+            .map(str::to_owned);
+
+        // Emby NameLongIdPair uses Int64 identifiers. The private database
+        // identity is stable and collision-free while Jellyfin continues to
+        // expose its normal GUID string relation identifiers.
+        item.emby_genre_items = item
+            .genre_items
+            .iter()
+            .filter_map(|pair| {
+                pair.emby_id.map(|id| EmbyNameLongIdPair {
+                    name: pair.name.clone(),
+                    id,
+                })
+            })
+            .collect();
+        item.emby_studios = item
+            .studios
+            .iter()
+            .filter_map(|pair| {
+                pair.emby_id.map(|id| EmbyNameLongIdPair {
+                    name: pair.name.clone(),
+                    id,
+                })
+            })
+            .collect();
         item.studios.clear();
         item.genre_items.clear();
 
@@ -4130,14 +4202,17 @@ mod tests {
             studios: vec![NameIdPair {
                 name: "Studio".to_owned(),
                 id: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".to_owned(),
+                emby_id: Some(41),
             }],
             genre_items: vec![NameIdPair {
                 name: "Drama".to_owned(),
                 id: "cccccccccccccccccccccccccccccccc".to_owned(),
+                emby_id: Some(42),
             }],
             artist_items: Some(vec![NameIdPair {
                 name: "Artist".to_owned(),
                 id: "dddddddddddddddddddddddddddddddd".to_owned(),
+                emby_id: None,
             }]),
             people: vec![
                 BaseItemPerson {
@@ -4181,6 +4256,8 @@ mod tests {
                 },
             ]),
             media_sources: Some(vec![MediaSourceInfo {
+                bitrate: Some(4_200_000),
+                size: Some(4_999_999_999),
                 media_streams: vec![
                     MediaStream {
                         stream_type: MediaStreamType::Audio,
@@ -4198,6 +4275,8 @@ mod tests {
                 ],
                 ..MediaSourceInfo::default()
             }]),
+            path: Some("/media/Drama Feature.mkv".to_owned()),
+            media_source_size: Some(5_000_000_000),
             location_type: Some(LocationType::Remote),
             ..BaseItemDto::default()
         }
@@ -4269,6 +4348,11 @@ mod tests {
     #[derive(Debug, Deserialize)]
     #[serde(rename_all = "PascalCase")]
     struct StrictEmbyBaseItem {
+        size: Option<i64>,
+        bitrate: Option<i32>,
+        file_name: Option<String>,
+        genre_items: Vec<EmbyNameLongIdPair>,
+        studios: Vec<EmbyNameLongIdPair>,
         location_type: Option<StrictEmbyLocationType>,
         people: Vec<StrictEmbyPerson>,
         media_streams: Vec<StrictEmbyMediaStream>,
@@ -4276,7 +4360,7 @@ mod tests {
     }
 
     #[test]
-    fn emby_uri_omits_only_incompatible_name_long_id_relations() {
+    fn emby_uri_projects_numeric_relations_and_top_level_media_fields() {
         for path in ["/emby/Items", "/EmBy/Users/user/Items/item"] {
             let uri = path.parse().unwrap();
             let mut items = vec![item_with_name_id_relations(), item_with_name_id_relations()];
@@ -4284,8 +4368,11 @@ mod tests {
 
             for item in items {
                 let value = serde_json::to_value(item).unwrap();
-                assert!(value.get("Studios").is_none(), "{path}");
-                assert!(value.get("GenreItems").is_none(), "{path}");
+                assert_eq!(value["Studios"], json!([{"Name": "Studio", "Id": 41}]));
+                assert_eq!(value["GenreItems"], json!([{"Name": "Drama", "Id": 42}]));
+                assert_eq!(value["Size"], 5_000_000_000_i64);
+                assert_eq!(value["Bitrate"], 4_200_000);
+                assert_eq!(value["FileName"], "Drama Feature.mkv");
                 assert_eq!(
                     value["ArtistItems"][0]["Id"],
                     "dddddddddddddddddddddddddddddddd"
@@ -4293,6 +4380,11 @@ mod tests {
                 assert_eq!(value["Id"], "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
 
                 let decoded: StrictEmbyBaseItem = serde_json::from_value(value).unwrap();
+                assert_eq!(decoded.size, Some(5_000_000_000));
+                assert_eq!(decoded.bitrate, Some(4_200_000));
+                assert_eq!(decoded.file_name.as_deref(), Some("Drama Feature.mkv"));
+                assert_eq!(decoded.genre_items[0].id, 42);
+                assert_eq!(decoded.studios[0].id, 41);
                 assert_eq!(decoded.location_type, None);
                 assert_eq!(decoded.people[0].person_type, None);
                 assert_eq!(decoded.people[1].person_type, None);
@@ -4348,6 +4440,9 @@ mod tests {
                 value["MediaSources"][0]["MediaStreams"][2]["DeliveryMethod"], "Drop",
                 "{path}"
             );
+            assert!(value.get("Size").is_none(), "{path}");
+            assert!(value.get("Bitrate").is_none(), "{path}");
+            assert!(value.get("FileName").is_none(), "{path}");
         }
     }
 
