@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, HashSet};
 use jellyfin_extensions::StringExtensions;
 use sea_orm::{
     ActiveEnum, ActiveModelTrait,
-    ActiveValue::Set,
+    ActiveValue::{NotSet, Set},
     ColumnTrait, ConnectionTrait, DatabaseTransaction, DbBackend, DbErr, EntityTrait,
     IntoActiveModel, QueryFilter, QueryOrder, QuerySelect, Statement, TransactionTrait,
     sea_query::{Expr, OnConflict},
@@ -483,6 +483,7 @@ async fn replace_values(
         };
         let stored = item_value::Entity::insert(item_value::ActiveModel {
             item_value_id: Set(Uuid::new_v4()),
+            emby_id: NotSet,
             value_type: Set(value_type),
             value: Set(value),
             clean_value: Set(clean_value),
@@ -544,6 +545,7 @@ async fn replace_studios(
             .take(128)
             .map(|(clean_name, name)| item_value::ActiveModel {
                 item_value_id: Set(Uuid::new_v4()),
+                emby_id: NotSet,
                 value_type: Set(item_value::ItemValueType::Studios),
                 value: Set(name),
                 clean_value: Set(clean_name),

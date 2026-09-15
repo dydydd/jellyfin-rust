@@ -460,7 +460,7 @@ async fn assert_item_by_name_index(database: &DatabaseConnection) {
     assert!(!definition.contains("UNIQUE"));
     assert!(definition.contains("clean_name"));
 }
-use jellyfin_migration::CreateItemValuesMigration;
+use jellyfin_migration::{AddItemValueEmbyIdsMigration, CreateItemValuesMigration};
 use sea_orm::{
     ColumnTrait, ConnectionTrait, DatabaseConnection, EntityTrait, PaginatorTrait, QueryFilter,
     QueryResult, Statement, TransactionTrait, TryGetable,
@@ -514,6 +514,10 @@ async fn prepare_database() -> DatabaseConnection {
         .up(&schema)
         .await
         .expect("item-value DDL must remain idempotent");
+    AddItemValueEmbyIdsMigration
+        .up(&schema)
+        .await
+        .expect("reapplying Emby item-value ids must succeed");
     database
 }
 
@@ -530,6 +534,7 @@ async fn assert_lookup_links_and_concurrency(
         database, items, values, &seeded,
     ))
     .await;
+    assert_stable_unique_emby_ids(database, values, &seeded).await;
     seeded.item_ids.extend(concurrent_ids);
     Fixtures {
         item_ids: seeded.item_ids,
@@ -667,6 +672,65 @@ async fn assert_bidirectional_lookups(values: &ItemValueRepository, seeded: &See
     assert_eq!(linked_items.len(), 3);
 }
 
+async fn assert_stable_unique_emby_ids(
+    database: &DatabaseConnection,
+    values: &ItemValueRepository,
+    seeded: &SeededGenre,
+) {
+    assert!(seeded.genre.emby_id > 0);
+    let pair = values
+        .value_pairs_for_items(&[seeded.first_item_id], item_value::ItemValueType::Genre)
+        .await
+        .expect("item value pairs")
+        .remove(&seeded.first_item_id)
+        .expect("first item value pairs")
+        .into_iter()
+        .find(|pair| pair.id == seeded.genre.item_value_id)
+        .expect("seeded genre pair");
+    assert_eq!(pair.emby_id, seeded.genre.emby_id);
+    assert_eq!(pair.value, seeded.exact_value);
+
+    let schema = SchemaManager::new(database);
+    AddItemValueEmbyIdsMigration
+        .up(&schema)
+        .await
+        .expect("Emby id migration must remain idempotent with existing rows");
+    let existing = values
+        .upsert(item_value::ItemValueType::Genre, &seeded.normalized)
+        .await
+        .expect("existing normalized genre upsert");
+    assert_eq!(existing.item_value_id, seeded.genre.item_value_id);
+    assert_eq!(existing.emby_id, seeded.genre.emby_id);
+
+    let new_value = values
+        .upsert(
+            item_value::ItemValueType::Genre,
+            &format!("New Emby Id {}", Uuid::new_v4().simple()),
+        )
+        .await
+        .expect("new item value after Emby id migration");
+    assert!(new_value.emby_id > 0);
+    assert_ne!(new_value.emby_id, existing.emby_id);
+
+    let counts = database
+        .query_one(Statement::from_string(
+            database.get_database_backend(),
+            "SELECT COUNT(*)::bigint AS total, \
+                    COUNT(DISTINCT emby_id)::bigint AS distinct_total, \
+                    COUNT(*) FILTER (WHERE emby_id IS NULL)::bigint AS null_total \
+             FROM jellyfin.item_values"
+                .to_owned(),
+        ))
+        .await
+        .expect("Emby id uniqueness query")
+        .expect("Emby id uniqueness row");
+    let total = i64::try_get(&counts, "", "total").expect("total item values");
+    let distinct_total = i64::try_get(&counts, "", "distinct_total").expect("distinct Emby ids");
+    let null_total = i64::try_get(&counts, "", "null_total").expect("null Emby ids");
+    assert_eq!(distinct_total, total);
+    assert_eq!(null_total, 0);
+}
+
 async fn assert_concurrent_deduplication(
     database: &DatabaseConnection,
     items: &BaseItemRepository,
@@ -749,11 +813,42 @@ async fn assert_postgres_catalog(database: &DatabaseConnection) {
     for expected in [
         "item_values_type_value_key",
         "item_values_type_clean_value_key",
+        "item_values_emby_id_key",
         "item_value_map_pkey",
         "item_value_map_item_idx",
     ] {
         assert!(indexes.iter().any(|name| name == expected));
     }
+
+    let identity = database
+        .query_one(Statement::from_string(
+            database.get_database_backend(),
+            "SELECT data_type, is_nullable, is_identity, identity_generation \
+             FROM information_schema.columns \
+             WHERE table_schema = 'jellyfin' \
+               AND table_name = 'item_values' \
+               AND column_name = 'emby_id'"
+                .to_owned(),
+        ))
+        .await
+        .expect("Emby id column catalog query")
+        .expect("Emby id column");
+    assert_eq!(
+        String::try_get(&identity, "", "data_type").expect("Emby id data type"),
+        "bigint"
+    );
+    assert_eq!(
+        String::try_get(&identity, "", "is_nullable").expect("Emby id nullability"),
+        "NO"
+    );
+    assert_eq!(
+        String::try_get(&identity, "", "is_identity").expect("Emby identity marker"),
+        "YES"
+    );
+    assert_eq!(
+        String::try_get(&identity, "", "identity_generation").expect("Emby identity generation"),
+        "BY DEFAULT"
+    );
 }
 
 async fn assert_postgres_query_plans(database: &DatabaseConnection, fixtures: &Fixtures) {

@@ -2,8 +2,10 @@ use std::{collections::HashMap, fmt::Write as _};
 
 use jellyfin_extensions::StringExtensions;
 use sea_orm::{
-    ActiveValue::Set, ColumnTrait, ConnectionTrait, DbBackend, DbErr, EntityTrait, FromQueryResult,
-    QueryFilter, QueryOrder, Statement, TransactionTrait, Value as SeaValue, sea_query::OnConflict,
+    ActiveValue::{NotSet, Set},
+    ColumnTrait, ConnectionTrait, DbBackend, DbErr, EntityTrait, FromQueryResult, QueryFilter,
+    QueryOrder, Statement, TransactionTrait, Value as SeaValue,
+    sea_query::OnConflict,
 };
 use thiserror::Error;
 use uuid::Uuid;
@@ -101,6 +103,7 @@ pub struct ItemValueCounts {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ItemValuePair {
     pub id: Uuid,
+    pub emby_id: i64,
     pub value: String,
 }
 
@@ -404,7 +407,7 @@ impl ItemValueRepository {
             .query_all(Statement::from_sql_and_values(
                 DbBackend::Postgres,
                 format!(
-                    "SELECT map.item_id, value.item_value_id, value.value \
+                    "SELECT map.item_id, value.item_value_id, value.emby_id, value.value \
                      FROM jellyfin.item_value_map AS map \
                      INNER JOIN jellyfin.item_values AS value \
                        ON value.item_value_id = map.item_value_id \
@@ -420,6 +423,7 @@ impl ItemValueRepository {
             let item_id = row.try_get("", "item_id")?;
             let pair = ItemValuePair {
                 id: row.try_get("", "item_value_id")?,
+                emby_id: row.try_get("", "emby_id")?,
                 value: row.try_get("", "value")?,
             };
             result.entry(item_id).or_default().push(pair);
@@ -1836,6 +1840,7 @@ where
     }
     let active = item_value::ActiveModel {
         item_value_id: Set(Uuid::new_v4()),
+        emby_id: NotSet,
         value_type: Set(value_type),
         value: Set(value.to_owned()),
         clean_value: Set(clean_value),

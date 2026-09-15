@@ -22,6 +22,7 @@ pub enum ItemValueType {
 pub struct Model {
     #[sea_orm(primary_key, auto_increment = false)]
     pub item_value_id: Uuid,
+    pub emby_id: i64,
     #[sea_orm(column_name = "type")]
     pub value_type: ItemValueType,
     pub value: String,
