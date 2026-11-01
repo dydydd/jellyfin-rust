@@ -9,8 +9,7 @@ use jellyfin_controller::{MediaStreamService, UserService};
 use jellyfin_data::{
     ApiKeyRepository, BaseItemImageRepository, BaseItemImageType, BaseItemRepository,
     DatabaseConfig, DeviceRepository, ItemValueRepository, LinkedChildRepository, NewBaseItem,
-    NewBaseItemImage, NewDevice, NewTrickplayInfo, NewUserData, PlaylistRepository,
-    TrickplayInfoRepository, UserDataRepository,
+    NewBaseItemImage, NewDevice, NewUserData, PlaylistRepository, UserDataRepository,
     entities::item_value,
     entities::{user, user_data},
 };
@@ -101,230 +100,6 @@ async fn item_collections_match_signed_pagination_contract() {
     let _guard = LIBRARY_TEST_LOCK.lock().await;
     let fixture = Fixture::new().await;
     assert_collections_signed_paging(&fixture).await;
-    fixture.cleanup().await;
-}
-
-#[tokio::test]
-async fn ancestors_and_collections_apply_target_user_policy_and_project_requested_fields() {
-    let _guard = LIBRARY_TEST_LOCK.lock().await;
-    let fixture = Fixture::new().await;
-    let items = fixture.items();
-    let root = items.ensure_user_root().await.expect("user root");
-    let hidden_outer = create_item(
-        &items,
-        "CollectionFolder",
-        "Hidden outer library",
-        root.id,
-        None,
-    )
-    .await;
-    let visible_folder = create_item(
-        &items,
-        "CollectionFolder",
-        "Visible nested library",
-        hidden_outer.id,
-        None,
-    )
-    .await;
-    let hidden_folder = create_item(
-        &items,
-        "CollectionFolder",
-        "Hidden sibling library",
-        root.id,
-        None,
-    )
-    .await;
-    let visible_source = create_item(
-        &items,
-        "Movie",
-        "Visible collection source",
-        visible_folder.id,
-        None,
-    )
-    .await;
-    let hidden_source = create_item(
-        &items,
-        "Movie",
-        "Hidden collection source",
-        hidden_folder.id,
-        None,
-    )
-    .await;
-    let visible_collection = create_item(
-        &items,
-        "BoxSet",
-        "Visible containing collection",
-        visible_folder.id,
-        None,
-    )
-    .await;
-    let hidden_collection = create_item(
-        &items,
-        "BoxSet",
-        "Hidden containing collection",
-        hidden_folder.id,
-        None,
-    )
-    .await;
-    let linked_children = LinkedChildRepository::new(fixture.database.clone());
-    linked_children
-        .add_manual(visible_collection.id, &[visible_source.id])
-        .await
-        .expect("visible collection link");
-    linked_children
-        .add_manual(hidden_collection.id, &[visible_source.id])
-        .await
-        .expect("hidden collection link");
-
-    favorite(
-        &UserDataRepository::new(fixture.database.clone()),
-        fixture.user_id,
-        visible_collection.id,
-    )
-    .await;
-
-    let mut policy = UserPolicy {
-        authentication_provider_id: Some(UserPolicy::DEFAULT_AUTHENTICATION_PROVIDER_ID.to_owned()),
-        password_reset_provider_id: Some(UserPolicy::DEFAULT_PASSWORD_RESET_PROVIDER_ID.to_owned()),
-        ..UserPolicy::default()
-    };
-    policy.enable_all_folders = false;
-    policy.enabled_folders = vec![visible_folder.id];
-    UserService::new(fixture.database.clone())
-        .update_policy(fixture.user_id, &policy)
-        .await
-        .expect("restricted relationship-route policy");
-
-    for route in [
-        format!(
-            "/Items/{}/Ancestors?UserId={}",
-            hidden_source.id, fixture.user_id
-        ),
-        format!(
-            "/items/{}/ancestors?userid={}",
-            hidden_source.id, fixture.user_id
-        ),
-        format!(
-            "/Items/{}/Collections?userId={}",
-            hidden_source.id, fixture.user_id
-        ),
-        format!(
-            "/items/{}/collections?userid={}",
-            hidden_source.id, fixture.user_id
-        ),
-    ] {
-        assert_eq!(
-            fixture
-                .request("GET", &route, Some(&fixture.user_token))
-                .await
-                .status(),
-            StatusCode::NOT_FOUND,
-            "{route}"
-        );
-    }
-
-    for route in [
-        format!(
-            "/Items/{}/Ancestors?userId={}",
-            visible_source.id, fixture.user_id
-        ),
-        format!(
-            "/items/{}/ancestors?UserId={}",
-            visible_source.id, fixture.user_id
-        ),
-    ] {
-        let ancestors = fixture.json("GET", &route, &fixture.user_token).await;
-        assert_eq!(
-            ancestors
-                .as_array()
-                .expect("ancestor array")
-                .iter()
-                .map(|item| item["Id"].as_str().expect("ancestor id"))
-                .collect::<Vec<_>>(),
-            [
-                visible_folder.id.simple().to_string(),
-                root.id.simple().to_string(),
-            ],
-            "{route}"
-        );
-    }
-
-    for route in [
-        format!(
-            "/Items/{}/Collections?UserId={}&Fields=CanDelete",
-            visible_source.id, fixture.user_id
-        ),
-        format!(
-            "/items/{}/collections?userid={}&fields=candelete",
-            visible_source.id, fixture.user_id
-        ),
-        format!(
-            "/Items/{}/Collections?userId={}&fields=1",
-            visible_source.id, fixture.user_id
-        ),
-        format!(
-            "/items/{}/collections?userid={}&fields=CanDelete&fields=ProviderIds",
-            visible_source.id, fixture.user_id
-        ),
-    ] {
-        let collections = fixture.json("GET", &route, &fixture.user_token).await;
-        assert_eq!(collections["TotalRecordCount"], 1, "{route}");
-        assert_eq!(collections["StartIndex"], 0, "{route}");
-        let collection_items = collections["Items"].as_array().expect("collection items");
-        assert_eq!(collection_items.len(), 1, "{route}");
-        assert_eq!(
-            collection_items[0]["Id"],
-            visible_collection.id.simple().to_string(),
-            "{route}"
-        );
-        assert!(collection_items[0]["CanDelete"].is_boolean(), "{route}");
-        assert_eq!(
-            collection_items[0]["UserData"]["IsFavorite"], true,
-            "{route}"
-        );
-    }
-
-    let paged = fixture
-        .json(
-            "GET",
-            &format!(
-                "/items/{}/collections?userid={}&startindex=0&limit=0&fields=CanDelete",
-                visible_source.id, fixture.user_id
-            ),
-            &fixture.user_token,
-        )
-        .await;
-    assert_eq!(paged["TotalRecordCount"], 1);
-    assert!(
-        paged["Items"]
-            .as_array()
-            .expect("paged collections")
-            .is_empty()
-    );
-
-    fixture.cleanup().await;
-}
-
-#[tokio::test]
-async fn library_relationship_routes_treat_empty_user_id_as_current_user() {
-    let _guard = LIBRARY_TEST_LOCK.lock().await;
-    let fixture = Fixture::new().await;
-    let nil = Uuid::nil();
-    for route in [
-        format!("/items/{}/ancestors?userid={nil}", fixture.grandchild_id),
-        format!("/Items/{}/Collections?UserId={nil}", fixture.grandchild_id),
-        format!("/items/{}/themesongs?userid={nil}", fixture.grandchild_id),
-        format!("/Items/{}/ThemeMedia?userId={nil}", fixture.grandchild_id),
-    ] {
-        assert_eq!(
-            fixture
-                .request("GET", &route, Some(&fixture.user_token))
-                .await
-                .status(),
-            StatusCode::OK,
-            "{route}"
-        );
-    }
     fixture.cleanup().await;
 }
 
@@ -761,49 +536,11 @@ async fn assert_audio_stream(fixture: &Fixture) {
         to_bytes(range.into_body(), usize::MAX).await.unwrap(),
         &media_bytes[10..=19]
     );
-    // A non-static container is the requested transcode target, not a claim
-    // about the source file's extension.
     assert_eq!(
         fixture
             .request(
                 "GET",
                 &format!("/Audio/{}/stream.mp3", fixture.stream_audio_id),
-                Some(&fixture.user_token),
-            )
-            .await
-            .status(),
-        StatusCode::OK
-    );
-    assert_eq!(
-        fixture
-            .request(
-                "GET",
-                &format!("/Audio/{}/stream?Container=mp3", fixture.stream_audio_id),
-                Some(&fixture.user_token),
-            )
-            .await
-            .status(),
-        StatusCode::OK
-    );
-    assert_eq!(
-        fixture
-            .request(
-                "GET",
-                &format!("/Audio/{}/stream.mp3?static=true", fixture.stream_audio_id),
-                Some(&fixture.user_token),
-            )
-            .await
-            .status(),
-        StatusCode::UNSUPPORTED_MEDIA_TYPE
-    );
-    assert_eq!(
-        fixture
-            .request(
-                "GET",
-                &format!(
-                    "/Audio/{}/stream?container=mp3&Static=true",
-                    fixture.stream_audio_id
-                ),
                 Some(&fixture.user_token),
             )
             .await
@@ -1224,117 +961,25 @@ async fn assert_instant_mix(fixture: &Fixture) {
 }
 
 async fn assert_ancestors(fixture: &Fixture) {
-    BaseItemImageRepository::new(fixture.database.clone())
-        .replace(
-            fixture.child_id,
-            &[NewBaseItemImage {
-                image_type: BaseItemImageType::Primary,
-                image_index: 0,
-                path: "/media/ancestor-primary.jpg".to_owned(),
-                date_modified: Utc::now(),
-                width: Some(600),
-                height: Some(900),
-                blurhash: Some("ancestor-blurhash".to_owned()),
-            }],
+    let ancestors = fixture
+        .json(
+            "GET",
+            &format!("/Items/{}/Ancestors", fixture.child_id),
+            &fixture.user_token,
         )
-        .await
-        .expect("ancestor primary image");
-    MediaStreamService::new(fixture.database.clone())
-        .save_media_streams(
-            fixture.child_id,
-            vec![MediaStream {
-                index: 0,
-                stream_type: MediaStreamType::Video,
-                codec: Some("h264".to_owned()),
-                ..MediaStream::default()
-            }],
-        )
-        .await
-        .expect("ancestor media stream");
-    TrickplayInfoRepository::new(fixture.database.clone())
-        .upsert(
-            fixture.child_id,
-            NewTrickplayInfo {
-                width: 320,
-                height: 180,
-                tile_width: 5,
-                tile_height: 5,
-                thumbnail_count: 25,
-                interval: 10_000,
-                bandwidth: 42_000,
-            },
-        )
-        .await
-        .expect("ancestor trickplay metadata");
-
-    for route in [
-        format!(
-            "/Items/{}/Ancestors?userId={}",
-            fixture.grandchild_id, fixture.user_id
-        ),
-        format!(
-            "/items/{}/ancestors?UserId={}",
-            fixture.grandchild_id, fixture.user_id
-        ),
-        format!(
-            "/Items/{}/Ancestors?userid={}",
-            fixture.grandchild_id, fixture.user_id
-        ),
-    ] {
-        let ancestors = fixture.json("GET", &route, &fixture.user_token).await;
-        let ancestors = ancestors.as_array().expect("ancestor array");
-        let ancestor_ids = ancestors
-            .iter()
-            .map(|item| item["Id"].as_str().unwrap())
-            .collect::<Vec<_>>();
-        assert_eq!(
-            ancestor_ids,
-            vec![
-                fixture.child_id.simple().to_string(),
-                fixture.parent_id.simple().to_string(),
-                jellyfin_data::USER_ROOT_FOLDER_ID.simple().to_string()
-            ],
-            "{route}"
-        );
-
-        let movie = &ancestors[0];
-        assert_eq!(movie["UserData"]["IsFavorite"], true, "{route}");
-        assert!(movie["ImageTags"]["Primary"].is_string(), "{route}");
-        assert_eq!(
-            movie["ImageBlurHashes"]["Primary"]
-                .as_object()
-                .expect("primary blur hashes")
-                .values()
-                .next(),
-            Some(&json!("ancestor-blurhash")),
-            "{route}"
-        );
-        assert!(movie.get("MediaSourceCount").is_none(), "{route}");
-        assert_eq!(movie["MediaSources"][0]["MediaStreams"][0]["Type"], "Video");
-        assert_eq!(movie["MediaStreams"][0]["Type"], "Video", "{route}");
-        assert_eq!(
-            movie["Trickplay"][fixture.child_id.simple().to_string()]["320"]["Bandwidth"],
-            42_000,
-            "{route}"
-        );
-        assert!(movie["Chapters"].is_array(), "{route}");
-        assert!(movie["ExternalUrls"].is_array(), "{route}");
-        assert!(movie["RemoteTrailers"].is_array(), "{route}");
-    }
-
+        .await;
+    let ancestor_ids = ancestors
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|item| item["Id"].as_str().unwrap())
+        .collect::<Vec<_>>();
     assert_eq!(
-        fixture
-            .request(
-                "GET",
-                &format!(
-                    "/Items/{}/Ancestors?UserId={}",
-                    fixture.grandchild_id, fixture.admin_id
-                ),
-                Some(&fixture.user_token),
-            )
-            .await
-            .status(),
-        StatusCode::FORBIDDEN
+        ancestor_ids,
+        vec![
+            fixture.parent_id.simple().to_string(),
+            jellyfin_data::USER_ROOT_FOLDER_ID.simple().to_string()
+        ]
     );
 }
 

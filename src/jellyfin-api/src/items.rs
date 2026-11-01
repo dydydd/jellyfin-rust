@@ -6,232 +6,18 @@ use std::{
 use axum::{
     Json,
     extract::{OriginalUri, Path, State},
-    http::{HeaderMap, Uri},
-    response::{IntoResponse, Response},
+    http::HeaderMap,
 };
-use axum_extra::extract::{Query, QueryRejection};
+use axum_extra::extract::Query;
 use chrono::{DateTime, Utc};
 use jellyfin_controller::{SearchProviderQuery, UserError};
-use jellyfin_data::{
-    BaseItemFacet, BaseItemOrder, BaseItemPage, BaseItemQuery, entities::base_item,
-};
+use jellyfin_data::{BaseItemOrder, BaseItemPage, BaseItemQuery, entities::base_item};
 use jellyfin_model::{ImageType, SortOrder, UserConfiguration};
 use serde::{Deserialize, Serialize};
 use std::str::FromStr;
 use uuid::Uuid;
 
-use crate::{ApiError, AppState, EmbyPersonCreditRecord, authentication, user_library};
-
-const ITEM_TYPES: &[&str] = &[
-    "AggregateFolder",
-    "Audio",
-    "AudioBook",
-    "BasePluginFolder",
-    "Book",
-    "BoxSet",
-    "Channel",
-    "ChannelFolderItem",
-    "CollectionFolder",
-    "Episode",
-    "Folder",
-    "Genre",
-    "ManualPlaylistsFolder",
-    "Movie",
-    "LiveTvChannel",
-    "LiveTvProgram",
-    "MusicAlbum",
-    "MusicArtist",
-    "MusicGenre",
-    "MusicVideo",
-    "Person",
-    "Photo",
-    "PhotoAlbum",
-    "Playlist",
-    "PlaylistsFolder",
-    "Program",
-    "Recording",
-    "Season",
-    "Series",
-    "Studio",
-    "Trailer",
-    "TvChannel",
-    "TvProgram",
-    "UserRootFolder",
-    "UserView",
-    "Video",
-    "Year",
-];
-const MEDIA_TYPES: &[&str] = &["Unknown", "Video", "Audio", "Photo", "Book"];
-const LOCATION_TYPES: &[&str] = &["FileSystem", "Remote", "Virtual", "Offline"];
-const IMAGE_TYPES: &[&str] = &[
-    "Primary",
-    "Art",
-    "Backdrop",
-    "Banner",
-    "Logo",
-    "Thumb",
-    "Disc",
-    "Box",
-    "Screenshot",
-    "Menu",
-    "Chapter",
-    "BoxRear",
-    "Profile",
-];
-const VIDEO_TYPES: &[&str] = &["VideoFile", "Iso", "Dvd", "BluRay"];
-const SERIES_STATUSES: &[&str] = &["Continuing", "Ended", "Unreleased"];
-const SORT_ORDERS: &[&str] = &["Ascending", "Descending"];
-const ITEM_FIELDS: &[&str] = &[
-    "AirTime",
-    "CanDelete",
-    "CanDownload",
-    "ChannelInfo",
-    "Chapters",
-    "Trickplay",
-    "ChildCount",
-    "CumulativeRunTimeTicks",
-    "CustomRating",
-    "DateCreated",
-    "DateLastMediaAdded",
-    "DisplayPreferencesId",
-    "Etag",
-    "ExternalUrls",
-    "Genres",
-    "ItemCounts",
-    "MediaSourceCount",
-    "MediaSources",
-    "OriginalTitle",
-    "Overview",
-    "ParentId",
-    "Path",
-    "People",
-    "PlayAccess",
-    "ProductionLocations",
-    "ProviderIds",
-    "PrimaryImageAspectRatio",
-    "RecursiveItemCount",
-    "Settings",
-    "SeriesStudio",
-    "SortName",
-    "SpecialEpisodeNumbers",
-    "Studios",
-    "Taglines",
-    "Tags",
-    "RemoteTrailers",
-    "MediaStreams",
-    "SeasonUserData",
-    "DateLastRefreshed",
-    "DateLastSaved",
-    "RefreshState",
-    "ChannelImage",
-    "EnableMediaSourceDisplay",
-    "Width",
-    "Height",
-    "ExtraIds",
-    "LocalTrailerCount",
-    "IsHD",
-    "SpecialFeatureCount",
-];
-const ITEM_SORTS: &[&str] = &[
-    "Default",
-    "AiredEpisodeOrder",
-    "Album",
-    "AlbumArtist",
-    "Artist",
-    "DateCreated",
-    "OfficialRating",
-    "DatePlayed",
-    "PremiereDate",
-    "StartDate",
-    "SortName",
-    "Name",
-    "Random",
-    "Runtime",
-    "CommunityRating",
-    "ProductionYear",
-    "PlayCount",
-    "CriticRating",
-    "IsFolder",
-    "IsUnplayed",
-    "IsPlayed",
-    "SeriesSortName",
-    "VideoBitRate",
-    "AirTime",
-    "Studio",
-    "IsFavoriteOrLiked",
-    "DateLastContentAdded",
-    "SeriesDatePlayed",
-    "ParentIndexNumber",
-    "IndexNumber",
-];
-
-fn parse_official_query_enum(
-    value: &str,
-    variants: &'static [&'static str],
-) -> Result<&'static str, ()> {
-    let value = value.trim();
-    if let Ok(index) = value.parse::<i32>() {
-        return usize::try_from(index)
-            .ok()
-            .and_then(|index| variants.get(index).copied())
-            .ok_or(());
-    }
-    variants
-        .iter()
-        .copied()
-        .find(|variant| variant.eq_ignore_ascii_case(value))
-        .ok_or(())
-}
-
-macro_rules! official_query_enum_collection {
-    ($wrapper:ident, $deserializer:ident, $variants:ident) => {
-        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-        struct $wrapper(&'static str);
-
-        impl FromStr for $wrapper {
-            type Err = ();
-
-            fn from_str(value: &str) -> Result<Self, Self::Err> {
-                parse_official_query_enum(value, $variants).map(Self)
-            }
-        }
-
-        fn $deserializer<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
-        where
-            D: serde::Deserializer<'de>,
-        {
-            crate::query::comma::deserialize_model_binder::<D, $wrapper>(deserializer)
-                .map(|values| values.into_iter().map(|value| value.0.to_owned()).collect())
-        }
-    };
-}
-
-official_query_enum_collection!(ItemTypeQueryValue, deserialize_item_types, ITEM_TYPES);
-official_query_enum_collection!(MediaTypeQueryValue, deserialize_media_types, MEDIA_TYPES);
-official_query_enum_collection!(
-    LocationTypeQueryValue,
-    deserialize_location_types,
-    LOCATION_TYPES
-);
-official_query_enum_collection!(ImageTypeQueryValue, deserialize_image_types, IMAGE_TYPES);
-official_query_enum_collection!(VideoTypeQueryValue, deserialize_video_types, VIDEO_TYPES);
-official_query_enum_collection!(
-    SeriesStatusQueryValue,
-    deserialize_series_statuses,
-    SERIES_STATUSES
-);
-official_query_enum_collection!(ItemFieldQueryValue, deserialize_item_fields, ITEM_FIELDS);
-official_query_enum_collection!(ItemSortQueryValue, deserialize_item_sorts, ITEM_SORTS);
-official_query_enum_collection!(SortOrderQueryValue, deserialize_sort_orders, SORT_ORDERS);
-
-pub(crate) fn deserialize_library_item_fields<'de, D>(
-    deserializer: D,
-) -> Result<Vec<String>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    deserialize_item_fields(deserializer)
-}
+use crate::{ApiError, AppState, authentication, user_library};
 
 #[derive(Debug, Default, Deserialize)]
 pub(crate) struct ItemsQuery {
@@ -347,7 +133,7 @@ pub(crate) struct ItemsQuery {
         rename = "locationTypes",
         alias = "LocationTypes",
         alias = "locationtypes",
-        deserialize_with = "deserialize_location_types"
+        deserialize_with = "crate::query::comma::deserialize"
     )]
     location_types: Vec<String>,
     #[serde(
@@ -355,7 +141,7 @@ pub(crate) struct ItemsQuery {
         rename = "excludeLocationTypes",
         alias = "ExcludeLocationTypes",
         alias = "excludelocationtypes",
-        deserialize_with = "deserialize_location_types"
+        deserialize_with = "crate::query::comma::deserialize"
     )]
     exclude_location_types: Vec<String>,
     #[serde(
@@ -439,14 +225,14 @@ pub(crate) struct ItemsQuery {
         default,
         rename = "filters",
         alias = "Filters",
-        deserialize_with = "crate::query::comma::deserialize_model_binder"
+        deserialize_with = "crate::query::comma::deserialize"
     )]
     filters: Vec<ItemFilter>,
     #[serde(
         default,
         rename = "genres",
         alias = "Genres",
-        deserialize_with = "crate::query::pipe::deserialize"
+        deserialize_with = "crate::query::comma::deserialize"
     )]
     genres: Vec<String>,
     #[serde(
@@ -460,7 +246,7 @@ pub(crate) struct ItemsQuery {
         default,
         rename = "tags",
         alias = "Tags",
-        deserialize_with = "crate::query::pipe::deserialize"
+        deserialize_with = "crate::query::comma::deserialize"
     )]
     tags: Vec<String>,
     #[serde(default, rename = "person", alias = "Person")]
@@ -578,7 +364,7 @@ pub(crate) struct ItemsQuery {
         rename = "includeItemTypes",
         alias = "IncludeItemTypes",
         alias = "includeitemtypes",
-        deserialize_with = "deserialize_item_types"
+        deserialize_with = "crate::query::comma::deserialize"
     )]
     include_item_types: Vec<String>,
     #[serde(
@@ -586,7 +372,7 @@ pub(crate) struct ItemsQuery {
         rename = "excludeItemTypes",
         alias = "ExcludeItemTypes",
         alias = "excludeitemtypes",
-        deserialize_with = "deserialize_item_types"
+        deserialize_with = "crate::query::comma::deserialize"
     )]
     exclude_item_types: Vec<String>,
     #[serde(
@@ -594,7 +380,7 @@ pub(crate) struct ItemsQuery {
         rename = "mediaTypes",
         alias = "MediaTypes",
         alias = "mediatypes",
-        deserialize_with = "deserialize_media_types"
+        deserialize_with = "crate::query::comma::deserialize"
     )]
     media_types: Vec<String>,
     #[serde(
@@ -602,7 +388,7 @@ pub(crate) struct ItemsQuery {
         rename = "imageTypes",
         alias = "ImageTypes",
         alias = "imagetypes",
-        deserialize_with = "deserialize_image_types"
+        deserialize_with = "crate::query::comma::deserialize"
     )]
     image_types: Vec<String>,
     #[serde(
@@ -618,7 +404,7 @@ pub(crate) struct ItemsQuery {
         rename = "videoTypes",
         alias = "VideoTypes",
         alias = "videotypes",
-        deserialize_with = "deserialize_video_types"
+        deserialize_with = "crate::query::comma::deserialize"
     )]
     video_types: Vec<String>,
     #[serde(default, rename = "isLocked", alias = "IsLocked", alias = "islocked")]
@@ -669,7 +455,7 @@ pub(crate) struct ItemsQuery {
         rename = "seriesStatus",
         alias = "SeriesStatus",
         alias = "seriesstatus",
-        deserialize_with = "deserialize_series_statuses"
+        deserialize_with = "crate::query::comma::deserialize"
     )]
     series_status: Vec<String>,
     #[serde(
@@ -729,7 +515,7 @@ pub(crate) struct ItemsQuery {
         default,
         rename = "fields",
         alias = "Fields",
-        deserialize_with = "deserialize_item_fields"
+        deserialize_with = "crate::query::comma::deserialize"
     )]
     fields: Vec<String>,
     #[serde(
@@ -749,7 +535,7 @@ pub(crate) struct ItemsQuery {
         rename = "enableImageTypes",
         alias = "EnableImageTypes",
         alias = "enableimagetypes",
-        deserialize_with = "deserialize_image_types"
+        deserialize_with = "crate::query::comma::deserialize"
     )]
     enable_image_types: Vec<String>,
     #[serde(
@@ -763,7 +549,7 @@ pub(crate) struct ItemsQuery {
         rename = "sortBy",
         alias = "SortBy",
         alias = "sortby",
-        deserialize_with = "deserialize_item_sorts"
+        deserialize_with = "crate::query::comma::deserialize"
     )]
     sort_by: Vec<String>,
     #[serde(
@@ -771,7 +557,7 @@ pub(crate) struct ItemsQuery {
         rename = "sortOrder",
         alias = "SortOrder",
         alias = "sortorder",
-        deserialize_with = "deserialize_sort_orders"
+        deserialize_with = "crate::query::comma::deserialize"
     )]
     sort_order: Vec<String>,
     #[serde(
@@ -809,15 +595,15 @@ impl FromStr for ItemFilter {
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         match value.to_ascii_lowercase().as_str() {
-            "isfolder" | "1" => Ok(Self::IsFolder),
-            "isnotfolder" | "2" => Ok(Self::IsNotFolder),
-            "isunplayed" | "3" => Ok(Self::IsUnplayed),
-            "isplayed" | "4" => Ok(Self::IsPlayed),
-            "isfavorite" | "5" => Ok(Self::IsFavorite),
-            "isresumable" | "7" => Ok(Self::IsResumable),
-            "likes" | "8" => Ok(Self::Likes),
-            "dislikes" | "9" => Ok(Self::Dislikes),
-            "isfavoriteorlikes" | "10" => Ok(Self::IsFavoriteOrLikes),
+            "isfolder" => Ok(Self::IsFolder),
+            "isnotfolder" => Ok(Self::IsNotFolder),
+            "isunplayed" => Ok(Self::IsUnplayed),
+            "isplayed" => Ok(Self::IsPlayed),
+            "isfavorite" => Ok(Self::IsFavorite),
+            "isresumable" => Ok(Self::IsResumable),
+            "likes" => Ok(Self::Likes),
+            "dislikes" => Ok(Self::Dislikes),
+            "isfavoriteorlikes" => Ok(Self::IsFavoriteOrLikes),
             _ => Err(()),
         }
     }
@@ -873,7 +659,7 @@ pub(crate) struct LatestItemsQuery {
     )]
     enable_user_data: Option<bool>,
     #[serde(default = "default_latest_limit", alias = "Limit")]
-    limit: i32,
+    limit: u64,
     #[serde(
         default = "default_true",
         rename = "groupItems",
@@ -883,8 +669,47 @@ pub(crate) struct LatestItemsQuery {
     group_items: bool,
 }
 
-const SUGGESTION_MEDIA_TYPES: &[&str] = MEDIA_TYPES;
-const SUGGESTION_ITEM_TYPES: &[&str] = ITEM_TYPES;
+const SUGGESTION_MEDIA_TYPES: &[&str] = &["Unknown", "Video", "Audio", "Photo", "Book"];
+
+const SUGGESTION_ITEM_TYPES: &[&str] = &[
+    "AggregateFolder",
+    "Audio",
+    "AudioBook",
+    "BasePluginFolder",
+    "Book",
+    "BoxSet",
+    "Channel",
+    "ChannelFolderItem",
+    "CollectionFolder",
+    "Episode",
+    "Folder",
+    "Genre",
+    "ManualPlaylistsFolder",
+    "Movie",
+    "LiveTvChannel",
+    "LiveTvProgram",
+    "MusicAlbum",
+    "MusicArtist",
+    "MusicGenre",
+    "MusicVideo",
+    "Person",
+    "Photo",
+    "PhotoAlbum",
+    "Playlist",
+    "PlaylistsFolder",
+    "Program",
+    "Recording",
+    "Season",
+    "Series",
+    "Studio",
+    "Trailer",
+    "TvChannel",
+    "TvProgram",
+    "UserRootFolder",
+    "UserView",
+    "Video",
+    "Year",
+];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct SuggestionMediaType(&'static str);
@@ -899,7 +724,7 @@ impl FromStr for SuggestionMediaType {
     type Err = ();
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
-        parse_official_query_enum(value, SUGGESTION_MEDIA_TYPES).map(Self)
+        parse_suggestion_enum(value, SUGGESTION_MEDIA_TYPES).map(Self)
     }
 }
 
@@ -916,8 +741,26 @@ impl FromStr for SuggestionItemType {
     type Err = ();
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
-        parse_official_query_enum(value, SUGGESTION_ITEM_TYPES).map(Self)
+        parse_suggestion_enum(value, SUGGESTION_ITEM_TYPES).map(Self)
     }
+}
+
+fn parse_suggestion_enum(
+    value: &str,
+    variants: &'static [&'static str],
+) -> Result<&'static str, ()> {
+    let value = value.trim();
+    if let Ok(index) = value.parse::<i32>() {
+        return usize::try_from(index)
+            .ok()
+            .and_then(|index| variants.get(index).copied())
+            .ok_or(());
+    }
+    variants
+        .iter()
+        .copied()
+        .find(|variant| variant.eq_ignore_ascii_case(value))
+        .ok_or(())
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -961,7 +804,7 @@ pub(crate) struct SuggestionsQuery {
 #[serde(rename_all = "PascalCase")]
 pub(crate) struct SuggestionsResult {
     items: Vec<user_library::BaseItemDto>,
-    total_record_count: i32,
+    total_record_count: usize,
     start_index: i32,
 }
 
@@ -969,14 +812,9 @@ pub(crate) async fn get(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     OriginalUri(uri): OriginalUri,
-    query: Result<Query<ItemsQuery>, QueryRejection>,
+    Query(query): Query<ItemsQuery>,
 ) -> Result<Json<user_library::BaseItemQueryResult>, ApiError> {
-    let identity = authentication::authenticated_identity(&state, &headers, Some(&uri)).await?;
-    let Query(mut query) = query.map_err(|_| ApiError::InvalidRequest)?;
-    exclude_emby_game_types_from_jellyfin(&uri, &mut query);
-    let mut result = get_for_identity(state, identity, query.user_id, query).await?;
-    user_library::omit_incompatible_emby_relations(&uri, &mut result.0.items);
-    Ok(result)
+    get_for(state, headers, Some(&uri), query.user_id, query).await
 }
 
 pub(crate) async fn get_legacy(
@@ -984,39 +822,9 @@ pub(crate) async fn get_legacy(
     headers: HeaderMap,
     OriginalUri(uri): OriginalUri,
     Path(user_id): Path<Uuid>,
-    query: Result<Query<ItemsQuery>, QueryRejection>,
+    Query(query): Query<ItemsQuery>,
 ) -> Result<Json<user_library::BaseItemQueryResult>, ApiError> {
-    let identity = authentication::authenticated_identity(&state, &headers, Some(&uri)).await?;
-    let Query(mut query) = query.map_err(|_| ApiError::InvalidRequest)?;
-    exclude_emby_game_types_from_jellyfin(&uri, &mut query);
-    let mut result = get_for_identity(state, identity, Some(user_id), query).await?;
-    user_library::omit_incompatible_emby_relations(&uri, &mut result.0.items);
-    Ok(result)
-}
-
-fn exclude_emby_game_types_from_jellyfin(uri: &axum::http::Uri, query: &mut ItemsQuery) {
-    if uri
-        .path()
-        .split('/')
-        .nth(1)
-        .is_some_and(|segment| segment.eq_ignore_ascii_case("emby"))
-    {
-        return;
-    }
-    for item_type in [
-        "Game",
-        "MediaBrowser.Controller.Entities.Game",
-        "GameGenre",
-        "MediaBrowser.Controller.Entities.GameGenre",
-    ] {
-        if !query
-            .exclude_item_types
-            .iter()
-            .any(|excluded| excluded.eq_ignore_ascii_case(item_type))
-        {
-            query.exclude_item_types.push(item_type.to_owned());
-        }
-    }
+    get_for(state, headers, Some(&uri), Some(user_id), query).await
 }
 
 pub(crate) async fn query_items(
@@ -1030,70 +838,52 @@ pub(crate) async fn query_items(
 pub(crate) async fn resume(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    OriginalUri(uri): OriginalUri,
     Query(query): Query<ItemsQuery>,
 ) -> Result<Json<user_library::BaseItemQueryResult>, ApiError> {
-    let mut result = resume_for(state, headers, query.user_id, query).await?;
-    user_library::omit_incompatible_emby_relations(&uri, &mut result.0.items);
-    Ok(result)
+    resume_for(state, headers, query.user_id, query).await
 }
 
 pub(crate) async fn resume_legacy(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    OriginalUri(uri): OriginalUri,
     Path(user_id): Path<Uuid>,
     Query(query): Query<ItemsQuery>,
 ) -> Result<Json<user_library::BaseItemQueryResult>, ApiError> {
-    let mut result = resume_for(state, headers, Some(user_id), query).await?;
-    user_library::omit_incompatible_emby_relations(&uri, &mut result.0.items);
-    Ok(result)
+    resume_for(state, headers, Some(user_id), query).await
 }
 
 pub(crate) async fn latest(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    OriginalUri(uri): OriginalUri,
     Query(query): Query<LatestItemsQuery>,
 ) -> Result<Json<Vec<user_library::BaseItemDto>>, ApiError> {
-    let mut result = latest_for(state, headers, query.user_id, query).await?;
-    user_library::omit_incompatible_emby_relations(&uri, &mut result.0);
-    Ok(result)
+    latest_for(state, headers, query.user_id, query).await
 }
 
 pub(crate) async fn latest_legacy(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    OriginalUri(uri): OriginalUri,
     Path(user_id): Path<Uuid>,
     Query(query): Query<LatestItemsQuery>,
 ) -> Result<Json<Vec<user_library::BaseItemDto>>, ApiError> {
-    let mut result = latest_for(state, headers, Some(user_id), query).await?;
-    user_library::omit_incompatible_emby_relations(&uri, &mut result.0);
-    Ok(result)
+    latest_for(state, headers, Some(user_id), query).await
 }
 
 pub(crate) async fn suggestions(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    OriginalUri(uri): OriginalUri,
     Query(query): Query<SuggestionsQuery>,
 ) -> Result<Json<SuggestionsResult>, ApiError> {
-    let mut result = suggestions_for(state, headers, query.user_id, query).await?;
-    user_library::omit_incompatible_emby_relations(&uri, &mut result.0.items);
-    Ok(result)
+    suggestions_for(state, headers, query.user_id, query).await
 }
 
 pub(crate) async fn suggestions_legacy(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    OriginalUri(uri): OriginalUri,
     Path(user_id): Path<Uuid>,
     Query(query): Query<SuggestionsQuery>,
 ) -> Result<Json<SuggestionsResult>, ApiError> {
-    let mut result = suggestions_for(state, headers, Some(user_id), query).await?;
-    user_library::omit_incompatible_emby_relations(&uri, &mut result.0.items);
-    Ok(result)
+    suggestions_for(state, headers, Some(user_id), query).await
 }
 
 async fn get_for(
@@ -1104,15 +894,6 @@ async fn get_for(
     query: ItemsQuery,
 ) -> Result<Json<user_library::BaseItemQueryResult>, ApiError> {
     let identity = authentication::authenticated_identity(&state, &headers, uri).await?;
-    get_for_identity(state, identity, requested_user_id, query).await
-}
-
-async fn get_for_identity(
-    state: Arc<AppState>,
-    identity: authentication::AuthenticatedIdentity,
-    requested_user_id: Option<Uuid>,
-    query: ItemsQuery,
-) -> Result<Json<user_library::BaseItemQueryResult>, ApiError> {
     let authorized_target_user_id = identity.target_user_id(requested_user_id)?;
     let (authenticated_user, target_user_id) = match identity {
         authentication::AuthenticatedIdentity::Device(authenticated) => {
@@ -1263,219 +1044,6 @@ async fn get_for_identity(
         result,
         requested_start_index,
     )))
-}
-
-impl AppState {
-    /// Resolves an Emby discovery request through the ordinary Items binder,
-    /// target-user authorization, parent-view mapping, and stored library
-    /// policy before PostgreSQL derives a distinct facet.
-    pub async fn emby_library_facet_for_request(
-        &self,
-        headers: &HeaderMap,
-        uri: &Uri,
-        facet_name: &str,
-    ) -> Result<(Vec<String>, u64), Response> {
-        self.emby_library_facet(headers, uri, facet_name)
-            .await
-            .map(|page| (page.values, page.total_record_count))
-            .map_err(IntoResponse::into_response)
-    }
-
-    async fn emby_library_facet(
-        &self,
-        headers: &HeaderMap,
-        uri: &Uri,
-        facet_name: &str,
-    ) -> Result<jellyfin_data::BaseItemFacetPage, ApiError> {
-        let Query(mut query) =
-            Query::<ItemsQuery>::try_from_uri(uri).map_err(|_| ApiError::InvalidRequest)?;
-        let facet = match facet_name {
-            "ItemType" => BaseItemFacet::ItemType,
-            "AudioCodec" => BaseItemFacet::AudioCodec,
-            "AudioLayout" => BaseItemFacet::AudioLayout,
-            "VideoCodec" => BaseItemFacet::VideoCodec,
-            "SubtitleCodec" => BaseItemFacet::SubtitleCodec,
-            "StreamLanguage" => BaseItemFacet::StreamLanguage,
-            "Tag" => BaseItemFacet::Tag,
-            "Container" => BaseItemFacet::Container,
-            "ExtendedVideoType" => BaseItemFacet::ExtendedVideoType,
-            "OfficialRating" => BaseItemFacet::OfficialRating,
-            "ItemPrefix" => BaseItemFacet::ItemPrefix,
-            "ArtistPrefix" => BaseItemFacet::ArtistPrefix,
-            _ => return Err(ApiError::InvalidRequest),
-        };
-        let identity = authentication::authenticated_identity(self, headers, Some(uri)).await?;
-        let target_user_id = identity.target_user_id(query.user_id)?;
-        let target_user = match identity {
-            authentication::AuthenticatedIdentity::Device(authenticated) => {
-                Some(authenticated.user)
-            }
-            authentication::AuthenticatedIdentity::ApiKey(_) if target_user_id.is_nil() => None,
-            authentication::AuthenticatedIdentity::ApiKey(_) => {
-                Some(self.users.get(target_user_id).await?)
-            }
-        };
-
-        let Some(target_user) = target_user else {
-            resolve_official_rating_filters(self, &mut query).await?;
-            return Ok(self
-                .user_library
-                .query_item_facet_without_user(query.try_into()?, facet)
-                .await?);
-        };
-
-        let parent_scope =
-            resolve_user_view_parent_scope(self, &target_user, target_user_id, query.parent_id)
-                .await?;
-        query.parent_id = parent_scope.parent_id;
-        apply_items_controller_defaults(self, &target_user, target_user_id, &mut query).await?;
-        resolve_official_rating_filters(self, &mut query).await?;
-        let mut database_query: BaseItemQuery = query.try_into()?;
-        database_query.parent_ids = parent_scope.parent_ids;
-        Ok(self
-            .user_library
-            .query_item_facet(&target_user, target_user_id, database_query, facet)
-            .await?)
-    }
-
-    /// Resolves one Emby Person credit request against policy-visible items.
-    ///
-    /// The generated operation has no `UserId` query. Device authentication
-    /// therefore uses that session's user as the target, while an API key has
-    /// the same explicit user-less global semantics as shared Items queries.
-    /// The relationship lookup is one set-based query over the already
-    /// filtered item identifiers rather than one query per result.
-    pub async fn emby_person_credits_for_request(
-        &self,
-        headers: &HeaderMap,
-        uri: &Uri,
-        person_id: Uuid,
-    ) -> Result<Vec<EmbyPersonCreditRecord>, Response> {
-        self.emby_person_credits(headers, uri, person_id)
-            .await
-            .map_err(IntoResponse::into_response)
-    }
-
-    async fn emby_person_credits(
-        &self,
-        headers: &HeaderMap,
-        uri: &Uri,
-        person_id: Uuid,
-    ) -> Result<Vec<EmbyPersonCreditRecord>, ApiError> {
-        let identity = authentication::authenticated_identity(self, headers, Some(uri)).await?;
-        let person = self
-            .base_items
-            .get(person_id)
-            .await?
-            .filter(|item| {
-                ["Person", "MediaBrowser.Controller.Entities.Person"]
-                    .iter()
-                    .any(|kind| item.item_type.eq_ignore_ascii_case(kind))
-            })
-            .ok_or(ApiError::NotFound)?;
-        // An empty/missing exact name cannot map a public canonical item onto
-        // the private people credit key and is therefore not a valid Person.
-        let person_name = person
-            .name
-            .as_deref()
-            .filter(|name| !name.is_empty())
-            .ok_or(ApiError::NotFound)?;
-        let canonical_person = self
-            .persons
-            .image_item(person_name)
-            .await?
-            .filter(|canonical| canonical.id == person_id)
-            .ok_or(ApiError::NotFound)?;
-        debug_assert_eq!(canonical_person.id, person_id);
-
-        let query = BaseItemQuery {
-            person_ids: vec![person_id],
-            recursive: true,
-            ..BaseItemQuery::default()
-        };
-        let page = match identity {
-            authentication::AuthenticatedIdentity::Device(authenticated) => {
-                self.user_library
-                    .query_items(&authenticated.user, authenticated.user.id, query)
-                    .await?
-            }
-            authentication::AuthenticatedIdentity::ApiKey(_) => {
-                self.user_library.query_items_without_user(query).await?
-            }
-        };
-        let item_positions = page
-            .items
-            .iter()
-            .enumerate()
-            .map(|(position, item)| (item.id, position))
-            .collect::<HashMap<_, _>>();
-        let by_id = page
-            .items
-            .into_iter()
-            .map(|item| (item.id, item))
-            .collect::<HashMap<_, _>>();
-        let item_ids = by_id.keys().copied().collect::<Vec<_>>();
-        let mut credits = self
-            .people
-            .credits_for_person_items(person_id, &item_ids)
-            .await
-            // This lookup has no validation branch after the canonical Person
-            // and non-empty id set were established; its only possible error
-            // is PostgreSQL persistence failure.
-            .map_err(|_| ApiError::Internal)?;
-        credits.sort_by(|left, right| {
-            item_positions
-                .get(&left.item_id)
-                .cmp(&item_positions.get(&right.item_id))
-                .then_with(|| left.list_order.cmp(&right.list_order))
-                .then_with(|| {
-                    left.person_type
-                        .to_lowercase()
-                        .cmp(&right.person_type.to_lowercase())
-                })
-                .then_with(|| left.role.to_lowercase().cmp(&right.role.to_lowercase()))
-        });
-
-        Ok(credits
-            .into_iter()
-            .filter_map(|credit| {
-                let item = by_id.get(&credit.item_id)?;
-                Some(EmbyPersonCreditRecord {
-                    name: item.name.clone(),
-                    original_title: user_library::metadata_string(
-                        item.data.as_ref(),
-                        &["OriginalTitle", "original_title", "originalTitle"],
-                    ),
-                    provider_ids: user_library::metadata_provider_ids(item.data.as_ref())
-                        .unwrap_or_default(),
-                    production_year: item.production_year,
-                    index_number: item.index_number,
-                    index_number_end: user_library::metadata_i32(
-                        item.data.as_ref(),
-                        &["IndexNumberEnd", "index_number_end", "indexNumberEnd"],
-                    ),
-                    parent_index_number: item.parent_index_number,
-                    premiere_date: item.premiere_date.map(|date| date.to_rfc3339()),
-                    person_type: credit.person_type,
-                    role: (!credit.role.is_empty()).then_some(credit.role),
-                    item_type: canonical_item_type(&item.item_type),
-                    overview: item.overview.clone(),
-                })
-            })
-            .collect())
-    }
-}
-
-fn canonical_item_type(item_type: &str) -> String {
-    jellyfin_data::OFFICIAL_ITEM_TYPE_ALIASES
-        .iter()
-        .find(|(canonical, persisted)| {
-            item_type.eq_ignore_ascii_case(canonical) || item_type.eq_ignore_ascii_case(persisted)
-        })
-        .map_or_else(
-            || item_type.to_owned(),
-            |(canonical, _)| (*canonical).to_owned(),
-        )
 }
 
 async fn suggestions_for(
@@ -1674,9 +1242,7 @@ async fn resume_for(
     query: ItemsQuery,
 ) -> Result<Json<user_library::BaseItemQueryResult>, ApiError> {
     let authenticated = authentication::authenticated_session(&state, &headers).await?;
-    let target_user_id = requested_user_id
-        .filter(|user_id| !user_id.is_nil())
-        .unwrap_or(authenticated.user.id);
+    let target_user_id = requested_user_id.unwrap_or(authenticated.user.id);
     let mut query = query;
     let requested_start_index = query.start_index;
     let fields = std::mem::take(&mut query.fields);
@@ -1747,9 +1313,7 @@ async fn latest_for(
     query: LatestItemsQuery,
 ) -> Result<Json<Vec<user_library::BaseItemDto>>, ApiError> {
     let authenticated = authentication::authenticated_session(&state, &headers).await?;
-    let target_user_id = requested_user_id
-        .filter(|user_id| !user_id.is_nil())
-        .unwrap_or(authenticated.user.id);
+    let target_user_id = requested_user_id.unwrap_or(authenticated.user.id);
     let target = state.users.get(target_user_id).await?;
     let configuration: UserConfiguration =
         serde_json::from_value(target.preferences).unwrap_or_default();
@@ -1809,21 +1373,11 @@ async fn latest_for(
             .map(str::to_owned)
             .collect()
     });
-    // ASP.NET binds this endpoint's limit as a signed Int32. The official
-    // repository leaves a negative SQLite LIMIT unbounded, after which
-    // UserViewManager stops once the first result has been appended.
-    let result_limit = match query.limit {
-        ..=-1 => 1_u64,
-        0 => 0,
-        limit => u64::try_from(limit).unwrap_or_default(),
+    let candidate_limit = if query.group_items {
+        query.limit.saturating_mul(2)
+    } else {
+        query.limit
     };
-    let candidate_limit = (query.limit >= 0).then(|| {
-        if query.group_items {
-            result_limit.saturating_mul(2)
-        } else {
-            result_limit
-        }
-    });
     let database_query = BaseItemQuery {
         parent_id: parent_scope.parent_id,
         parent_ids: parent_scope.parent_ids,
@@ -1837,7 +1391,7 @@ async fn latest_for(
         is_played,
         order: BaseItemOrder::DateCreatedDescending,
         start_index: 0,
-        limit: candidate_limit,
+        limit: Some(candidate_limit),
         enable_total_record_count: Some(false),
         ..BaseItemQuery::default()
     };
@@ -1861,14 +1415,14 @@ async fn latest_for(
             &authenticated.user,
             target_user_id,
             page.items,
-            result_limit,
+            query.limit,
             grouping_query,
         )
         .await?
     } else {
         page.items
             .into_iter()
-            .take(usize::try_from(result_limit).unwrap_or(usize::MAX))
+            .take(usize::try_from(query.limit).unwrap_or(usize::MAX))
             .map(|item| LatestItemSelection {
                 item,
                 child_count: None,
@@ -1892,7 +1446,9 @@ async fn latest_for(
             .await?
             .items;
     for (item, child_count) in items.iter_mut().zip(child_counts) {
-        user_library::attach_child_count(item, child_count)?;
+        if child_count.is_some() {
+            item.child_count = child_count;
+        }
     }
     Ok(Json(items))
 }
@@ -2450,7 +2006,7 @@ pub(crate) fn parse_image_type_selectors(values: &[String]) -> Vec<i32> {
         .collect()
 }
 
-const fn default_latest_limit() -> i32 {
+const fn default_latest_limit() -> u64 {
     20
 }
 
@@ -2492,22 +2048,6 @@ pub(crate) async fn page_to_dto(
         page,
         user_library::BaseItemDtoFields::from_names(&fields),
         Some(target_user_id),
-        &PageDtoOptions::default(),
-    )
-    .await
-}
-
-pub(crate) async fn page_to_dto_optional_user(
-    state: &AppState,
-    page: BaseItemPage,
-    fields: Vec<String>,
-    target_user_id: Option<Uuid>,
-) -> Result<user_library::BaseItemQueryResult, ApiError> {
-    page_to_dto_with_fields_and_options(
-        state,
-        page,
-        user_library::BaseItemDtoFields::from_names(&fields),
-        target_user_id,
         &PageDtoOptions::default(),
     )
     .await
@@ -2555,8 +2095,6 @@ async fn page_to_dto_with_fields_and_options(
     dto_options: &PageDtoOptions,
 ) -> Result<user_library::BaseItemQueryResult, ApiError> {
     let item_ids = page.items.iter().map(|item| item.id).collect::<Vec<_>>();
-    let mut related_item_counts =
-        user_library::related_item_counts_for_items(state, &page.items, requested_fields).await?;
     let mut chapters =
         user_library::chapters_for_items(state, &page.items, requested_fields).await?;
     let mut external_urls =
@@ -2731,7 +2269,7 @@ async fn page_to_dto_with_fields_and_options(
     }
     let mut relations = user_library::load_relation_metadata(state, &page.items).await?;
     let mut episode_hierarchy_names =
-        user_library::episode_hierarchy_names(state, &page.items, requested_fields).await?;
+        user_library::episode_hierarchy_names(state, &page.items).await?;
     let series_image_item_ids = page
         .items
         .iter()
@@ -2805,11 +2343,6 @@ async fn page_to_dto_with_fields_and_options(
         let media_source_group_id = item.primary_version_id.unwrap_or(item_id);
         let mut dto =
             user_library::item_to_dto_with_fields(item, state.server_id(), requested_fields);
-        user_library::attach_related_item_counts(
-            &mut dto,
-            requested_fields,
-            related_item_counts.remove(&item_id).unwrap_or_default(),
-        );
         user_library::attach_external_urls(
             &mut dto,
             requested_fields,
@@ -2834,16 +2367,13 @@ async fn page_to_dto_with_fields_and_options(
         user_library::attach_has_lyrics(&mut dto, lyric_item_ids.contains(&item_id));
         user_library::attach_has_subtitles(&mut dto, subtitle_item_ids.contains(&item_id));
         let original_language = dto.original_language.clone();
-        user_library::attach_child_count(&mut dto, child_counts.remove(&item_id))?;
-        user_library::attach_recursive_item_count(
-            &mut dto,
-            recursive_item_counts.remove(&item_id),
-        )?;
+        user_library::attach_child_count(&mut dto, child_counts.remove(&item_id));
+        user_library::attach_recursive_item_count(&mut dto, recursive_item_counts.remove(&item_id));
         if requested_fields.wants_media_source_count() && !requested_fields.wants_media_sources() {
             user_library::attach_media_source_count(
                 &mut dto,
                 media_source_counts.remove(&item_id).unwrap_or_default(),
-            )?;
+            );
         }
         if let Some(user_data) = user_dtos.remove(&item_id) {
             user_library::attach_user_data_dto(&mut dto, user_data);
@@ -2870,7 +2400,7 @@ async fn page_to_dto_with_fields_and_options(
                 user_library::attach_media_source_count(
                     &mut dto,
                     u64::try_from(source_items.len()).unwrap_or(u64::MAX),
-                )?;
+                );
             }
             let remembered = remembered_user_data.remove(&item_id);
             user_library::project_item_dto_with_versioned_sources(
@@ -2911,8 +2441,8 @@ async fn page_to_dto_with_fields_and_options(
 
     Ok(user_library::BaseItemQueryResult {
         items,
-        total_record_count: user_library::checked_int32(page.total_record_count)?,
-        start_index: user_library::checked_int32(page.start_index)?,
+        total_record_count: usize::try_from(page.total_record_count).unwrap_or(usize::MAX),
+        start_index: i32::try_from(page.start_index).unwrap_or(i32::MAX),
     })
 }
 
@@ -3037,69 +2567,7 @@ fn image_type_from_name(name: &str) -> Option<ImageType> {
 
 #[cfg(test)]
 mod tests {
-    use axum_extra::extract::Query;
-
     use super::*;
-
-    fn items_query(value: &str) -> ItemsQuery {
-        let uri = format!("http://localhost/Items?{value}").parse().unwrap();
-        Query::<ItemsQuery>::try_from_uri(&uri).unwrap().0
-    }
-
-    #[test]
-    fn item_enum_collections_bind_names_defined_integers_and_drop_invalid_values() {
-        let query = items_query(
-            "locationTypes=1&excludeLocationTypes=offline&filters=4,6,unknown&\
-             includeItemTypes=13&excludeItemTypes=episode&mediaTypes=1&imageTypes=2&\
-             videoTypes=3&seriesStatus=1&fields=13&enableImageTypes=logo&\
-             sortBy=16&sortOrder=1",
-        );
-
-        assert_eq!(query.location_types, ["Remote"]);
-        assert_eq!(query.exclude_location_types, ["Offline"]);
-        assert_eq!(query.filters, [ItemFilter::IsPlayed]);
-        assert_eq!(query.include_item_types, ["Movie"]);
-        assert_eq!(query.exclude_item_types, ["Episode"]);
-        assert_eq!(query.media_types, ["Video"]);
-        assert_eq!(query.image_types, ["Backdrop"]);
-        assert_eq!(query.video_types, ["BluRay"]);
-        assert_eq!(query.series_status, ["Ended"]);
-        assert_eq!(query.fields, ["ExternalUrls"]);
-        assert_eq!(query.enable_image_types, ["Logo"]);
-        assert_eq!(query.sort_by, ["PlayCount"]);
-        assert_eq!(query.sort_order, ["Descending"]);
-    }
-
-    #[test]
-    fn item_enum_collections_split_only_a_single_query_value() {
-        assert_eq!(
-            items_query("includeItemTypes=movie,EPISODE").include_item_types,
-            ["Movie", "Episode"]
-        );
-        assert_eq!(
-            items_query(
-                "includeItemTypes=Movie,Episode&includeItemTypes=Video&includeItemTypes=999"
-            )
-            .include_item_types,
-            ["Video"]
-        );
-    }
-
-    #[test]
-    fn item_genres_and_tags_use_the_official_pipe_binder() {
-        let query = items_query("Genres=Action%7CDrama&tags=family%7Cclassic");
-
-        assert_eq!(query.genres, ["Action", "Drama"]);
-        assert_eq!(query.tags, ["family", "classic"]);
-    }
-
-    #[test]
-    fn item_genres_and_tags_accept_repeated_mobile_sdk_values() {
-        let query = items_query("genres=Action&genres=Drama&Tags=family&Tags=classic");
-
-        assert_eq!(query.genres, ["Action", "Drama"]);
-        assert_eq!(query.tags, ["family", "classic"]);
-    }
 
     #[test]
     fn image_constraints_prune_blur_hashes_to_exposed_tags() {

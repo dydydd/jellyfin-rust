@@ -2,13 +2,10 @@ use std::sync::Arc;
 
 use axum::{
     Json,
-    body::Bytes,
     extract::{OriginalUri, Path, State, rejection::JsonRejection},
     http::{HeaderMap, StatusCode},
 };
-use jellyfin_data::{
-    NamedConfigurationStoreError, ServerConfigurationUpdate, entities::server_configuration,
-};
+use jellyfin_data::{ServerConfigurationUpdate, entities::server_configuration};
 use jellyfin_model::{
     ImageSavingConvention, MetadataOptions, NameValuePair, RepositoryInfo, ServerConfiguration,
     TrickplayOptions,
@@ -16,78 +13,6 @@ use jellyfin_model::{
 use serde_json::Value;
 
 use crate::{ApiError, AppState, authentication, authorization};
-
-/// The encoding settings that affect request-time FFmpeg command generation.
-///
-/// Jellyfin keeps these values in the named `encoding` configuration rather
-/// than in `ServerConfiguration`.  Loading the small subset here keeps the
-/// progressive routes on the same configuration contract without coupling
-/// the API crate to the much larger dashboard model.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct EncodingRuntimeOptions {
-    pub(crate) encoding_thread_count: i32,
-    pub(crate) enable_audio_vbr: bool,
-}
-
-impl Default for EncodingRuntimeOptions {
-    fn default() -> Self {
-        Self {
-            // Official EncodingOptions uses -1 to request FFmpeg's automatic
-            // thread selection. EncodingHelper consequently emits 0.
-            encoding_thread_count: -1,
-            enable_audio_vbr: false,
-        }
-    }
-}
-
-pub(crate) async fn encoding_runtime_options(
-    state: &AppState,
-) -> Result<EncodingRuntimeOptions, ApiError> {
-    let Some(repository) = state.named_configurations.as_ref() else {
-        return Ok(EncodingRuntimeOptions::default());
-    };
-    let configuration = match repository.load("encoding").await {
-        Ok(configuration) => configuration.configuration,
-        Err(NamedConfigurationStoreError::NotFound(_)) => {
-            return Ok(EncodingRuntimeOptions::default());
-        }
-        Err(error) => return Err(error.into()),
-    };
-    parse_encoding_runtime_options(&configuration)
-}
-
-fn parse_encoding_runtime_options(value: &Value) -> Result<EncodingRuntimeOptions, ApiError> {
-    let object = value.as_object().ok_or(ApiError::Internal)?;
-    let mut options = EncodingRuntimeOptions::default();
-    for (name, value) in object {
-        if name.eq_ignore_ascii_case("EncodingThreadCount") {
-            options.encoding_thread_count = json_i32(value).ok_or(ApiError::Internal)?;
-        } else if name.eq_ignore_ascii_case("EnableAudioVbr") {
-            options.enable_audio_vbr = json_bool(value).ok_or(ApiError::Internal)?;
-        }
-    }
-    Ok(options)
-}
-
-fn json_i32(value: &Value) -> Option<i32> {
-    value
-        .as_i64()
-        .and_then(|value| i32::try_from(value).ok())
-        .or_else(|| value.as_str()?.trim().parse().ok())
-}
-
-fn json_bool(value: &Value) -> Option<bool> {
-    value.as_bool().or_else(|| {
-        let value = value.as_str()?.trim();
-        if value.eq_ignore_ascii_case("true") {
-            Some(true)
-        } else if value.eq_ignore_ascii_case("false") {
-            Some(false)
-        } else {
-            None
-        }
-    })
-}
 
 pub(crate) async fn get(
     State(state): State<Arc<AppState>>,
@@ -109,45 +34,6 @@ pub(crate) async fn update(
         .await?
         .require_administrator()?;
     let Json(configuration) = request.map_err(|_| ApiError::InvalidRequest)?;
-    apply_configuration(&state, configuration).await?;
-    Ok(StatusCode::NO_CONTENT)
-}
-
-pub(crate) async fn partial(
-    State(state): State<Arc<AppState>>,
-    OriginalUri(uri): OriginalUri,
-    headers: HeaderMap,
-    body: Bytes,
-) -> Result<StatusCode, ApiError> {
-    authentication::authenticated_identity(&state, &headers, Some(&uri))
-        .await?
-        .require_administrator()?;
-    let patch: Value = serde_json::from_slice(&body).map_err(|_| ApiError::InvalidRequest)?;
-    let Some(patch) = patch.as_object() else {
-        return Err(ApiError::InvalidRequest);
-    };
-    let current = state.server_configuration.load().await?;
-    let mut merged =
-        serde_json::to_value(server_configuration(current)?).map_err(|_| ApiError::Internal)?;
-    let object = merged.as_object_mut().ok_or(ApiError::Internal)?;
-    for (key, value) in patch {
-        let destination = object
-            .keys()
-            .find(|existing| existing.eq_ignore_ascii_case(key))
-            .cloned()
-            .unwrap_or_else(|| key.clone());
-        object.insert(destination, value.clone());
-    }
-    let configuration: ServerConfiguration =
-        serde_json::from_value(merged).map_err(|_| ApiError::InvalidRequest)?;
-    apply_configuration(&state, configuration).await?;
-    Ok(StatusCode::OK)
-}
-
-async fn apply_configuration(
-    state: &AppState,
-    configuration: ServerConfiguration,
-) -> Result<(), ApiError> {
     let updated = state
         .server_configuration
         .update_server_configuration(server_configuration_update(configuration)?)
@@ -176,7 +62,7 @@ async fn apply_configuration(
     state
         .library_scan
         .set_fanout_concurrency(updated.library_scan_fanout_concurrency.max(0) as usize);
-    Ok(())
+    Ok(StatusCode::NO_CONTENT)
 }
 
 pub(crate) async fn default_metadata_options(
@@ -190,57 +76,18 @@ pub(crate) async fn default_metadata_options(
     Ok(Json(MetadataOptions::default()))
 }
 
-pub(crate) fn metadata_options_for_item_type(
-    configuration: &server_configuration::Model,
-    item_type: &str,
-) -> Result<MetadataOptions, ApiError> {
-    let options = metadata_options(configuration)?;
-    Ok(options
-        .into_iter()
-        .find(|options| options.item_type.eq_ignore_ascii_case(item_type))
-        .unwrap_or_default())
-}
-
-pub(crate) fn metadata_options(
-    configuration: &server_configuration::Model,
-) -> Result<Vec<MetadataOptions>, ApiError> {
-    serde_json::from_value(configuration.metadata_options.clone()).map_err(|_| ApiError::Internal)
-}
-
 pub(crate) async fn get_named(
     State(state): State<Arc<AppState>>,
     OriginalUri(uri): OriginalUri,
     headers: HeaderMap,
     Path(key): Path<String>,
 ) -> Result<Json<Value>, ApiError> {
-    get_named_by_key(&state, &uri, &headers, &key).await
-}
-
-pub(crate) async fn get_branding_named(
-    State(state): State<Arc<AppState>>,
-    OriginalUri(uri): OriginalUri,
-    headers: HeaderMap,
-) -> Result<Json<Value>, ApiError> {
-    get_named_by_key(&state, &uri, &headers, "branding").await
-}
-
-async fn get_named_by_key(
-    state: &AppState,
-    uri: &axum::http::Uri,
-    headers: &HeaderMap,
-    key: &str,
-) -> Result<Json<Value>, ApiError> {
     authorization::require_default(&state, &headers, &uri).await?;
-    if is_protocol_owned_named_configuration(key) {
-        return Err(ApiError::NamedConfiguration(
-            NamedConfigurationStoreError::NotFound(key.to_owned()),
-        ));
-    }
     let repository = state
         .named_configurations
         .as_ref()
         .ok_or(ApiError::Internal)?;
-    let configuration = repository.load(key).await?;
+    let configuration = repository.load(&key).await?;
     Ok(Json(configuration.configuration))
 }
 
@@ -254,11 +101,6 @@ pub(crate) async fn update_named(
     authentication::authenticated_identity(&state, &headers, Some(&uri))
         .await?
         .require_administrator()?;
-    if is_protocol_owned_named_configuration(&key) {
-        return Err(ApiError::NamedConfiguration(
-            NamedConfigurationStoreError::NotFound(key),
-        ));
-    }
     let Json(configuration) = request.map_err(|_| ApiError::InvalidRequest)?;
     if !configuration.is_object() {
         return Err(ApiError::InvalidRequest);
@@ -269,12 +111,6 @@ pub(crate) async fn update_named(
         .ok_or(ApiError::Internal)?;
     repository.save(&key, configuration).await?;
     Ok(StatusCode::NO_CONTENT)
-}
-
-fn is_protocol_owned_named_configuration(key: &str) -> bool {
-    key.trim()
-        .to_ascii_lowercase()
-        .starts_with("emby-encoding-")
 }
 
 fn server_configuration(
@@ -310,8 +146,6 @@ fn server_configuration(
         enable_normalized_item_by_name_ids: model.enable_normalized_item_by_name_ids,
         enable_case_sensitive_item_ids: model.enable_case_sensitive_item_ids,
         metadata_path: model.metadata_path,
-        metadata_options: serde_json::from_value::<Vec<MetadataOptions>>(model.metadata_options)
-            .map_err(|_| ApiError::Internal)?,
         sort_replace_characters: serde_json::from_value(model.sort_replace_characters)
             .map_err(|_| ApiError::Internal)?,
         sort_remove_characters: serde_json::from_value(model.sort_remove_characters)
@@ -371,8 +205,6 @@ fn server_configuration_update(
         enable_normalized_item_by_name_ids: configuration.enable_normalized_item_by_name_ids,
         enable_case_sensitive_item_ids: configuration.enable_case_sensitive_item_ids,
         metadata_path: configuration.metadata_path,
-        metadata_options: serde_json::to_value(configuration.metadata_options)
-            .map_err(|_| ApiError::Internal)?,
         sort_replace_characters: serde_json::to_value(configuration.sort_replace_characters)
             .map_err(|_| ApiError::Internal)?,
         sort_remove_characters: serde_json::to_value(configuration.sort_remove_characters)
@@ -418,43 +250,5 @@ fn image_saving_convention(code: i16) -> Result<ImageSavingConvention, ApiError>
         0 => Ok(ImageSavingConvention::Legacy),
         IMAGE_SAVING_CONVENTION_COMPATIBLE => Ok(ImageSavingConvention::Compatible),
         _ => Err(ApiError::Internal),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use serde_json::json;
-
-    use super::{EncodingRuntimeOptions, parse_encoding_runtime_options};
-
-    #[test]
-    fn encoding_runtime_options_match_official_defaults() {
-        assert_eq!(
-            parse_encoding_runtime_options(&json!({})).unwrap(),
-            EncodingRuntimeOptions {
-                encoding_thread_count: -1,
-                enable_audio_vbr: false,
-            }
-        );
-    }
-
-    #[test]
-    fn encoding_runtime_options_follow_json_defaults_value_semantics() {
-        assert_eq!(
-            parse_encoding_runtime_options(&json!({
-                "encodingthreadcount": "3",
-                "ENABLEAUDIOVBR": "TrUe",
-                "Unknown": "ignored",
-            }))
-            .unwrap(),
-            EncodingRuntimeOptions {
-                encoding_thread_count: 3,
-                enable_audio_vbr: true,
-            }
-        );
-        assert!(
-            parse_encoding_runtime_options(&json!({"EncodingThreadCount": 2_i64.pow(40)})).is_err()
-        );
-        assert!(parse_encoding_runtime_options(&json!({"EnableAudioVbr": "yes"})).is_err());
     }
 }

@@ -2,7 +2,7 @@ use std::{cmp::Ordering, sync::Arc};
 
 use axum::{
     Json,
-    extract::{OriginalUri, Path, State},
+    extract::{Path, State},
     http::HeaderMap,
 };
 use axum_extra::extract::Query;
@@ -123,7 +123,7 @@ pub(crate) struct EpisodesQuery {
 #[serde(rename_all = "PascalCase")]
 pub(crate) struct EpisodesResult {
     items: Vec<user_library::BaseItemDto>,
-    total_record_count: i32,
+    total_record_count: usize,
     start_index: i32,
 }
 
@@ -210,7 +210,7 @@ pub(crate) struct NextUpQuery {
 #[serde(rename_all = "PascalCase")]
 pub(crate) struct NextUpResult {
     items: Vec<user_library::BaseItemDto>,
-    total_record_count: i32,
+    total_record_count: usize,
     start_index: i32,
 }
 
@@ -267,7 +267,6 @@ pub(crate) struct UpcomingQuery {
 pub(crate) async fn upcoming(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    OriginalUri(uri): OriginalUri,
     Query(mut query): Query<UpcomingQuery>,
 ) -> Result<Json<user_library::BaseItemQueryResult>, ApiError> {
     let authenticated = authentication::authenticated_session(&state, &headers).await?;
@@ -277,10 +276,7 @@ pub(crate) async fn upcoming(
     let requested_start_index = query.start_index;
     let start_index = u64::try_from(requested_start_index).unwrap_or_default();
     let limit = query.limit.and_then(|limit| u64::try_from(limit).ok());
-    let target_user_id = query
-        .user_id
-        .filter(|user_id| !user_id.is_nil())
-        .unwrap_or(authenticated.user.id);
+    let target_user_id = query.user_id.unwrap_or(authenticated.user.id);
     let fields = std::mem::take(&mut query.fields);
     let dto_options = crate::items::PageDtoOptions {
         enable_images: query.enable_images.unwrap_or(true),
@@ -318,26 +314,23 @@ pub(crate) async fn upcoming(
     )
     .await?;
     result.start_index = requested_start_index;
-    user_library::omit_incompatible_emby_relations(&uri, &mut result.items);
     Ok(Json(result))
 }
 
 pub(crate) async fn next_up(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    OriginalUri(uri): OriginalUri,
     Query(mut query): Query<NextUpQuery>,
 ) -> Result<Json<NextUpResult>, ApiError> {
-    let identity = authentication::authenticated_identity(&state, &headers, Some(&uri)).await?;
-    let target_user_id = identity.target_user_id(query.user_id)?;
-    let target_user = state.users.get(target_user_id).await?;
-    let authenticated_user = match identity {
-        authentication::AuthenticatedIdentity::Device(authenticated) => authenticated.user,
-        // API keys are administrator-equivalent but have no implicit user.
-        // Once an explicit target has been resolved, use that user's policy
-        // for NextUp selection and DTO projection.
-        authentication::AuthenticatedIdentity::ApiKey(_) => target_user.clone(),
-    };
+    let authenticated = authentication::authenticated_session(&state, &headers).await?;
+    let target_user_id = query
+        .user_id
+        .filter(|user_id| !user_id.is_nil())
+        .unwrap_or(authenticated.user.id);
+    if target_user_id != authenticated.user.id && !authenticated.user.is_administrator {
+        return Err(ApiError::Forbidden);
+    }
+    state.users.get(target_user_id).await?;
     let fields = std::mem::take(&mut query.fields);
     let dto_options = crate::items::PageDtoOptions {
         enable_images: query.enable_images.unwrap_or(true),
@@ -374,7 +367,7 @@ pub(crate) async fn next_up(
     let page = state
         .user_library
         .next_up(
-            &authenticated_user,
+            &authenticated.user,
             target_user_id,
             parent_id,
             query.enable_rewatching,
@@ -397,13 +390,11 @@ pub(crate) async fn next_up(
         &dto_options,
     )
     .await?;
-    let mut result = NextUpResult {
+    Ok(Json(NextUpResult {
         items: projected.items,
         total_record_count: projected.total_record_count,
         start_index: query.start_index.unwrap_or_default(),
-    };
-    user_library::omit_incompatible_emby_relations(&uri, &mut result.items);
-    Ok(Json(result))
+    }))
 }
 
 fn is_series_item_type(item_type: &str) -> bool {
@@ -426,15 +417,11 @@ fn parse_next_up_date_cutoff(value: &str) -> Result<DateTime<Utc>, ApiError> {
 pub(crate) async fn episodes(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    OriginalUri(uri): OriginalUri,
     Path(series_id): Path<Uuid>,
     Query(mut query): Query<EpisodesQuery>,
 ) -> Result<Json<EpisodesResult>, ApiError> {
     let authenticated = authentication::authenticated_session(&state, &headers).await?;
-    let target_user_id = query
-        .user_id
-        .filter(|user_id| !user_id.is_nil())
-        .unwrap_or(authenticated.user.id);
+    let target_user_id = query.user_id.unwrap_or(authenticated.user.id);
     let fields = std::mem::take(&mut query.fields);
     let dto_options = crate::items::PageDtoOptions {
         enable_images: query.enable_images.unwrap_or(true),
@@ -582,13 +569,11 @@ pub(crate) async fn episodes(
         &dto_options,
     )
     .await?;
-    let mut result = EpisodesResult {
+    Ok(Json(EpisodesResult {
         items: projected.items,
-        total_record_count: user_library::checked_int32(total_record_count)?,
+        total_record_count,
         start_index: query.start_index.unwrap_or_default(),
-    };
-    user_library::omit_incompatible_emby_relations(&uri, &mut result.items);
-    Ok(Json(result))
+    }))
 }
 
 fn episode_query_order(random: bool) -> BaseItemOrder {
@@ -727,15 +712,11 @@ fn episode_metadata_i32(item: &base_item::Model, key: &str) -> Option<i32> {
 pub(crate) async fn seasons(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    OriginalUri(uri): OriginalUri,
     Path(series_id): Path<Uuid>,
     Query(mut query): Query<SeasonsQuery>,
 ) -> Result<Json<user_library::BaseItemQueryResult>, ApiError> {
     let authenticated = authentication::authenticated_session(&state, &headers).await?;
-    let target_user_id = query
-        .user_id
-        .filter(|user_id| !user_id.is_nil())
-        .unwrap_or(authenticated.user.id);
+    let target_user_id = query.user_id.unwrap_or(authenticated.user.id);
     let series = state
         .user_library
         .item(&authenticated.user, target_user_id, series_id)
@@ -788,7 +769,7 @@ pub(crate) async fn seasons(
     }
 
     let total_record_count = seasons.len();
-    let mut projected = crate::items::page_to_dto_with_options(
+    let projected = crate::items::page_to_dto_with_options(
         state.as_ref(),
         BaseItemPage {
             items: seasons,
@@ -800,7 +781,6 @@ pub(crate) async fn seasons(
         &dto_options,
     )
     .await?;
-    user_library::omit_incompatible_emby_relations(&uri, &mut projected.items);
     Ok(Json(projected))
 }
 

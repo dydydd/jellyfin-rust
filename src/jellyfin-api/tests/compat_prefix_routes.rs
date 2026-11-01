@@ -1,7 +1,7 @@
 use axum::{
     Router,
     body::{Body, to_bytes},
-    http::{Method, Request, StatusCode},
+    http::{Request, StatusCode},
 };
 use jellyfin_api::AppState;
 use sea_orm::DatabaseConnection;
@@ -10,10 +10,10 @@ use tower::ServiceExt;
 const MAX_BODY_SIZE: usize = 1024 * 1024;
 
 #[tokio::test]
-async fn jellyfin_root_and_api_prefix_serve_the_same_routes() {
+async fn api_and_emby_prefixes_serve_the_same_root_routes() {
     let app = app();
 
-    for prefix in ["", "/api"] {
+    for prefix in ["", "/api", "/emby"] {
         let response = get(&app, &format!("{prefix}/api-docs/openapi.json")).await;
         assert_eq!(response.status(), StatusCode::OK);
         let body = body_json(response).await;
@@ -23,30 +23,6 @@ async fn jellyfin_root_and_api_prefix_serve_the_same_routes() {
         assert_eq!(response.status(), StatusCode::OK);
         let body = body_json(response).await;
         assert!(body["RequestReceptionTime"].is_string());
-
-        for path in [
-            "/System/Info/Public",
-            "/Branding/Configuration",
-            "/Branding/Css",
-            "/Branding/Css.css",
-        ] {
-            assert_eq!(
-                request(&app, Method::GET, &format!("{prefix}{path}"))
-                    .await
-                    .status(),
-                StatusCode::OK,
-                "anonymous Jellyfin bootstrap route {prefix}{path}",
-            );
-        }
-        for method in [Method::GET, Method::POST, Method::HEAD] {
-            assert_eq!(
-                request(&app, method.clone(), &format!("{prefix}/System/Ping"))
-                    .await
-                    .status(),
-                StatusCode::OK,
-                "anonymous Jellyfin ping route {method} {prefix}/System/Ping",
-            );
-        }
     }
 }
 
@@ -54,7 +30,7 @@ async fn jellyfin_root_and_api_prefix_serve_the_same_routes() {
 async fn prefixed_unknown_api_routes_fail_closed() {
     let app = app();
 
-    for uri in ["/api/not-a-route", "/api/System/Logs"] {
+    for uri in ["/api/not-a-route", "/emby/not-a-route", "/api/System/Logs"] {
         assert_eq!(
             get(&app, uri).await.status(),
             StatusCode::UNAUTHORIZED,
@@ -72,15 +48,9 @@ fn app() -> Router {
 }
 
 async fn get(app: &Router, uri: &str) -> axum::response::Response {
-    request(app, Method::GET, uri).await
-}
-
-async fn request(app: &Router, method: Method, uri: &str) -> axum::response::Response {
     app.clone()
         .oneshot(
-            Request::builder()
-                .method(method)
-                .uri(uri)
+            Request::get(uri)
                 .body(Body::empty())
                 .expect("valid request"),
         )

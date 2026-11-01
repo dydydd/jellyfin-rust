@@ -1679,30 +1679,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "jellyfin-emby-api"
-version = "0.1.0"
-dependencies = [
- "axum",
- "base64",
- "chrono",
- "form_urlencoded",
- "jellyfin-api",
- "jellyfin-controller",
- "jellyfin-data",
- "jellyfin-model",
- "jellyfin-server-implementations",
- "md-5",
- "multer",
- "sea-orm",
- "serde",
- "serde_json",
- "tokio",
- "tower",
- "tower-http",
- "uuid",
-]
-
-[[package]]
 name = "jellyfin-extensions"
 version = "0.1.0"
 dependencies = [
@@ -1824,7 +1800,6 @@ dependencies = [
  "jellyfin-api",
  "jellyfin-controller",
  "jellyfin-data",
- "jellyfin-emby-api",
  "jellyfin-live-tv",
  "jellyfin-media-encoding",
  "jellyfin-model",
@@ -2092,23 +2067,6 @@ checksum = "bb85c154ba489f01b25c0d36ae69a87e4a1c73a72631fc6c0eb6dde34a73e44b"
 dependencies = [
  "num-traits",
  "pxfm",
-]
-
-[[package]]
-name = "multer"
-version = "3.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "83e87776546dc87511aa5ee218730c92b666d7264ab6ed41f9d215af9cd5224b"
-dependencies = [
- "bytes",
- "encoding_rs",
- "futures-util",
- "http",
- "httparse",
- "memchr",
- "mime",
- "spin",
- "version_check",
 ]
 
 [[package]]

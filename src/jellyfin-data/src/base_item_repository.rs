@@ -23,14 +23,12 @@ use crate::{
 };
 
 const HIERARCHY_ADVISORY_LOCK_KEY: i64 = 0x4241_5345_4954_454d;
-const DTO_RELATED_ITEM_COUNT_BATCH_SIZE: usize = 512;
 const VIDEO_ITEM_TYPES_SQL: &str = "('Video', 'Movie', 'Episode', 'MusicVideo', 'Trailer', \
     'MediaBrowser.Controller.Entities.Video', \
     'MediaBrowser.Controller.Entities.Movies.Movie', \
     'MediaBrowser.Controller.Entities.TV.Episode', \
     'MediaBrowser.Controller.Entities.MusicVideo', \
     'MediaBrowser.Controller.Entities.Trailer')";
-const SERIES_ITEM_TYPES_SQL: &str = "('Series', 'MediaBrowser.Controller.Entities.TV.Series')";
 const VERSIONED_MEDIA_ITEM_TYPES_SQL: &str = "('Audio', 'Video', 'Movie', 'Episode', 'MusicVideo', 'Trailer', \
     'MediaBrowser.Controller.Entities.Audio', \
     'MediaBrowser.Controller.Entities.Video', \
@@ -385,42 +383,6 @@ pub struct BaseItemPage {
     pub start_index: u64,
 }
 
-/// A distinct value projected from the set of items accepted by a
-/// [`BaseItemQuery`].
-///
-/// These facets back legacy Emby discovery endpoints. Keeping the facet
-/// projection in the repository makes the item filter and user-policy SQL
-/// exactly the same as an ordinary item query and avoids loading a library
-/// page merely to derive a small list of values.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BaseItemFacet {
-    ItemType,
-    AudioCodec,
-    AudioLayout,
-    VideoCodec,
-    SubtitleCodec,
-    StreamLanguage,
-    Tag,
-    Container,
-    ExtendedVideoType,
-    OfficialRating,
-    ItemPrefix,
-    ArtistPrefix,
-}
-
-/// One page of case-insensitively distinct item facet values.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BaseItemFacetPage {
-    pub values: Vec<String>,
-    pub total_record_count: u64,
-}
-
-#[derive(Debug, FromQueryResult)]
-struct BaseItemFacetRow {
-    value: Option<String>,
-    total_record_count: i64,
-}
-
 #[derive(Debug, Clone, PartialEq)]
 pub struct ScoredBaseItem {
     pub item: base_item::Model,
@@ -432,28 +394,6 @@ pub struct ScoredBaseItemPage {
     pub items: Vec<ScoredBaseItem>,
     pub total_record_count: u64,
     pub start_index: u64,
-}
-
-/// One weighted local-similarity match for a movie recommendation baseline.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct MovieSimilarityScore {
-    pub source_id: Uuid,
-    pub candidate_id: Uuid,
-    pub score: i64,
-}
-
-/// One person name used to form a movie recommendation category.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PersonMovieRecommendationRequest {
-    pub name: String,
-    pub director_only: bool,
-}
-
-/// One policy-filtered movie candidate for a requested person name.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PersonMovieRecommendationCandidate {
-    pub request_index: usize,
-    pub item_id: Uuid,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, FromQueryResult)]
@@ -472,14 +412,6 @@ pub struct BaseItemCounts {
     pub item_count: i64,
 }
 
-/// Counts projected from persisted extra-owner and additional-part relationships.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct BaseItemDtoRelatedCounts {
-    pub local_trailer_count: i32,
-    pub special_feature_count: i32,
-    pub part_count: Option<i32>,
-}
-
 #[derive(Debug, Clone, Copy, FromQueryResult)]
 struct ParentChildCount {
     parent_id: Uuid,
@@ -493,14 +425,6 @@ struct MediaSourceCount {
 }
 
 #[derive(Debug, Clone, Copy, FromQueryResult)]
-struct DtoRelatedCountRow {
-    item_id: Uuid,
-    local_trailer_count: i32,
-    special_feature_count: i32,
-    part_count: Option<i32>,
-}
-
-#[derive(Debug, Clone, Copy, FromQueryResult)]
 struct ResumePageId {
     total_record_count: Option<i64>,
     id: Option<Uuid>,
@@ -508,7 +432,7 @@ struct ResumePageId {
 
 #[derive(Debug, Clone, Copy, FromQueryResult)]
 struct NextUpPageId {
-    id: Option<Uuid>,
+    id: Uuid,
     total_record_count: i64,
 }
 
@@ -828,7 +752,7 @@ impl BaseItemRepository {
                   date_created, date_modified) \
              SELECT candidate.id, candidate.item_type, candidate.name, candidate.name, \
                     candidate.path, \
-                    CASE WHEN candidate.item_type IN ('GameGenre', 'MusicArtist', 'Person') \
+                    CASE WHEN candidate.item_type IN ('MusicArtist', 'Person') \
                          THEN false ELSE true END, \
                     candidate.presentation_unique_key, \
                     candidate.date_created, candidate.date_modified \
@@ -839,8 +763,6 @@ impl BaseItemRepository {
                    AND (existing.item_type = candidate.item_type \
                         OR existing.item_type = CASE candidate.item_type \
                             WHEN 'Genre' THEN 'MediaBrowser.Controller.Entities.Genre' \
-                            WHEN 'GameGenre' THEN \
-                                'MediaBrowser.Controller.Entities.GameGenre' \
                             WHEN 'MusicGenre' THEN \
                                 'MediaBrowser.Controller.Entities.Audio.MusicGenre' \
                             ELSE candidate.item_type END)\
@@ -1837,213 +1759,6 @@ impl BaseItemRepository {
         Ok(languages)
     }
 
-    /// Scores local movie-similarity candidates for several baselines in one
-    /// bounded PostgreSQL query.
-    ///
-    /// The weights mirror Jellyfin's movie provider: director 50, actor and
-    /// guest star 15, genre 10, and tag/studio 5. Only the top `limit` raw
-    /// candidates per source are returned; callers still apply item type,
-    /// playback, version grouping, and user policy filters in one shared item
-    /// query before choosing the final page.
-    ///
-    /// # Errors
-    ///
-    /// Returns a database error when the scoring query fails.
-    pub async fn movie_similarity_scores(
-        &self,
-        source_ids: &[Uuid],
-        limit: u64,
-    ) -> Result<Vec<MovieSimilarityScore>, BaseItemError> {
-        if source_ids.is_empty() || limit == 0 {
-            return Ok(Vec::new());
-        }
-
-        let mut source_ids = source_ids.to_vec();
-        source_ids.sort_unstable();
-        source_ids.dedup();
-        source_ids.truncate(64);
-
-        let mut values = Vec::with_capacity(source_ids.len().saturating_add(1));
-        let mut sql = String::from("WITH sources(source_id) AS (VALUES ");
-        for (index, source_id) in source_ids.into_iter().enumerate() {
-            if index > 0 {
-                sql.push_str(", ");
-            }
-            values.push(source_id.into());
-            let _ = write!(sql, "(${}::uuid)", values.len());
-        }
-        sql.push_str(
-            r#"), dimension_matches AS (
-                 SELECT DISTINCT source_map.item_id AS source_id,
-                        candidate_map.item_id AS candidate_id,
-                        concat('value:', source_value.type, ':', source_value.clean_value)
-                            AS dimension_key,
-                        CASE source_value.type
-                            WHEN 2 THEN 10::bigint
-                            WHEN 3 THEN 5::bigint
-                            WHEN 4 THEN 5::bigint
-                        END AS weight
-                 FROM sources
-                 JOIN jellyfin.item_value_map AS source_map
-                   ON source_map.item_id = sources.source_id
-                 JOIN jellyfin.item_values AS source_value
-                   ON source_value.item_value_id = source_map.item_value_id
-                  AND source_value.type IN (2, 3, 4)
-                 JOIN jellyfin.item_values AS candidate_value
-                   ON candidate_value.type = source_value.type
-                  AND candidate_value.clean_value = source_value.clean_value
-                 JOIN jellyfin.item_value_map AS candidate_map
-                   ON candidate_map.item_value_id = candidate_value.item_value_id
-                 UNION ALL
-                 SELECT DISTINCT source_person.item_id AS source_id,
-                        candidate_person.item_id AS candidate_id,
-                        concat(
-                            'person:', source_person.person_id, ':',
-                            CASE source_person.person_type
-                                WHEN 'Director' THEN 50
-                                WHEN 'Actor' THEN 15
-                                WHEN 'GuestStar' THEN 15
-                            END
-                        ) AS dimension_key,
-                        CASE source_person.person_type
-                            WHEN 'Director' THEN 50::bigint
-                            WHEN 'Actor' THEN 15::bigint
-                            WHEN 'GuestStar' THEN 15::bigint
-                        END AS weight
-                 FROM sources
-                 JOIN jellyfin.people_base_item_map AS source_person
-                   ON source_person.item_id = sources.source_id
-                  AND source_person.person_type IN ('Director', 'Actor', 'GuestStar')
-                 JOIN jellyfin.people_base_item_map AS candidate_person
-                   ON candidate_person.person_id = source_person.person_id
-             ), scores AS (
-                 SELECT source_id, candidate_id, SUM(weight)::bigint AS score
-                 FROM dimension_matches
-                 WHERE candidate_id <> source_id
-                 GROUP BY source_id, candidate_id
-             ), ranked AS (
-                 SELECT source_id, candidate_id, score,
-                        ROW_NUMBER() OVER (
-                            PARTITION BY source_id
-                            ORDER BY score DESC, candidate_id ASC
-                        ) AS rank
-                 FROM scores
-             )
-             SELECT source_id, candidate_id, score FROM ranked WHERE rank <= "#,
-        );
-        values.push(i64::try_from(limit).unwrap_or(i64::MAX).into());
-        let _ = write!(sql, "${} ORDER BY source_id, rank", values.len());
-
-        self.database
-            .query_all(Statement::from_sql_and_values(
-                DbBackend::Postgres,
-                sql,
-                values,
-            ))
-            .await?
-            .into_iter()
-            .map(|row| {
-                Ok(MovieSimilarityScore {
-                    source_id: row.try_get("", "source_id")?,
-                    candidate_id: row.try_get("", "candidate_id")?,
-                    score: row.try_get("", "score")?,
-                })
-            })
-            .collect::<Result<Vec<_>, DbErr>>()
-            .map_err(BaseItemError::from)
-    }
-
-    /// Selects a bounded candidate window for several person-based movie
-    /// recommendation categories in one policy-aware PostgreSQL query.
-    ///
-    /// Requests marked `director_only` require a Director credit. Other
-    /// requests intentionally match any credit type, matching Jellyfin's
-    /// actor-category query after its baseline names have been selected from
-    /// Actor and GuestStar credits.
-    ///
-    /// # Errors
-    ///
-    /// Returns a database error when the filtered query fails.
-    pub async fn person_movie_recommendation_candidates(
-        &self,
-        query: &BaseItemQuery,
-        requests: &[PersonMovieRecommendationRequest],
-        per_request_limit: u64,
-    ) -> Result<Vec<PersonMovieRecommendationCandidate>, BaseItemError> {
-        if requests.is_empty() || per_request_limit == 0 {
-            return Ok(Vec::new());
-        }
-
-        let (mut sql, mut values) = if query.group_versions_by_presentation_key {
-            grouped_versions_cte(query)
-        } else {
-            filtered_query_cte(query)
-        };
-        sql.push_str(", requested_people(request_index, name, director_only) AS (VALUES ");
-        for (index, request) in requests.iter().enumerate() {
-            if index > 0 {
-                sql.push_str(", ");
-            }
-            values.push(i64::try_from(index).unwrap_or(i64::MAX).into());
-            let index_bind = values.len();
-            values.push(request.name.clone().into());
-            let name_bind = values.len();
-            values.push(request.director_only.into());
-            let director_bind = values.len();
-            let _ = write!(
-                sql,
-                "(${index_bind}::bigint, ${name_bind}::text, ${director_bind}::boolean)"
-            );
-        }
-        sql.push_str(
-            r#"), matched AS (
-                 SELECT DISTINCT requested.request_index, item.id, item.sort_name
-                 FROM requested_people AS requested
-                 JOIN jellyfin.people AS person ON person.name = requested.name
-                 JOIN jellyfin.people_base_item_map AS person_map
-                   ON person_map.person_id = person.id
-                  AND (NOT requested.director_only OR person_map.person_type = 'Director')
-                 JOIN "#,
-        );
-        sql.push_str(if query.group_versions_by_presentation_key {
-            "version_groups"
-        } else {
-            "filtered"
-        });
-        sql.push_str(
-            r#" AS item ON item.id = person_map.item_id
-             ), ranked AS (
-                 SELECT request_index, id,
-                        ROW_NUMBER() OVER (
-                            PARTITION BY request_index
-                            ORDER BY sort_name ASC NULLS LAST, id ASC
-                        ) AS rank
-                 FROM matched
-             )
-             SELECT request_index, id FROM ranked WHERE rank <= "#,
-        );
-        values.push(i64::try_from(per_request_limit).unwrap_or(i64::MAX).into());
-        let _ = write!(sql, "${} ORDER BY request_index, rank", values.len());
-
-        self.database
-            .query_all(Statement::from_sql_and_values(
-                DbBackend::Postgres,
-                sql,
-                values,
-            ))
-            .await?
-            .into_iter()
-            .map(|row| {
-                let request_index = row.try_get::<i64>("", "request_index")?;
-                Ok(PersonMovieRecommendationCandidate {
-                    request_index: usize::try_from(request_index).unwrap_or(usize::MAX),
-                    item_id: row.try_get("", "id")?,
-                })
-            })
-            .collect::<Result<Vec<_>, DbErr>>()
-            .map_err(BaseItemError::from)
-    }
-
     /// Queries persisted library items with stable sorting and database-side
     /// count, offset, and limit.
     ///
@@ -2260,7 +1975,7 @@ impl BaseItemRepository {
                 .column(user_data::Column::ItemId)
                 .from((Alias::new("jellyfin"), user_data::Entity))
                 .and_where(user_data::Column::UserId.eq(user_id))
-                .and_where(user_data::Column::Likes.eq(true))
+                .and_where(user_data::Column::Likes.eq(is_liked))
                 .to_owned();
             select = if is_liked {
                 select.filter(base_item::Column::Id.in_subquery(liked_items))
@@ -2510,124 +2225,6 @@ impl BaseItemRepository {
                 )
             })
             .collect())
-    }
-
-    /// Counts DTO extras and stacked-video parts for several displayed items.
-    ///
-    /// Extra ownership follows the relational child hierarchy used by the Rust scanner. Video
-    /// versions share their extras, while automatically merged Series rows share extras through
-    /// their presentation key, matching the official `GetExtraOwnerIds` overrides. Stacked-video
-    /// parts remain the persisted `AdditionalParts` relationship on the displayed video itself.
-    /// Requests are split into bounded batches, and each batch is aggregated in one PostgreSQL
-    /// statement rather than loading complete child or part rows.
-    ///
-    /// # Errors
-    ///
-    /// Returns a database error when an aggregate query fails.
-    pub async fn dto_related_item_counts(
-        &self,
-        item_ids: &[Uuid],
-    ) -> Result<HashMap<Uuid, BaseItemDtoRelatedCounts>, BaseItemError> {
-        let mut counts = HashMap::with_capacity(item_ids.len());
-        for item_ids in item_ids.chunks(DTO_RELATED_ITEM_COUNT_BATCH_SIZE) {
-            let values = item_ids
-                .iter()
-                .copied()
-                .map(SeaValue::from)
-                .collect::<Vec<_>>();
-            let requested_values = (1..=item_ids.len())
-                .map(|index| format!("(${index}::uuid)"))
-                .collect::<Vec<_>>()
-                .join(", ");
-            let sql = format!(
-                "WITH requested(item_id) AS (VALUES {requested_values}), \
-                 displayed AS MATERIALIZED (\
-                     SELECT requested.item_id, item.item_type, item.primary_version_id, \
-                            item.presentation_unique_key, \
-                            COALESCE(\
-                                item.data -> 'AdditionalParts', \
-                                item.data -> 'additional_parts'\
-                            ) AS additional_parts \
-                     FROM requested \
-                     INNER JOIN jellyfin.base_items AS item ON item.id = requested.item_id\
-                 ), owners AS (\
-                     SELECT displayed.item_id, displayed.item_id AS owner_id \
-                     FROM displayed \
-                     UNION \
-                     SELECT displayed.item_id, owner.id AS owner_id \
-                     FROM displayed \
-                     INNER JOIN jellyfin.base_items AS owner \
-                       ON owner.id = COALESCE(\
-                           displayed.primary_version_id, displayed.item_id) \
-                     WHERE displayed.item_type IN {VIDEO_ITEM_TYPES_SQL} \
-                       AND owner.item_type IN {VIDEO_ITEM_TYPES_SQL} \
-                     UNION \
-                     SELECT displayed.item_id, owner.id AS owner_id \
-                     FROM displayed \
-                     INNER JOIN jellyfin.base_items AS owner \
-                       ON owner.primary_version_id = COALESCE(\
-                           displayed.primary_version_id, displayed.item_id) \
-                     WHERE displayed.item_type IN {VIDEO_ITEM_TYPES_SQL} \
-                       AND owner.item_type IN {VIDEO_ITEM_TYPES_SQL} \
-                     UNION \
-                     SELECT displayed.item_id, owner.id AS owner_id \
-                     FROM displayed \
-                     INNER JOIN jellyfin.base_items AS owner \
-                       ON owner.presentation_unique_key = displayed.presentation_unique_key \
-                     WHERE displayed.item_type IN {SERIES_ITEM_TYPES_SQL} \
-                       AND owner.item_type IN {SERIES_ITEM_TYPES_SQL} \
-                       AND displayed.presentation_unique_key IS NOT NULL\
-                 ), extra_counts AS (\
-                     SELECT owners.item_id, \
-                            (COUNT(extra.id) FILTER (WHERE LOWER(COALESCE(\
-                                extra.data ->> 'ExtraType', \
-                                extra.data ->> 'extra_type'\
-                            )) = 'trailer'))::integer AS local_trailer_count, \
-                            (COUNT(extra.id) FILTER (WHERE LOWER(COALESCE(\
-                                extra.data ->> 'ExtraType', \
-                                extra.data ->> 'extra_type'\
-                            )) IN (\
-                                'unknown', 'behindthescenes', 'clip', 'deletedscene', \
-                                'interview', 'sample', 'scene', 'featurette', 'short'\
-                            )))::integer AS special_feature_count \
-                     FROM owners \
-                     LEFT JOIN jellyfin.base_items AS extra ON extra.parent_id = owners.owner_id \
-                     GROUP BY owners.item_id\
-                 ) \
-                 SELECT displayed.item_id, \
-                        COALESCE(extra_counts.local_trailer_count, 0)::integer \
-                            AS local_trailer_count, \
-                        COALESCE(extra_counts.special_feature_count, 0)::integer \
-                            AS special_feature_count, \
-                        CASE \
-                            WHEN displayed.item_type IN {VIDEO_ITEM_TYPES_SQL} \
-                             AND JSONB_TYPEOF(displayed.additional_parts) = 'array' \
-                             AND JSONB_ARRAY_LENGTH(displayed.additional_parts) > 0 \
-                            THEN JSONB_ARRAY_LENGTH(displayed.additional_parts) + 1 \
-                            ELSE NULL \
-                        END AS part_count \
-                 FROM displayed \
-                 LEFT JOIN extra_counts USING (item_id)"
-            );
-            let rows = DtoRelatedCountRow::find_by_statement(Statement::from_sql_and_values(
-                DbBackend::Postgres,
-                sql,
-                values,
-            ))
-            .all(self.database.as_ref())
-            .await?;
-            counts.extend(rows.into_iter().map(|row| {
-                (
-                    row.item_id,
-                    BaseItemDtoRelatedCounts {
-                        local_trailer_count: row.local_trailer_count,
-                        special_feature_count: row.special_feature_count,
-                        part_count: row.part_count,
-                    },
-                )
-            }));
-        }
-        Ok(counts)
     }
 
     /// Counts visible, real leaf descendants for multiple folders in one query.
@@ -3154,12 +2751,7 @@ impl BaseItemRepository {
             "), episode_user_state AS MATERIALIZED (\
                  SELECT episode.id AS episode_id, \
                         COALESCE(BOOL_OR(data.played), false) AS is_watched, \
-                        COALESCE(BOOL_OR(\
-                            data.playback_position_ticks > 0 \
-                            AND NOT data.is_hidden_from_resume\
-                        ), false) AS is_resumable, \
-                        COALESCE(BOOL_OR(data.is_hidden_from_resume), false) \
-                            AS is_hidden_from_resume, \
+                        COALESCE(BOOL_OR(data.playback_position_ticks > 0), false) AS is_resumable, \
                         MAX(data.last_played_date) AS last_played_date \
                  FROM scoped_episodes AS episode \
                  INNER JOIN jellyfin.base_items AS version \
@@ -3170,7 +2762,6 @@ impl BaseItemRepository {
                  GROUP BY episode.id\
              ), episode_state AS MATERIALIZED (\
                  SELECT episode.*, state.is_watched, state.is_resumable, \
-                        state.is_hidden_from_resume, \
                         state.last_played_date \
                  FROM scoped_episodes AS episode \
                  INNER JOIN episode_user_state AS state ON state.episode_id = episode.id\
@@ -3253,7 +2844,6 @@ impl BaseItemRepository {
                  LEFT JOIN regular_state AS watched \
                    ON watched.id = last_watched.episode_id \
                  WHERE NOT episode.is_watched \
-                   AND NOT episode.is_hidden_from_resume \
                    AND (last_watched.series_key IS NULL \
                         OR (episode.aired_season, episode.aired_after_season, \
                             episode.aired_episode, episode.aired_item_kind, \
@@ -3272,7 +2862,6 @@ impl BaseItemRepository {
                    AND (special.data ->> 'AirsBeforeSeasonNumber' IS NOT NULL \
                         OR special.data ->> 'AirsAfterSeasonNumber' IS NOT NULL) \
                    AND NOT special.is_watched \
-                   AND NOT special.is_hidden_from_resume \
                  UNION ALL \
                  SELECT episode.*, false AS is_marker \
                  FROM ranked_candidates AS candidate \
@@ -3337,7 +2926,6 @@ impl BaseItemRepository {
                      INNER JOIN series_activity AS activity \
                        ON activity.series_key = episode.series_presentation_unique_key \
                      WHERE episode.is_watched \
-                       AND NOT episode.is_hidden_from_resume \
                      ORDER BY episode.series_presentation_unique_key, \
                               episode.last_played_date DESC NULLS LAST, \
                               episode.aired_season DESC, \
@@ -3379,7 +2967,6 @@ impl BaseItemRepository {
                      WHERE COALESCE(special.parent_index_number, -1) = 0 \
                        AND (special.data ->> 'AirsBeforeSeasonNumber' IS NOT NULL \
                             OR special.data ->> 'AirsAfterSeasonNumber' IS NOT NULL) \
-                       AND NOT special.is_hidden_from_resume \
                      UNION ALL \
                      SELECT episode.*, false AS is_marker \
                      FROM ranked_rewatch_candidates AS candidate \
@@ -3442,16 +3029,10 @@ impl BaseItemRepository {
         let mut page_values = values;
         let mut page_sql = if count_enabled {
             format!(
-                "{sql}, page_ids AS MATERIALIZED (\
-                     SELECT id, ROW_NUMBER() OVER (\
-                         ORDER BY series_last_played_date DESC NULLS LAST, \
-                                  result_rank, \
-                                  series_presentation_unique_key, id\
-                     ) AS page_order \
-                     FROM selected \
-                     ORDER BY series_last_played_date DESC NULLS LAST, \
-                              result_rank, \
-                              series_presentation_unique_key, id"
+                "{sql} SELECT id, COUNT(*) OVER () AS total_record_count FROM selected \
+                 ORDER BY series_last_played_date DESC NULLS LAST, \
+                          result_rank, \
+                          series_presentation_unique_key, id"
             )
         } else {
             format!(
@@ -3475,15 +3056,6 @@ impl BaseItemRepository {
                 " LIMIT ",
             );
         }
-        if count_enabled {
-            page_sql.push_str(
-                ") \
-                 SELECT total.total_record_count, page_ids.id \
-                 FROM (SELECT COUNT(*)::bigint AS total_record_count FROM selected) AS total \
-                 LEFT JOIN page_ids ON true \
-                 ORDER BY page_ids.page_order",
-            );
-        }
         let (items, total_record_count) = if count_enabled {
             let page_rows = NextUpPageId::find_by_statement(Statement::from_sql_and_values(
                 DbBackend::Postgres,
@@ -3496,10 +3068,7 @@ impl BaseItemRepository {
                 .first()
                 .map(|row| u64::try_from(row.total_record_count).unwrap_or_default())
                 .unwrap_or_default();
-            let page_ids = page_rows
-                .iter()
-                .filter_map(|row| row.id)
-                .collect::<Vec<_>>();
+            let page_ids = page_rows.iter().map(|row| row.id).collect::<Vec<_>>();
             let page_items = if page_ids.is_empty() {
                 Vec::new()
             } else {
@@ -3882,35 +3451,6 @@ impl BaseItemRepository {
         hierarchy_entries(closure, false, self.database.as_ref()).await
     }
 
-    /// Loads ancestor identifiers nearest-first for several items with one query.
-    ///
-    /// # Errors
-    ///
-    /// Returns a database error when the hierarchy lookup fails.
-    pub async fn ancestor_ids_many(
-        &self,
-        item_ids: &[Uuid],
-    ) -> Result<HashMap<Uuid, Vec<Uuid>>, BaseItemError> {
-        if item_ids.is_empty() {
-            return Ok(HashMap::new());
-        }
-        let closure = ancestor_id::Entity::find()
-            .filter(ancestor_id::Column::ItemId.is_in(item_ids.iter().copied()))
-            .order_by_asc(ancestor_id::Column::ItemId)
-            .order_by_asc(ancestor_id::Column::Depth)
-            .order_by_asc(ancestor_id::Column::ParentItemId)
-            .all(self.database.as_ref())
-            .await?;
-        let mut ancestors = HashMap::<Uuid, Vec<Uuid>>::new();
-        for row in closure {
-            ancestors
-                .entry(row.item_id)
-                .or_default()
-                .push(row.parent_item_id);
-        }
-        Ok(ancestors)
-    }
-
     /// Resolves the nearest ancestor of any requested type for each item in one query.
     ///
     /// The closure-table depth, rather than the direct parent, defines proximity so
@@ -4020,160 +3560,6 @@ impl BaseItemRepository {
         .into_iter()
         .map(|row| row.item_id)
         .collect())
-    }
-
-    /// Returns a bounded page of distinct values from policy-visible items.
-    ///
-    /// The `filtered` CTE is shared with [`Self::query`], so every item,
-    /// hierarchy, tag, parental-rating, playback, and user-library predicate
-    /// is applied before media-stream or item-value facets are projected. The
-    /// total and page are returned by one set-based PostgreSQL statement.
-    ///
-    /// # Errors
-    ///
-    /// Returns a database error when the facet query fails.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "all facet projections share one policy-filtered SQL builder"
-    )]
-    pub async fn query_facet(
-        &self,
-        query: &BaseItemQuery,
-        facet: BaseItemFacet,
-    ) -> Result<BaseItemFacetPage, BaseItemError> {
-        let (mut sql, mut values) = filtered_query_cte(query);
-        sql.push_str(", raw_facet_values AS MATERIALIZED (");
-        sql.push_str(match facet {
-            BaseItemFacet::ItemType => {
-                "SELECT item.item_type AS display_value FROM filtered AS item"
-            }
-            BaseItemFacet::AudioCodec => {
-                "SELECT stream.codec AS display_value \
-                 FROM filtered AS item \
-                 INNER JOIN jellyfin.media_streams AS stream ON stream.item_id = item.id \
-                 WHERE stream.stream_type = 0"
-            }
-            BaseItemFacet::AudioLayout => {
-                "SELECT stream.channel_layout AS display_value \
-                 FROM filtered AS item \
-                 INNER JOIN jellyfin.media_streams AS stream ON stream.item_id = item.id \
-                 WHERE stream.stream_type = 0"
-            }
-            BaseItemFacet::VideoCodec => {
-                "SELECT stream.codec AS display_value \
-                 FROM filtered AS item \
-                 INNER JOIN jellyfin.media_streams AS stream ON stream.item_id = item.id \
-                 WHERE stream.stream_type = 1"
-            }
-            BaseItemFacet::SubtitleCodec => {
-                "SELECT stream.codec AS display_value \
-                 FROM filtered AS item \
-                 INNER JOIN jellyfin.media_streams AS stream ON stream.item_id = item.id \
-                 WHERE stream.stream_type = 2"
-            }
-            BaseItemFacet::StreamLanguage => {
-                "SELECT COALESCE(NULLIF(stream.language, ''), 'und') AS display_value \
-                 FROM filtered AS item \
-                 INNER JOIN jellyfin.media_streams AS stream ON stream.item_id = item.id \
-                 WHERE stream.stream_type IN (0, 2)"
-            }
-            BaseItemFacet::Tag => {
-                "SELECT item_value.value AS display_value \
-                 FROM filtered AS item \
-                 INNER JOIN jellyfin.item_value_map AS item_map ON item_map.item_id = item.id \
-                 INNER JOIN jellyfin.item_values AS item_value \
-                    ON item_value.item_value_id = item_map.item_value_id \
-                 WHERE item_value.\"type\" = 4"
-            }
-            BaseItemFacet::Container => {
-                "SELECT BTRIM(container.value) AS display_value \
-                 FROM filtered AS item \
-                 CROSS JOIN LATERAL regexp_split_to_table(\
-                     COALESCE(item.data ->> 'Container', item.data ->> 'container', ''), ','\
-                 ) AS container(value)"
-            }
-            BaseItemFacet::ExtendedVideoType => {
-                "SELECT video_type.display_value \
-                 FROM filtered AS item \
-                 INNER JOIN jellyfin.media_streams AS stream ON stream.item_id = item.id \
-                    AND stream.stream_type = 1 \
-                 CROSS JOIN LATERAL (VALUES \
-                     (CASE WHEN stream.dv_profile IS NOT NULL \
-                             OR stream.dv_version_major IS NOT NULL \
-                             OR stream.rpu_present_flag = 1 \
-                            THEN 'DolbyVision' END), \
-                     (CASE WHEN stream.hdr10_plus_present_flag = true \
-                            THEN 'Hdr10Plus' END), \
-                     (CASE WHEN lower(stream.color_transfer) = 'arib-std-b67' \
-                            THEN 'HyperLogGamma' END), \
-                     (CASE WHEN lower(stream.color_transfer) = 'smpte2084' \
-                            THEN 'Hdr10' END) \
-                 ) AS video_type(display_value)"
-            }
-            BaseItemFacet::OfficialRating => {
-                "SELECT item.official_rating AS display_value FROM filtered AS item"
-            }
-            BaseItemFacet::ItemPrefix => {
-                "SELECT upper(left(BTRIM(COALESCE(\
-                     NULLIF(item.sort_name, ''), item.name\
-                 )), 1)) AS display_value \
-                 FROM filtered AS item"
-            }
-            BaseItemFacet::ArtistPrefix => {
-                "SELECT upper(left(BTRIM(item_value.value), 1)) AS display_value \
-                 FROM filtered AS item \
-                 INNER JOIN jellyfin.item_value_map AS item_map ON item_map.item_id = item.id \
-                 INNER JOIN jellyfin.item_values AS item_value \
-                    ON item_value.item_value_id = item_map.item_value_id \
-                 WHERE item_value.\"type\" IN (0, 1)"
-            }
-        });
-        sql.push_str(
-            "), facet_values AS MATERIALIZED (\
-                 SELECT DISTINCT ON (lower(BTRIM(display_value))) \
-                        BTRIM(display_value) AS value \
-                 FROM raw_facet_values \
-                 WHERE NULLIF(BTRIM(display_value), '') IS NOT NULL \
-                 ORDER BY lower(BTRIM(display_value)), BTRIM(display_value)\
-             ), facet_total AS (\
-                 SELECT COUNT(*)::bigint AS total_record_count FROM facet_values\
-             ) ",
-        );
-        values.push(i64::try_from(query.start_index).unwrap_or(i64::MAX).into());
-        let offset_parameter = values.len();
-        let _ = write!(
-            sql,
-            "SELECT page.value, total.total_record_count \
-             FROM facet_total AS total \
-             LEFT JOIN LATERAL (\
-                 SELECT value FROM facet_values \
-                 ORDER BY lower(value), value \
-                 OFFSET ${offset_parameter}"
-        );
-        if let Some(limit) = query.limit {
-            values.push(i64::try_from(limit).unwrap_or(i64::MAX).into());
-            let limit_parameter = values.len();
-            let _ = write!(sql, " LIMIT ${limit_parameter}");
-        }
-        sql.push_str(
-            ") AS page ON true \
-             ORDER BY lower(page.value) NULLS LAST, page.value NULLS LAST",
-        );
-
-        let rows = BaseItemFacetRow::find_by_statement(Statement::from_sql_and_values(
-            DbBackend::Postgres,
-            sql,
-            values,
-        ))
-        .all(self.database.as_ref())
-        .await?;
-        let total_record_count = rows.first().map_or(0, |row| {
-            u64::try_from(row.total_record_count).unwrap_or_default()
-        });
-        Ok(BaseItemFacetPage {
-            values: rows.into_iter().filter_map(|row| row.value).collect(),
-            total_record_count,
-        })
     }
 
     /// Computes official 24-hour latest-TV grouping decisions for the top series.
@@ -5444,7 +4830,6 @@ fn resumable_filtered_cte(user_id: Uuid, query: &BaseItemQuery) -> (String, Vec<
              SELECT item_id, MAX(last_played_date) AS resume_last_played_date \
              FROM jellyfin.user_data \
              WHERE user_id = $1 AND playback_position_ticks > 0 \
-               AND is_hidden_from_resume = false \
              GROUP BY item_id\
          ), progress_leaf_items AS MATERIALIZED (\
              SELECT item.id, item.primary_version_id, item.is_virtual_item, \
@@ -5551,7 +4936,6 @@ fn not_resumable_filtered_cte(user_id: Uuid, query: &BaseItemQuery) -> (String, 
              SELECT item_id, MAX(last_played_date) AS resume_last_played_date \
              FROM jellyfin.user_data \
              WHERE user_id = $1 AND playback_position_ticks > 0 \
-               AND is_hidden_from_resume = false \
              GROUP BY item_id\
          ), resumable_groups AS (\
              SELECT DISTINCT COALESCE(item.primary_version_id, item.id) AS primary_id \
@@ -5874,10 +5258,7 @@ fn append_leaf_user_data_condition(
                      WHERE leaf_data.item_id = {alias}.id AND leaf_data.user_id = "
                 ),
             );
-            sql.push_str(
-                " AND leaf_data.playback_position_ticks > 0 \
-                 AND leaf_data.is_hidden_from_resume = false)",
-            );
+            sql.push_str(" AND leaf_data.playback_position_ticks > 0)");
         }
     }
 }

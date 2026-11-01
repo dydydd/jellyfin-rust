@@ -172,43 +172,6 @@ async fn valid_legacy_routes_cover_the_flaky_official_success_paths() {
     assert_eq!(lyrics["Metadata"]["Artist"], "Test Artist");
     assert_eq!(lyrics["Lyrics"][0]["Text"], "First line");
 
-    let lowercase_root = get_json(
-        &fixture.app,
-        &format!("/users/{}/items/root", fixture.user_id),
-        &fixture.user_token,
-    )
-    .await;
-    assert_base_item(&lowercase_root, fixture.root_id, "UserRootFolder", "Root");
-    let lowercase_item = format!("/users/{}/items/{}", fixture.user_id, fixture.item_id);
-    let lowercase_intros = get_json(
-        &fixture.app,
-        &format!("{lowercase_item}/intros"),
-        &fixture.user_token,
-    )
-    .await;
-    assert_eq!(lowercase_intros, intros);
-    let lowercase_trailers = get_json(
-        &fixture.app,
-        &format!("{lowercase_item}/localtrailers"),
-        &fixture.user_token,
-    )
-    .await;
-    assert_eq!(lowercase_trailers, trailers);
-    let lowercase_features = get_json(
-        &fixture.app,
-        &format!("{lowercase_item}/specialfeatures"),
-        &fixture.user_token,
-    )
-    .await;
-    assert_eq!(lowercase_features, features);
-    let lowercase_lyrics = get_json(
-        &fixture.app,
-        &format!("{lowercase_item}/lyrics"),
-        &fixture.user_token,
-    )
-    .await;
-    assert_eq!(lowercase_lyrics, lyrics);
-
     fixture.cleanup().await;
 }
 
@@ -238,36 +201,6 @@ async fn item_detail_routes_bind_user_id_casing_and_nil_like_official() {
         let body = get_json(&fixture.app, &route, &fixture.user_token).await;
         assert_eq!(body["Id"], fixture.item_id.simple().to_string(), "{route}");
     }
-
-    // RequestHelpers.GetUserId treats Guid.Empty exactly like an omitted query/path id.
-    let root = get_json(
-        &fixture.app,
-        &format!("/items/root?userid={nil}"),
-        &fixture.user_token,
-    )
-    .await;
-    assert_base_item(&root, fixture.root_id, "UserRootFolder", "Root");
-    let intros = get_json(
-        &fixture.app,
-        &format!("/Items/{}/Intros?UserId={nil}", fixture.item_id),
-        &fixture.user_token,
-    )
-    .await;
-    assert_eq!(intros["TotalRecordCount"], 1);
-    let legacy_intros = get_json(
-        &fixture.app,
-        &format!("/users/{nil}/items/{}/intros", fixture.item_id),
-        &fixture.user_token,
-    )
-    .await;
-    assert_eq!(legacy_intros, intros);
-    let features = get_json(
-        &fixture.app,
-        &format!("/items/{}/specialfeatures?userid={nil}", fixture.item_id),
-        &fixture.user_token,
-    )
-    .await;
-    assert_eq!(features.as_array().map(Vec::len), Some(1));
 
     let missing_user_id = Uuid::new_v4();
     for route in [
@@ -940,11 +873,6 @@ async fn trickplay_is_projected_by_default_for_single_video_items() {
 async fn remote_lyric_search_matches_management_policy_and_empty_provider_contract() {
     let fixture = UserLibraryFixture::new().await;
     let route = format!("/Audio/{}/RemoteSearch/Lyrics", fixture.item_id);
-    let api_key_token = ApiKeyRepository::new(fixture.database.clone())
-        .create("remote-lyric-search-key")
-        .await
-        .expect("remote lyric search API key creation")
-        .access_token;
 
     let unauthenticated = fixture
         .app
@@ -959,14 +887,6 @@ async fn remote_lyric_search_matches_management_policy_and_empty_provider_contra
 
     let remote = get_json(&fixture.app, &route, &fixture.administrator_token).await;
     assert_eq!(remote.as_array().expect("remote lyric results").len(), 0);
-    let api_key_remote = get_json(&fixture.app, &route, &api_key_token).await;
-    assert_eq!(
-        api_key_remote
-            .as_array()
-            .expect("API-key remote lyric results")
-            .len(),
-        0
-    );
 
     let missing = request(
         &fixture.app,
@@ -983,20 +903,6 @@ async fn remote_lyric_search_matches_management_policy_and_empty_provider_contra
     )
     .await;
     assert_eq!(non_audio.status(), StatusCode::NOT_FOUND);
-    let api_key_missing = request(
-        &fixture.app,
-        &format!("/Audio/{}/RemoteSearch/Lyrics", Uuid::new_v4()),
-        &api_key_token,
-    )
-    .await;
-    assert_eq!(api_key_missing.status(), StatusCode::NOT_FOUND);
-    let api_key_non_audio = request(
-        &fixture.app,
-        &format!("/Audio/{}/RemoteSearch/Lyrics", fixture.root_id),
-        &api_key_token,
-    )
-    .await;
-    assert_eq!(api_key_non_audio.status(), StatusCode::NOT_FOUND);
 
     let download_route = format!(
         "/Audio/{}/RemoteSearch/Lyrics/remote-provider-id",
@@ -1031,8 +937,6 @@ async fn remote_lyric_search_matches_management_policy_and_empty_provider_contra
     assert_eq!(provider_regular.status(), StatusCode::FORBIDDEN);
     let provider_admin = request(&fixture.app, provider_route, &fixture.administrator_token).await;
     assert_eq!(provider_admin.status(), StatusCode::NOT_FOUND);
-    let provider_api_key = request(&fixture.app, provider_route, &api_key_token).await;
-    assert_eq!(provider_api_key.status(), StatusCode::NOT_FOUND);
 
     fixture.cleanup().await;
 }
@@ -1047,15 +951,10 @@ async fn remote_lyric_get_and_download_preserve_provider_bytes_and_error_semanti
             requested_ids: Arc::clone(&requested_ids),
         })])
         .await;
-    let api_key_token = ApiKeyRepository::new(fixture.database.clone())
-        .create("remote-lyric-download-key")
-        .await
-        .expect("remote lyric API key creation")
-        .access_token;
 
     let preview_route =
         format!("/Providers/Lyrics/{DOWNLOAD_LYRIC_PROVIDER_ID}_preview_with_underscores");
-    let preview = get_json(&fixture.app, &preview_route, &api_key_token).await;
+    let preview = get_json(&fixture.app, &preview_route, &fixture.administrator_token).await;
     assert_eq!(preview["Lyrics"][0]["Text"], "Downloaded from UTF-16");
     assert!(
         MediaStreamService::new(fixture.database.clone())
@@ -1073,7 +972,7 @@ async fn remote_lyric_get_and_download_preserve_provider_bytes_and_error_semanti
         "/Audio/{}/RemoteSearch/Lyrics/{DOWNLOAD_LYRIC_PROVIDER_ID}_download_with_underscores",
         fixture.item_id
     );
-    let download = request_post(&fixture.app, &download_route, &api_key_token).await;
+    let download = request_post(&fixture.app, &download_route, &fixture.administrator_token).await;
     assert_eq!(download.status(), StatusCode::OK);
     assert_eq!(
         body_json(download).await["Lyrics"][0]["Text"],
@@ -1168,11 +1067,6 @@ async fn remote_lyric_get_and_download_preserve_provider_bytes_and_error_semanti
 async fn upload_lyrics_matches_management_policy_and_persists_postgres_metadata() {
     let fixture = UserLibraryFixture::new().await;
     let route = format!("/Audio/{}/Lyrics?fileName=uploaded.txt", fixture.item_id);
-    let api_key_token = ApiKeyRepository::new(fixture.database.clone())
-        .create("upload-lyrics-key")
-        .await
-        .expect("upload lyrics API key creation")
-        .access_token;
 
     let unauthenticated = fixture
         .app
@@ -1242,18 +1136,6 @@ async fn upload_lyrics_matches_management_policy_and_persists_postgres_metadata(
         (Uuid::new_v4(), "missing item"),
         (fixture.root_id, "non-audio item"),
     ] {
-        let missing_filename = request_post_body(
-            &fixture.app,
-            &format!("/Audio/{target}/Lyrics"),
-            &fixture.administrator_token,
-            "Uploaded line",
-        )
-        .await;
-        assert_eq!(
-            missing_filename.status(),
-            StatusCode::NOT_FOUND,
-            "{label} must be resolved before validating the filename"
-        );
         let empty_invalid = request_post_body(
             &fixture.app,
             &format!("/Audio/{target}/Lyrics?fileName=uploaded.srt"),
@@ -1268,23 +1150,10 @@ async fn upload_lyrics_matches_management_policy_and_persists_postgres_metadata(
         );
     }
 
-    let api_key_missing = request_post_body(
-        &fixture.app,
-        &format!("/Audio/{}/Lyrics", Uuid::new_v4()),
-        &api_key_token,
-        "",
-    )
-    .await;
-    assert_eq!(
-        api_key_missing.status(),
-        StatusCode::NOT_FOUND,
-        "API-key item lookup must precede filename and body validation"
-    );
-
     let uploaded = request_post_body(
         &fixture.app,
         &route,
-        &api_key_token,
+        &fixture.administrator_token,
         "  First uploaded  \nSecond uploaded",
     )
     .await;
@@ -1625,11 +1494,6 @@ async fn local_lyrics_try_streams_by_index_and_use_path_extensions() {
 async fn delete_lyrics_matches_management_policy_and_updates_postgres_metadata() {
     let fixture = UserLibraryFixture::new().await;
     let route = format!("/Audio/{}/Lyrics", fixture.item_id);
-    let api_key_token = ApiKeyRepository::new(fixture.database.clone())
-        .create("delete-lyrics-key")
-        .await
-        .expect("delete lyrics API key creation")
-        .access_token;
 
     let before = get_json(&fixture.app, &route, &fixture.user_token).await;
     assert_eq!(before["Lyrics"][0]["Text"], "First line");
@@ -1661,7 +1525,7 @@ async fn delete_lyrics_matches_management_policy_and_updates_postgres_metadata()
     .await;
     assert_eq!(non_audio.status(), StatusCode::NOT_FOUND);
 
-    let deleted = request_delete(&fixture.app, &route, &api_key_token).await;
+    let deleted = request_delete(&fixture.app, &route, &fixture.administrator_token).await;
     assert_eq!(deleted.status(), StatusCode::NO_CONTENT);
 
     let deleted_again = request_delete(&fixture.app, &route, &fixture.administrator_token).await;

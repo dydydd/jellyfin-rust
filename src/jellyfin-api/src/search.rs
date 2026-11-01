@@ -1,95 +1,18 @@
 use std::{str::FromStr, sync::Arc};
 
 use axum::{Json, extract::State, http::HeaderMap};
-use axum_extra::extract::{Query, QueryRejection};
+use axum_extra::extract::Query;
 use jellyfin_controller::{Artist, ArtistValueKind, Genre, MusicGenre, Person, Studio};
 use jellyfin_data::{
     BaseItemQuery, ItemValueQuery, PersonQuery, ScoredBaseItemPage, entities::base_item,
 };
 use jellyfin_model::{MediaType, SearchHint, SearchHintResult};
-use jellyfin_server_implementations::DtoImageProjection;
 use serde::Deserialize;
 use uuid::Uuid;
 
 use crate::{ApiError, AppState, authentication};
 
 const DEFAULT_EXCLUDE_ITEM_TYPES: [&str; 3] = ["Year", "Folder", "CollectionFolder"];
-
-const BASE_ITEM_KIND_NAMES: [&str; 37] = [
-    "AggregateFolder",
-    "Audio",
-    "AudioBook",
-    "BasePluginFolder",
-    "Book",
-    "BoxSet",
-    "Channel",
-    "ChannelFolderItem",
-    "CollectionFolder",
-    "Episode",
-    "Folder",
-    "Genre",
-    "ManualPlaylistsFolder",
-    "Movie",
-    "LiveTvChannel",
-    "LiveTvProgram",
-    "MusicAlbum",
-    "MusicArtist",
-    "MusicGenre",
-    "MusicVideo",
-    "Person",
-    "Photo",
-    "PhotoAlbum",
-    "Playlist",
-    "PlaylistsFolder",
-    "Program",
-    "Recording",
-    "Season",
-    "Series",
-    "Studio",
-    "Trailer",
-    "TvChannel",
-    "TvProgram",
-    "UserRootFolder",
-    "UserView",
-    "Video",
-    "Year",
-];
-const MEDIA_TYPE_NAMES: [&str; 5] = ["Unknown", "Video", "Audio", "Photo", "Book"];
-
-#[derive(Clone, Copy, Debug)]
-struct SearchBaseItemKind(&'static str);
-
-impl FromStr for SearchBaseItemKind {
-    type Err = ();
-
-    fn from_str(value: &str) -> Result<Self, Self::Err> {
-        parse_search_enum(value, &BASE_ITEM_KIND_NAMES).map(Self)
-    }
-}
-
-#[derive(Clone, Copy, Debug)]
-struct SearchMediaType(&'static str);
-
-impl FromStr for SearchMediaType {
-    type Err = ();
-
-    fn from_str(value: &str) -> Result<Self, Self::Err> {
-        parse_search_enum(value, &MEDIA_TYPE_NAMES).map(Self)
-    }
-}
-
-fn parse_search_enum(value: &str, names: &'static [&'static str]) -> Result<&'static str, ()> {
-    let value = value.trim();
-    if let Ok(index) = value.parse::<usize>() {
-        return names.get(index).copied().ok_or(());
-    }
-
-    names
-        .iter()
-        .copied()
-        .find(|name| name.eq_ignore_ascii_case(value))
-        .ok_or(())
-}
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
@@ -106,23 +29,23 @@ pub(crate) struct SearchHintsQuery {
         rename = "includeItemTypes",
         alias = "IncludeItemTypes",
         alias = "includeitemtypes",
-        deserialize_with = "crate::query::comma::deserialize_model_binder"
+        deserialize_with = "crate::query::comma::deserialize"
     )]
-    include_item_types: Vec<SearchBaseItemKind>,
+    include_item_types: Vec<String>,
     #[serde(
         rename = "excludeItemTypes",
         alias = "ExcludeItemTypes",
         alias = "excludeitemtypes",
-        deserialize_with = "crate::query::comma::deserialize_model_binder"
+        deserialize_with = "crate::query::comma::deserialize"
     )]
-    exclude_item_types: Vec<SearchBaseItemKind>,
+    exclude_item_types: Vec<String>,
     #[serde(
         rename = "mediaTypes",
         alias = "MediaTypes",
         alias = "mediatypes",
-        deserialize_with = "crate::query::comma::deserialize_model_binder"
+        deserialize_with = "crate::query::comma::deserialize"
     )]
-    media_types: Vec<SearchMediaType>,
+    media_types: Vec<String>,
     #[serde(rename = "parentId", alias = "ParentId", alias = "parentid")]
     parent_id: Option<Uuid>,
     #[serde(rename = "isMovie", alias = "IsMovie", alias = "ismovie")]
@@ -171,10 +94,10 @@ pub(crate) struct SearchHintsQuery {
 pub(crate) async fn hints(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    query: Result<Query<SearchHintsQuery>, QueryRejection>,
+    Query(query): Query<SearchHintsQuery>,
 ) -> Result<Json<SearchHintResult>, ApiError> {
+    let mut query = query;
     let authenticated = authentication::authenticated_session(&state, &headers).await?;
-    let Query(mut query) = query.map_err(|_| ApiError::InvalidRequest)?;
     let search_term = query
         .search_term
         .as_deref()
@@ -234,10 +157,7 @@ pub(crate) async fn hints(
                     parent_id: query.parent_id,
                     recursive: true,
                     search_term: Some(search_term.to_owned()),
-                    include_item_types: std::mem::take(&mut query.include_item_types)
-                        .into_iter()
-                        .map(|item_type| item_type.0.to_owned())
-                        .collect(),
+                    include_item_types: std::mem::take(&mut query.include_item_types),
                     exclude_item_types,
                     media_types: media_types_for_query(
                         &mut query.media_types,
@@ -255,18 +175,8 @@ pub(crate) async fn hints(
                 },
             )
             .await?;
-        let media_item_ids = page
-            .items
-            .iter()
-            .map(|scored| scored.item.id)
-            .collect::<Vec<_>>();
-        let mut image_projections = state
-            .dto_images
-            .project_search_hint_images_many(&media_item_ids)
-            .await
-            .map_err(|_| ApiError::Internal)?;
-        let media = media_search_hint_result(page, search_term, &mut image_projections)?;
-        add_total_record_count(&mut result, media.total_record_count)?;
+        let media = media_search_hint_result(page, search_term);
+        result.total_record_count += media.total_record_count;
         result.search_hints.extend(media.search_hints);
     }
 
@@ -296,10 +206,7 @@ pub(crate) async fn hints(
                 },
             )
             .await?;
-        add_total_record_count(
-            &mut result,
-            crate::user_library::checked_int32(page.total_record_count)?,
-        )?;
+        result.total_record_count += usize::try_from(page.total_record_count).unwrap_or(usize::MAX);
         let person_ids = page
             .people
             .iter()
@@ -344,10 +251,7 @@ pub(crate) async fn hints(
                 },
             )
             .await?;
-        add_total_record_count(
-            &mut result,
-            crate::user_library::checked_int32(page.total_record_count)?,
-        )?;
+        result.total_record_count += usize::try_from(page.total_record_count).unwrap_or(usize::MAX);
         result.search_hints.extend(
             page.genres
                 .into_iter()
@@ -381,10 +285,7 @@ pub(crate) async fn hints(
                 },
             )
             .await?;
-        add_total_record_count(
-            &mut result,
-            crate::user_library::checked_int32(page.total_record_count)?,
-        )?;
+        result.total_record_count += usize::try_from(page.total_record_count).unwrap_or(usize::MAX);
         result.search_hints.extend(
             page.genres
                 .into_iter()
@@ -418,10 +319,7 @@ pub(crate) async fn hints(
                 },
             )
             .await?;
-        add_total_record_count(
-            &mut result,
-            crate::user_library::checked_int32(page.total_record_count)?,
-        )?;
+        result.total_record_count += usize::try_from(page.total_record_count).unwrap_or(usize::MAX);
         result.search_hints.extend(
             page.studios
                 .into_iter()
@@ -456,10 +354,7 @@ pub(crate) async fn hints(
                 },
             )
             .await?;
-        add_total_record_count(
-            &mut result,
-            crate::user_library::checked_int32(page.total_record_count)?,
-        )?;
+        result.total_record_count += usize::try_from(page.total_record_count).unwrap_or(usize::MAX);
         result.search_hints.extend(
             page.artists
                 .into_iter()
@@ -498,35 +393,19 @@ fn paginate_search_hints(result: &mut SearchHintResult, start_index: i32, limit:
         .collect();
 }
 
-fn add_total_record_count(result: &mut SearchHintResult, count: i32) -> Result<(), ApiError> {
-    result.total_record_count = result
-        .total_record_count
-        .checked_add(count)
-        .ok_or(ApiError::Internal)?;
-    Ok(())
-}
-
 fn media_types_for_query(
-    media_types: &mut Vec<SearchMediaType>,
+    media_types: &mut Vec<String>,
     remaining_consumers: &mut usize,
 ) -> Vec<String> {
     *remaining_consumers -= 1;
-    let media_types = if *remaining_consumers == 0 {
+    if *remaining_consumers == 0 {
         std::mem::take(media_types)
     } else {
         media_types.clone()
-    };
-    media_types
-        .into_iter()
-        .map(|media_type| media_type.0.to_owned())
-        .collect()
+    }
 }
 
-fn search_exclude_item_types(exclude_item_types: Vec<SearchBaseItemKind>) -> Vec<String> {
-    let mut exclude_item_types = exclude_item_types
-        .into_iter()
-        .map(|item_type| item_type.0.to_owned())
-        .collect::<Vec<_>>();
+fn search_exclude_item_types(mut exclude_item_types: Vec<String>) -> Vec<String> {
     for item_type in DEFAULT_EXCLUDE_ITEM_TYPES {
         if !exclude_item_types
             .iter()
@@ -538,75 +417,31 @@ fn search_exclude_item_types(exclude_item_types: Vec<SearchBaseItemKind>) -> Vec
     exclude_item_types
 }
 
-fn includes_hint_type(include_item_types: &[SearchBaseItemKind], hint_types: &[&str]) -> bool {
+fn includes_hint_type(include_item_types: &[String], hint_types: &[&str]) -> bool {
     include_item_types.is_empty()
         || hint_types.iter().any(|hint_type| {
             include_item_types
                 .iter()
-                .any(|candidate| candidate.0.eq_ignore_ascii_case(hint_type))
+                .any(|candidate| candidate.eq_ignore_ascii_case(hint_type))
         })
 }
 
-fn excludes_hint_type(exclude_item_types: &[SearchBaseItemKind], hint_types: &[&str]) -> bool {
+fn excludes_hint_type(exclude_item_types: &[String], hint_types: &[&str]) -> bool {
     hint_types.iter().any(|hint_type| {
         exclude_item_types
             .iter()
-            .any(|candidate| candidate.0.eq_ignore_ascii_case(hint_type))
+            .any(|candidate| candidate.eq_ignore_ascii_case(hint_type))
     })
 }
 
-fn media_search_hint_result(
-    page: ScoredBaseItemPage,
-    matched_term: &str,
-    image_projections: &mut std::collections::HashMap<Uuid, DtoImageProjection>,
-) -> Result<SearchHintResult, ApiError> {
-    Ok(SearchHintResult {
-        total_record_count: crate::user_library::checked_int32(page.total_record_count)?,
+fn media_search_hint_result(page: ScoredBaseItemPage, matched_term: &str) -> SearchHintResult {
+    SearchHintResult {
+        total_record_count: usize::try_from(page.total_record_count).unwrap_or(usize::MAX),
         search_hints: page
             .items
             .into_iter()
-            .map(|scored| {
-                let item_id = scored.item.id;
-                let mut hint = search_hint(scored.item, matched_term);
-                if let Some(projection) = image_projections.remove(&item_id) {
-                    attach_search_hint_images(&mut hint, item_id, projection);
-                }
-                hint
-            })
+            .map(|scored| search_hint(scored.item, matched_term))
             .collect(),
-    })
-}
-
-fn attach_search_hint_images(
-    hint: &mut SearchHint,
-    item_id: Uuid,
-    mut projection: DtoImageProjection,
-) {
-    hint.primary_image_tag = projection.primary_image_tag;
-    if hint.primary_image_tag.is_some() {
-        hint.primary_image_aspect_ratio = projection.primary_image_aspect_ratio;
-    }
-
-    if let Some(tag) = projection.image_tags.remove("Thumb") {
-        hint.thumb_image_tag = Some(tag);
-        hint.thumb_image_item_id = Some(item_id.simple().to_string());
-    } else if let (Some(owner_id), Some(tag)) = (
-        projection.parent_thumb_item_id,
-        projection.parent_thumb_image_tag,
-    ) {
-        hint.thumb_image_tag = Some(tag);
-        hint.thumb_image_item_id = Some(owner_id.simple().to_string());
-    }
-
-    if let Some(tag) = projection.backdrop_image_tags.into_iter().next() {
-        hint.backdrop_image_tag = Some(tag);
-        hint.backdrop_image_item_id = Some(item_id.simple().to_string());
-    } else if let (Some(owner_id), Some(tag)) = (
-        projection.parent_backdrop_image_item_id,
-        projection.parent_backdrop_image_tags.into_iter().next(),
-    ) {
-        hint.backdrop_image_tag = Some(tag);
-        hint.backdrop_image_item_id = Some(owner_id.simple().to_string());
     }
 }
 
@@ -721,23 +556,4 @@ fn metadata_string_array(value: Option<&serde_json::Value>, keys: &[&str]) -> Ve
             })
         })
         .unwrap_or_default()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn combined_search_total_rejects_int32_overflow() {
-        let mut result = SearchHintResult {
-            total_record_count: i32::MAX - 1,
-            ..SearchHintResult::default()
-        };
-        add_total_record_count(&mut result, 1).unwrap();
-        assert_eq!(result.total_record_count, i32::MAX);
-        assert!(matches!(
-            add_total_record_count(&mut result, 1),
-            Err(ApiError::Internal)
-        ));
-    }
 }

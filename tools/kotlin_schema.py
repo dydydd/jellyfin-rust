@@ -10,6 +10,7 @@ The SDK sets coerceInputValues = true, which rescues *nullable* enum properties
 import os
 import re
 import json
+from pathlib import Path
 
 SDK = os.path.join(os.path.dirname(__file__), os.pardir,
                    "jellyfin-sdk-kotlin", "jellyfin-model", "src",
@@ -30,49 +31,14 @@ def strip_comments(text):
     return text
 
 
-def primary_constructor(body, name):
-    """Return a data class's primary-constructor text.
-
-    Generated models with date properties start with a file-level
-    ``@file:UseSerializers(...)`` annotation. Looking for the first parenthesis
-    in the file therefore silently treated that annotation as the constructor
-    and produced an empty model schema.
-    """
-    declaration = re.search(rf'\bdata\s+class\s+{re.escape(name)}\s*\(', body)
-    if not declaration:
-        return None
-    start = declaration.end() - 1
-    depth = 0
-    quoted = False
-    escaped = False
-    for index in range(start, len(body)):
-        char = body[index]
-        if quoted:
-            if escaped:
-                escaped = False
-            elif char == '\\':
-                escaped = True
-            elif char == '"':
-                quoted = False
-            continue
-        if char == '"':
-            quoted = True
-        elif char == '(':
-            depth += 1
-        elif char == ')':
-            depth -= 1
-            if depth == 0:
-                return body[start + 1:index]
-    return None
-
-
 def parse_class(name, body):
     """Return list of {serial, kotlinType, nullable, required}."""
     fields = []
     # Only look at the primary constructor parameter list.
-    params = primary_constructor(body, name)
-    if params is None:
+    m = re.search(r'\((.*?)\n\)', body, re.S)
+    if not m:
         return fields
+    params = m.group(1)
     # Split top-level commas (ignore nested <> and ())
     parts, depth, cur = [], 0, ''
     for ch in params:
@@ -91,12 +57,7 @@ def parse_class(name, body):
         if not part:
             continue
         sm = serial_re.search(part)
-        pm = re.search(
-            r'(?:public\s+)?(?:override\s+)?val\s+(`?\w+`?)\s*:\s*'
-            r'(.+?)(?:\s*=\s*(.+))?$',
-            part,
-            re.S,
-        )
+        pm = re.search(r'public val (\w+)\s*:\s*(.+?)(?:\s*=\s*(.+))?$', part, re.S)
         if not pm:
             continue
         kotlin_type = pm.group(2).strip()
@@ -108,7 +69,7 @@ def parse_class(name, body):
                 kotlin_type, default = head.strip(), tail.strip()
         nullable = kotlin_type.endswith('?')
         fields.append({
-            'name': pm.group(1).strip('`'),
+            'name': pm.group(1),
             'serial': sm.group(1) if sm else pm.group(1),
             'kotlinType': kotlin_type,
             'nullable': nullable,
@@ -125,8 +86,7 @@ def load():
             if not fn.endswith('.kt'):
                 continue
             path = os.path.join(root, fn)
-            with open(path, encoding='utf-8') as source:
-                text = strip_comments(source.read())
+            text = strip_comments(Path(path).read_text(encoding='utf-8'))
             mname = fn[:-3]
             if re.search(r'\benum class\b', text):
                 vals = [a for a, _b in enum_entry_re.findall(text)]

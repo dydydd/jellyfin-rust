@@ -58,13 +58,6 @@ mod m20260906_000055_index_item_by_name_entities;
 mod m20260906_000056_add_case_sensitive_item_ids;
 mod m20260906_000057_optimize_chapter_queries;
 mod m20260906_000058_repair_alternate_relationship_order;
-mod m20260913_000059_add_metadata_options_configuration;
-mod m20260913_000060_bound_device_option_ids;
-mod m20260913_000061_add_hidden_from_resume;
-mod m20260913_000062_create_user_search_state;
-mod m20260914_000063_create_emby_item_access;
-mod m20260914_000064_create_emby_camera_uploads;
-mod m20260915_000065_add_item_value_emby_ids;
 pub mod startup_routines;
 
 #[doc(hidden)]
@@ -170,13 +163,6 @@ pub use m20260906_000055_index_item_by_name_entities::Migration as IndexItemByNa
 pub use m20260906_000056_add_case_sensitive_item_ids::Migration as AddCaseSensitiveItemIdsMigration;
 pub use m20260906_000057_optimize_chapter_queries::Migration as OptimizeChapterQueriesMigration;
 pub use m20260906_000058_repair_alternate_relationship_order::Migration as RepairAlternateRelationshipOrderMigration;
-pub use m20260913_000059_add_metadata_options_configuration::Migration as AddMetadataOptionsConfigurationMigration;
-pub use m20260913_000060_bound_device_option_ids::Migration as BoundDeviceOptionIdsMigration;
-pub use m20260913_000061_add_hidden_from_resume::Migration as AddHiddenFromResumeMigration;
-pub use m20260913_000062_create_user_search_state::Migration as CreateUserSearchStateMigration;
-pub use m20260914_000063_create_emby_item_access::Migration as CreateEmbyItemAccessMigration;
-pub use m20260914_000064_create_emby_camera_uploads::Migration as CreateEmbyCameraUploadsMigration;
-pub use m20260915_000065_add_item_value_emby_ids::Migration as AddItemValueEmbyIdsMigration;
 
 pub use startup_routines::{
     ALL_STARTUP_ROUTINES, MigrationStage, StartupMigrationRoutine, StartupMigrationRunner,
@@ -246,13 +232,6 @@ impl MigratorTrait for Migrator {
             Box::new(m20260906_000056_add_case_sensitive_item_ids::Migration),
             Box::new(m20260906_000057_optimize_chapter_queries::Migration),
             Box::new(m20260906_000058_repair_alternate_relationship_order::Migration),
-            Box::new(m20260913_000059_add_metadata_options_configuration::Migration),
-            Box::new(m20260913_000060_bound_device_option_ids::Migration),
-            Box::new(m20260913_000061_add_hidden_from_resume::Migration),
-            Box::new(m20260913_000062_create_user_search_state::Migration),
-            Box::new(m20260914_000063_create_emby_item_access::Migration),
-            Box::new(m20260914_000064_create_emby_camera_uploads::Migration),
-            Box::new(m20260915_000065_add_item_value_emby_ids::Migration),
         ]
     }
 }

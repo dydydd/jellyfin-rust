@@ -2,10 +2,9 @@ use std::sync::Arc;
 
 use axum::{
     Json,
-    extract::{OriginalUri, Path, State, rejection::PathRejection},
+    extract::{OriginalUri, Path, Query, State, rejection::PathRejection},
     http::{HeaderMap, StatusCode},
 };
-use axum_extra::extract::{Query, QueryRejection};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -19,12 +18,12 @@ pub(crate) struct CreateQuery {
     #[serde(
         alias = "Ids",
         alias = "IDs",
-        deserialize_with = "crate::query::comma::deserialize_model_binder"
+        deserialize_with = "crate::query::comma::deserialize"
     )]
     ids: Vec<String>,
-    #[serde(alias = "ParentId", alias = "parentid")]
+    #[serde(alias = "ParentId")]
     parent_id: Option<Uuid>,
-    #[serde(alias = "IsLocked", alias = "islocked")]
+    #[serde(alias = "IsLocked")]
     is_locked: bool,
 }
 
@@ -34,7 +33,7 @@ pub(crate) struct ItemsQuery {
         default,
         alias = "Ids",
         alias = "IDs",
-        deserialize_with = "crate::query::comma::deserialize_model_binder"
+        deserialize_with = "crate::query::comma::deserialize"
     )]
     ids: Vec<Uuid>,
 }
@@ -49,7 +48,7 @@ pub(crate) async fn create(
     State(state): State<Arc<AppState>>,
     OriginalUri(uri): OriginalUri,
     headers: HeaderMap,
-    query: Result<Query<CreateQuery>, QueryRejection>,
+    query: Result<Query<CreateQuery>, axum::extract::rejection::QueryRejection>,
 ) -> Result<Json<CollectionCreationResult>, ApiError> {
     let identity = authorization::require_default(&state, &headers, &uri).await?;
     require_collection_management(&identity)?;
@@ -71,7 +70,7 @@ pub(crate) async fn add_items(
     OriginalUri(uri): OriginalUri,
     headers: HeaderMap,
     path: Result<Path<Uuid>, PathRejection>,
-    query: Result<Query<ItemsQuery>, QueryRejection>,
+    query: Result<Query<ItemsQuery>, axum::extract::rejection::QueryRejection>,
 ) -> Result<StatusCode, ApiError> {
     let identity = authorization::require_default(&state, &headers, &uri).await?;
     require_collection_management(&identity)?;
@@ -89,7 +88,7 @@ pub(crate) async fn remove_items(
     OriginalUri(uri): OriginalUri,
     headers: HeaderMap,
     path: Result<Path<Uuid>, PathRejection>,
-    query: Result<Query<ItemsQuery>, QueryRejection>,
+    query: Result<Query<ItemsQuery>, axum::extract::rejection::QueryRejection>,
 ) -> Result<StatusCode, ApiError> {
     let identity = authorization::require_default(&state, &headers, &uri).await?;
     require_collection_management(&identity)?;

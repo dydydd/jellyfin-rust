@@ -296,24 +296,6 @@ impl DeviceRepository {
         Ok(devices.exec(self.database.as_ref()).await?.rows_affected)
     }
 
-    /// Revokes all device sessions for a set of users in one statement,
-    /// preserving an optional token used by the administrative caller.
-    pub async fn revoke_users_tokens(
-        &self,
-        user_ids: &[Uuid],
-        except_access_token: Option<&str>,
-    ) -> Result<u64, AuthenticationStoreError> {
-        if user_ids.is_empty() {
-            return Ok(0);
-        }
-        let mut devices = device::Entity::delete_many()
-            .filter(device::Column::UserId.is_in(user_ids.iter().copied()));
-        if let Some(token) = except_access_token {
-            devices = devices.filter(device::Column::AccessToken.ne(token));
-        }
-        Ok(devices.exec(self.database.as_ref()).await?.rows_affected)
-    }
-
     /// Deletes a device authentication record by exact access token.
     ///
     /// # Errors
@@ -527,58 +509,6 @@ impl DeviceRepository {
             .exec(self.database.as_ref())
             .await?
             .rows_affected)
-    }
-
-    /// Persists capabilities while retaining Emby-only device fields that
-    /// are absent from Jellyfin's shared strongly typed DTO.
-    ///
-    /// The filtering and merge happen in one PostgreSQL update so a modern
-    /// Jellyfin capabilities report cannot race with an Emby report and
-    /// silently discard push, sync, or application identifiers.
-    ///
-    /// # Errors
-    ///
-    /// Returns a validation error for non-object capabilities, or a database
-    /// error when updating fails.
-    pub async fn update_capabilities_preserving_emby_fields_by_token(
-        &self,
-        access_token: &str,
-        capabilities: Value,
-    ) -> Result<u64, AuthenticationStoreError> {
-        if !capabilities.is_object() {
-            return Err(AuthenticationStoreError::InvalidCapabilities);
-        }
-        let result = self
-            .database
-            .execute(Statement::from_sql_and_values(
-                DbBackend::Postgres,
-                r#"
-                UPDATE jellyfin.devices
-                SET capabilities = COALESCE(
-                        (
-                            SELECT jsonb_object_agg(
-                                CASE lower(entry.key)
-                                    WHEN 'pushtoken' THEN 'PushToken'
-                                    WHEN 'pushtokentype' THEN 'PushTokenType'
-                                    WHEN 'supportssync' THEN 'SupportsSync'
-                                    WHEN 'appid' THEN 'AppId'
-                                END,
-                                entry.value
-                            )
-                            FROM jsonb_each(COALESCE(capabilities, '{}'::jsonb)) AS entry
-                            WHERE lower(entry.key) IN (
-                                'pushtoken', 'pushtokentype', 'supportssync', 'appid'
-                            )
-                        ),
-                        '{}'::jsonb
-                    ) || $1::jsonb,
-                    date_modified = clock_timestamp()
-                WHERE access_token = $2
-                "#,
-                [capabilities.into(), access_token.to_owned().into()],
-            ))
-            .await?;
-        Ok(result.rows_affected())
     }
 
     /// Persists the currently playing item and player state for an active session.

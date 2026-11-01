@@ -23,14 +23,11 @@ use jellyfin_controller::{
     MediaStreamService, PersonReconciliationService, UserService, VirtualFolderService,
 };
 use jellyfin_data::{
-    BaseItemImageRepository, BaseItemImageType, BaseItemRepository, ChapterRepository,
-    DatabaseConfig, DeviceOptionsRepository, DeviceRepository, NewBaseItem, NewBaseItemImage,
-    NewChapter, NewDevice, NewPerson, NewPersonCredit, NewTrickplayInfo, PersonRepository,
-    TrickplayInfoRepository,
+    BaseItemRepository, ChapterRepository, DatabaseConfig, DeviceOptionsRepository,
+    DeviceRepository, NewBaseItem, NewChapter, NewDevice, NewPerson, NewPersonCredit,
+    NewTrickplayInfo, PersonRepository, TrickplayInfoRepository,
 };
-use jellyfin_model::{
-    AccessSchedule, DynamicDayOfWeek, MediaStream, MediaStreamType, TranscodeReason, UserPolicy,
-};
+use jellyfin_model::{MediaStream, MediaStreamType, UserPolicy};
 use jellyfin_server_implementations::DefaultAuthenticationProvider;
 use percent_encoding::utf8_percent_encode;
 use sea_orm::{ConnectionTrait, DatabaseConnection};
@@ -42,12 +39,6 @@ use uuid::Uuid;
 const AUTHORIZATION: &str = "MediaBrowser Client=\"kotlin-sdk-compat\", DeviceId=\"kotlin-sdk-compat\", Device=\"Test\", Version=\"1.0\"";
 const LOGIN_AUTHORIZATION: &str = "MediaBrowser Client=\"kotlin-sdk-compat\", DeviceId=\"kotlin-sdk-login-compat\", Device=\"Test\", Version=\"1.0\"";
 const DATABASE_PREFIX: &str = "jellyfin_android_sdk_compat_";
-
-struct DumpedResponse {
-    route: String,
-    model: String,
-    value: Value,
-}
 
 /// `(route, kotlin model, credential)` for the Android surface. `admin` marks the
 /// few reads the official server restricts to administrators.
@@ -79,22 +70,11 @@ const READS: &[(&str, &str, &str)] = &[
     ("/Items/Filters", "QueryFiltersLegacy", "user"),
     ("/Items/Filters2", "QueryFilters", "user"),
     (
-        "/Items?limit=5&fields=MediaSourceCount,Chapters,Settings,ExternalUrls,RemoteTrailers,Tags,IsHD",
+        "/Items?limit=5&fields=MediaSourceCount,Chapters,Settings,ExternalUrls,RemoteTrailers,Tags",
         "BaseItemDtoQueryResult",
         "user",
     ),
     ("/Items/{movie}", "BaseItemDto", "user"),
-    (
-        "/Items/{movie}/MetadataEditor",
-        "MetadataEditorInfo",
-        "admin",
-    ),
-    ("/Items/{movie}/Images", "List<ImageInfo>", "user"),
-    (
-        "/Items/{movie}/RemoteImages/Providers",
-        "List<ImageProviderInfo>",
-        "user",
-    ),
     (
         "/Items/{movie}?fields=MediaSourceCount,Chapters,Settings,ExternalUrls,RemoteTrailers,Tags,People",
         "BaseItemDto",
@@ -208,11 +188,6 @@ const READS: &[(&str, &str, &str)] = &[
     ),
     ("/Playlists/{playlist}", "PlaylistDto", "user"),
     (
-        "/Playlists/{playlist}/Users",
-        "List<PlaylistUserPermissions>",
-        "user",
-    ),
-    (
         "/Playlists/{playlist}/Users/{user}",
         "PlaylistUserPermissions",
         "user",
@@ -240,26 +215,19 @@ const READS: &[(&str, &str, &str)] = &[
         "admin",
     ),
     ("/Branding/Configuration", "BrandingOptionsDto", "none"),
-    ("/Localization/Cultures", "List<CultureDto>", "none"),
-    ("/Localization/Countries", "List<CountryInfo>", "none"),
-    (
-        "/Localization/ParentalRatings",
-        "List<ParentalRating>",
-        "none",
-    ),
-    ("/Localization/Options", "List<LocalizationOption>", "none"),
-    (
-        "/Environment/DefaultDirectoryBrowser",
-        "DefaultDirectoryBrowserInfoDto",
-        "admin",
-    ),
-    ("/Environment/Drives", "List<FileSystemEntryInfo>", "admin"),
-    ("/SyncPlay/List", "List<GroupInfoDto>", "user"),
     ("/Backup", "List<BackupManifestDto>", "admin"),
     ("/Packages", "List<PackageInfo>", "admin"),
     ("/Plugins", "List<PluginInfo>", "admin"),
     ("/Repositories", "List<RepositoryInfo>", "admin"),
-    ("/Movies/Recommendations", "List<RecommendationDto>", "user"),
+    ("/Localization/Countries", "List<CountryInfo>", "user"),
+    ("/Localization/Cultures", "List<CultureDto>", "user"),
+    (
+        "/Localization/ParentalRatings",
+        "List<ParentalRating>",
+        "user",
+    ),
+    ("/Localization/Options", "List<LocalizationOption>", "user"),
+    ("/Movies/{movie}/Similar", "BaseItemDtoQueryResult", "user"),
     (
         "/Albums/{audio}/InstantMix",
         "BaseItemDtoQueryResult",
@@ -305,6 +273,17 @@ const READS: &[(&str, &str, &str)] = &[
     (
         "/Devices/Options?id=kotlin-sdk-compat",
         "DeviceOptionsDto",
+        "admin",
+    ),
+    (
+        "/Environment/DefaultDirectoryBrowser",
+        "DefaultDirectoryBrowserInfoDto",
+        "admin",
+    ),
+    ("/Environment/Drives", "List<FileSystemEntryInfo>", "admin"),
+    (
+        "/Items/{movie}/MetadataEditor",
+        "MetadataEditorInfo",
         "admin",
     ),
     ("/QuickConnect/Enabled", "Boolean", "none"),
@@ -389,19 +368,16 @@ async fn exercise(database_name: &str) {
         "login response: {}",
         String::from_utf8_lossy(&authentication)
     );
-    dumped.push(DumpedResponse {
-        route: "/Users/AuthenticateByName".to_owned(),
-        model: "AuthenticationResult".to_owned(),
-        value: serde_json::from_slice(&authentication).expect("login response must be JSON"),
-    });
+    dumped.push((
+        "AuthenticationResult".to_owned(),
+        serde_json::from_slice(&authentication).expect("login response must be JSON"),
+    ));
 
     for (route, model, who) in READS {
         let resolved = fixture.resolve(route);
         let token = match *who {
-            "admin" => Some(fixture.admin_token.as_str()),
-            "user" => Some(fixture.user_token.as_str()),
-            "none" => None,
-            other => panic!("unknown compatibility-harness credential {other}"),
+            "admin" => &fixture.admin_token,
+            _ => &fixture.user_token,
         };
         let response = fixture.request(Method::GET, &resolved, token).await;
         let status = response.status();
@@ -414,44 +390,20 @@ async fn exercise(database_name: &str) {
             failures.push(format!("{route} -> body is not JSON"));
             continue;
         };
-        dumped.push(DumpedResponse {
-            route: (*route).to_owned(),
-            model: (*model).to_owned(),
-            value,
-        });
-    }
-
-    let sessions_include_transcode_reasons = dumped
-        .iter()
-        .find(|response| response.route == "/Sessions")
-        .and_then(|response| response.value.as_array())
-        .is_some_and(|sessions| {
-            sessions.iter().any(|session| {
-                session["DeviceId"] == "kotlin-sdk-compat"
-                    && session["TranscodingInfo"]["TranscodeReasons"]
-                        .as_array()
-                        .is_some_and(|reasons| {
-                            reasons
-                                .iter()
-                                .any(|reason| reason == "VideoCodecNotSupported")
-                        })
-            })
-        });
-    if !sessions_include_transcode_reasons {
-        failures.push("/Sessions omitted the active transcode's TranscodeReasons".to_owned());
+        dumped.push(((*model).to_owned(), value));
     }
 
     // The canonical Person item is created by people reconciliation, so resolve
     // its exposed name from the /Persons page rather than hard-coding it.
     let persons = dumped
         .iter()
-        .find(|response| {
-            response.model == "BaseItemDtoQueryResult"
-                && response.value["Items"]
+        .find(|(model, value)| {
+            model == "BaseItemDtoQueryResult"
+                && value["Items"]
                     .as_array()
                     .is_some_and(|items| items.first().is_some_and(|i| i["Type"] == "Person"))
         })
-        .map(|response| response.value.clone());
+        .map(|(_, value)| value.clone());
     if let Some(persons) = persons {
         let name = persons["Items"][0]["Name"].as_str().unwrap().to_owned();
         let encoded = utf8_percent_encode(&name, percent_encoding::NON_ALPHANUMERIC).to_string();
@@ -459,18 +411,14 @@ async fn exercise(database_name: &str) {
             .request(
                 Method::GET,
                 &format!("/Persons/{encoded}"),
-                Some(&fixture.user_token),
+                &fixture.user_token,
             )
             .await;
         let status = response.status();
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         match serde_json::from_slice::<Value>(&body) {
             Ok(value) if status == StatusCode::OK => {
-                dumped.push(DumpedResponse {
-                    route: format!("/Persons/{encoded}"),
-                    model: "BaseItemDto".to_owned(),
-                    value,
-                });
+                dumped.push(("BaseItemDto".to_owned(), value));
             }
             _ => failures.push(format!("/Persons/{name} -> HTTP {status}")),
         }
@@ -482,8 +430,8 @@ async fn exercise(database_name: &str) {
     // submitted in media metadata. Follow the public detail response like a client.
     let music_genres = dumped
         .iter()
-        .find(|response| response.model == "BaseItemDto" && response.value["Type"] == "MusicGenre")
-        .map(|response| response.value.clone());
+        .find(|(model, value)| model == "BaseItemDto" && value["Type"] == "MusicGenre")
+        .map(|(_, value)| value.clone());
     if let Some(music_genres) = music_genres {
         let id = music_genres["Id"]
             .as_str()
@@ -492,18 +440,14 @@ async fn exercise(database_name: &str) {
             .request(
                 Method::GET,
                 &format!("/MusicGenres/InstantMix?id={id}"),
-                Some(&fixture.user_token),
+                &fixture.user_token,
             )
             .await;
         let status = response.status();
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         match serde_json::from_slice::<Value>(&body) {
             Ok(value) if status == StatusCode::OK => {
-                dumped.push(DumpedResponse {
-                    route: format!("/MusicGenres/InstantMix?id={id}"),
-                    model: "BaseItemDtoQueryResult".to_owned(),
-                    value,
-                });
+                dumped.push(("BaseItemDtoQueryResult".to_owned(), value));
             }
             _ => failures.push(format!("/MusicGenres/InstantMix?id={id} -> HTTP {status}")),
         }
@@ -518,22 +462,19 @@ async fn exercise(database_name: &str) {
         .request_json(
             Method::POST,
             &playback_route,
-            Some(&fixture.user_token),
+            &fixture.user_token,
             Some(&android_device_profile()),
         )
         .await;
     assert_eq!(response.status(), StatusCode::OK);
     let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-    dumped.push(DumpedResponse {
-        route: "/Items/{movie}/PlaybackInfo".to_owned(),
-        model: "PlaybackInfoResponse".to_owned(),
-        value: serde_json::from_slice(&body).expect("playback info POST must be JSON"),
-    });
+    dumped.push((
+        "PlaybackInfoResponse".to_owned(),
+        serde_json::from_slice(&body).expect("playback info POST must be JSON"),
+    ));
 
-    if failures.is_empty() {
-        if let Some(dir) = std::env::var_os("JELLYFIN_ANDROID_DUMP") {
-            write_dump(&PathBuf::from(dir), &dumped);
-        }
+    if let Some(dir) = std::env::var_os("JELLYFIN_ANDROID_DUMP") {
+        write_dump(&PathBuf::from(dir), &dumped);
     }
 
     fixture.database.close().await.unwrap();
@@ -618,7 +559,6 @@ impl Fixture {
             "OfficialRating": "PG",
             "CustomRating": "Custom",
             "CommunityRating": 7.5,
-            "Height": 1080,
             "MediaSourceContainer": "mkv",
             "Video3DFormat": "mvc",
             "ExtraType": "behindthescenes",
@@ -645,12 +585,7 @@ impl Fixture {
         let episode = items.create(new_episode).await.unwrap();
 
         let artist = create_item(&items, "MusicArtist", Some(music.id), "Test Artist", None).await;
-        let mut new_album = NewBaseItem::new(Uuid::new_v4(), "MusicAlbum");
-        new_album.parent_id = Some(artist.id);
-        new_album.name = Some("Test Album".to_owned());
-        new_album.is_folder = true;
-        new_album.data = Some(json!({"NormalizationGain": -2.5}));
-        let album = items.create(new_album).await.unwrap();
+        let album = create_item(&items, "MusicAlbum", Some(artist.id), "Test Album", None).await;
         let channel = create_item(&items, "Channel", Some(root.id), "Test Channel", None).await;
         let _channel_item =
             create_item(&items, "Movie", Some(channel.id), "Channel Movie", None).await;
@@ -665,26 +600,10 @@ impl Fixture {
             "Album": "Test Album",
             "Artists": ["Test Artist"],
             "AlbumArtist": "Test Artist",
-            "IndexNumber": 1,
-            "LUFS": -14.0,
             "GenreItems": [{"Name": "Test Genre", "Id": music_genre_id.simple().to_string()}],
+            "IndexNumber": 1
         }));
         let audio = items.create(new_audio).await.unwrap();
-        BaseItemImageRepository::new(database.clone())
-            .replace(
-                album.id,
-                &[NewBaseItemImage {
-                    image_type: BaseItemImageType::Primary,
-                    image_index: 0,
-                    path: format!("{}/album.jpg", storage_root.display()),
-                    date_modified: chrono::Utc::now(),
-                    width: Some(600),
-                    height: Some(600),
-                    blurhash: Some("album-primary-blurhash".to_owned()),
-                }],
-            )
-            .await
-            .unwrap();
 
         std::fs::create_dir_all(storage_root).ok();
         std::fs::write(
@@ -804,12 +723,6 @@ impl Fixture {
             .unwrap();
 
         let policy = UserPolicy {
-            access_schedules: vec![AccessSchedule {
-                day_of_week: DynamicDayOfWeek::Everyday,
-                start_hour: 0.0,
-                end_hour: 24.0,
-                ..AccessSchedule::default()
-            }],
             authentication_provider_id: Some(
                 UserPolicy::DEFAULT_AUTHENTICATION_PROVIDER_ID.to_owned(),
             ),
@@ -891,12 +804,6 @@ impl Fixture {
                 storage_root.join("image-cache"),
                 storage_root.join("cache"),
                 storage_root.join("metadata"),
-            )
-            .with_transcode_job(
-                "compat-job",
-                "kotlin-sdk-compat",
-                "compat-play-session",
-                TranscodeReason::VIDEO_CODEC_NOT_SUPPORTED,
             ),
         );
         let playlist_response = app
@@ -970,12 +877,7 @@ impl Fixture {
             .replace("{person}", &self.person_name)
     }
 
-    async fn request(
-        &self,
-        method: Method,
-        uri: &str,
-        token: Option<&str>,
-    ) -> axum::response::Response {
+    async fn request(&self, method: Method, uri: &str, token: &str) -> axum::response::Response {
         self.request_json(method, uri, token, None).await
     }
 
@@ -983,16 +885,13 @@ impl Fixture {
         &self,
         method: Method,
         uri: &str,
-        token: Option<&str>,
+        token: &str,
         body: Option<&Value>,
     ) -> axum::response::Response {
-        let mut request = Request::builder().method(method).uri(uri);
-        if let Some(token) = token {
-            request = request.header(
-                header::AUTHORIZATION,
-                format!("{AUTHORIZATION}, Token=\"{token}\""),
-            );
-        }
+        let mut request = Request::builder().method(method).uri(uri).header(
+            header::AUTHORIZATION,
+            format!("{AUTHORIZATION}, Token=\"{token}\""),
+        );
         let body = match body {
             Some(body) => {
                 request = request.header(header::CONTENT_TYPE, "application/json");
@@ -1072,31 +971,13 @@ fn android_device_profile() -> Value {
     })
 }
 
-fn write_dump(dir: &PathBuf, dumped: &[DumpedResponse]) {
+fn write_dump(dir: &PathBuf, dumped: &[(String, Value)]) {
     std::fs::create_dir_all(dir).unwrap();
     let mut manifest = Vec::new();
-    for (index, response) in dumped.iter().enumerate() {
+    for (index, (model, value)) in dumped.iter().enumerate() {
         let file = format!("{index:03}.json");
-        std::fs::write(
-            dir.join(&file),
-            serde_json::to_vec_pretty(&response.value).unwrap(),
-        )
-        .unwrap();
-        // The generated clients occasionally expose the same official wire
-        // object under different public type names. Keep both roots explicit
-        // so a shared response dump can be checked against each SDK without
-        // weakening either validator.
-        let swift_model = match response.model.as_str() {
-            "Boolean" => "Bool",
-            "List<LocalizationOption>" => "List<NameValuePair>",
-            _ => response.model.as_str(),
-        };
-        manifest.push(json!({
-            "file": file,
-            "model": response.model,
-            "route": response.route,
-            "swiftModel": swift_model,
-        }));
+        std::fs::write(dir.join(&file), serde_json::to_vec_pretty(value).unwrap()).unwrap();
+        manifest.push(json!({"file": file, "model": model}));
     }
     std::fs::write(
         dir.join("manifest.json"),

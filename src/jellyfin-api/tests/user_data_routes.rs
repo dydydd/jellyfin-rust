@@ -222,20 +222,6 @@ async fn assert_route_aliases_and_body(fixture: &FavoriteFixture) {
     assert_eq!(body_json(response).await["IsFavorite"], true);
     let response = request(&fixture.app, "DELETE", &legacy, &fixture.user_token).await;
     assert_eq!(body_json(response).await["IsFavorite"], false);
-    let lowercase_legacy = format!(
-        "/users/{}/favoriteitems/{}",
-        fixture.user_id, fixture.allowed_item_id
-    );
-    let response = request(&fixture.app, "POST", &lowercase_legacy, &fixture.user_token).await;
-    assert_eq!(body_json(response).await["IsFavorite"], true);
-    let response = request(
-        &fixture.app,
-        "DELETE",
-        &lowercase_legacy,
-        &fixture.user_token,
-    )
-    .await;
-    assert_eq!(body_json(response).await["IsFavorite"], false);
 
     let persisted = repository
         .get(
@@ -331,47 +317,6 @@ async fn assert_anonymous_and_ordinary_target_rules(fixture: &FavoriteFixture) {
         .status(),
         StatusCode::FORBIDDEN
     );
-
-    for route in [
-        format!(
-            "/UserFavoriteItems/{}?userId={}",
-            fixture.allowed_item_id, fixture.administrator_id
-        ),
-        format!(
-            "/UserFavoriteItems/{}?UserId={}",
-            fixture.allowed_item_id, fixture.administrator_id
-        ),
-        format!(
-            "/userfavoriteitems/{}?userid={}",
-            fixture.allowed_item_id, fixture.administrator_id
-        ),
-    ] {
-        assert_eq!(
-            request(&fixture.app, "POST", &route, &fixture.user_token)
-                .await
-                .status(),
-            StatusCode::FORBIDDEN,
-            "target UserId must bind case-insensitively for {route}",
-        );
-    }
-    for route in [
-        format!(
-            "/UserFavoriteItems/{}?userId=not-a-guid",
-            fixture.allowed_item_id
-        ),
-        format!(
-            "/userfavoriteitems/{}?userid=not-a-guid",
-            fixture.allowed_item_id
-        ),
-    ] {
-        assert_eq!(
-            request(&fixture.app, "POST", &route, &fixture.user_token)
-                .await
-                .status(),
-            StatusCode::BAD_REQUEST,
-            "malformed UserId must not be ignored for {route}",
-        );
-    }
 }
 
 async fn assert_api_key_and_nil_target_rules(fixture: &FavoriteFixture) {
@@ -631,7 +576,6 @@ fn blocked_schedule_policy(is_administrator: bool) -> UserPolicy {
             day_of_week: DynamicDayOfWeek::Everyday,
             start_hour: 18.0,
             end_hour: 6.0,
-            ..AccessSchedule::default()
         }],
         ..policy()
     }

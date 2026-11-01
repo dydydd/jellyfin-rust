@@ -1,6 +1,6 @@
 use jellyfin_data::{
-    BaseItemError, BaseItemRepository, GenericUserDataPatch, PreferredUserDataKey,
-    RememberedTrackSelection, UserDataError, UserDataRepository,
+    BaseItemError, BaseItemRepository, GenericUserDataPatch, PreferredUserDataKey, UserDataError,
+    UserDataRepository,
     entities::{base_item, user_data},
 };
 use jellyfin_model::{UpdateUserItemDataDto, UserItemDataDto, UserPolicy};
@@ -59,23 +59,6 @@ impl UserDataService {
         }
     }
 
-    /// Clears all remembered audio or subtitle selections after the API layer
-    /// has authenticated and authorized the target user.
-    ///
-    /// # Errors
-    ///
-    /// Returns persistence errors from the set-based PostgreSQL update.
-    pub async fn clear_remembered_track_selection_for_authorized_user(
-        &self,
-        target_user_id: Uuid,
-        selection: RememberedTrackSelection,
-    ) -> Result<u64, UserDataServiceError> {
-        Ok(self
-            .user_data
-            .clear_remembered_track_selection(target_user_id, selection)
-            .await?)
-    }
-
     /// Loads an item only when it is visible to the requested user.
     ///
     /// # Errors
@@ -128,31 +111,6 @@ impl UserDataService {
         let user_data = self
             .user_data
             .set_favorite(item.id, target_user_id, &keys, is_favorite)
-            .await?;
-        Ok(UserDataUpdate {
-            user_data,
-            runtime_ticks: item.runtime_ticks,
-        })
-    }
-
-    /// Sets Emby's reversible continue-watching suppression flag after the API
-    /// layer authorizes the target user.
-    ///
-    /// # Errors
-    ///
-    /// Returns not-found for a missing user, item, or item hidden by the
-    /// target user's folder policy, and returns persistence errors unchanged.
-    pub async fn set_hidden_from_resume_for_authorized_user(
-        &self,
-        target_user_id: Uuid,
-        item_id: Uuid,
-        is_hidden: bool,
-    ) -> Result<UserDataUpdate, UserDataServiceError> {
-        let item = self.resolve_target_item(target_user_id, item_id).await?;
-        let keys = current_user_data_keys(&item);
-        let user_data = self
-            .user_data
-            .set_hidden_from_resume(item.id, target_user_id, &keys, is_hidden)
             .await?;
         Ok(UserDataUpdate {
             user_data,
@@ -493,7 +451,6 @@ fn default_user_data(item_id: Uuid, user_id: Uuid, key: &str) -> user_data::Mode
         subtitle_stream_index: None,
         likes: None,
         retention_date: None,
-        is_hidden_from_resume: false,
     }
 }
 

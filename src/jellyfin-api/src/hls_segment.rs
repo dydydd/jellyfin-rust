@@ -13,7 +13,7 @@ use jellyfin_controller::{
     hls_command_with_playlist_type, hls_job_id_from_input, run_ffmpeg, wait_for_segment,
 };
 use jellyfin_extensions::PathHelper;
-use jellyfin_model::{MediaStreamType, MimeTypes, TranscodeReason};
+use jellyfin_model::MimeTypes;
 use serde::Deserialize;
 use tokio::fs;
 use tower::ServiceExt;
@@ -21,16 +21,13 @@ use tower_http::services::ServeFile;
 use uuid::Uuid;
 
 use crate::{
-    ApiError, AppState, authorization, encoding_runtime,
-    stream_options::StreamOptions,
+    ApiError, AppState, authorization,
     videos::{output_video_level, output_video_profile},
 };
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 pub(crate) struct TranscodeQuery {
-    #[serde(rename = "container", alias = "Container")]
-    container: Option<String>,
     #[serde(rename = "jobId", alias = "JobId", alias = "jobid")]
     job_id: Option<String>,
     #[serde(rename = "deviceId", alias = "DeviceId", alias = "deviceid")]
@@ -43,20 +40,6 @@ pub(crate) struct TranscodeQuery {
         alias = "playsessionid"
     )]
     play_session_id: Option<String>,
-    #[serde(
-        rename = "liveStreamId",
-        alias = "LiveStreamId",
-        alias = "livestreamid",
-        alias = "LIVESTREAMID"
-    )]
-    live_stream_id: Option<String>,
-    #[serde(
-        rename = "transcodeReasons",
-        alias = "TranscodeReasons",
-        alias = "transcodereasons",
-        alias = "TRANSCODEREASONS"
-    )]
-    transcode_reasons: Option<String>,
     #[serde(
         rename = "mediaSourceId",
         alias = "MediaSourceId",
@@ -144,23 +127,11 @@ pub(crate) struct TranscodeQuery {
     #[serde(rename = "deInterlace", alias = "DeInterlace", alias = "deinterlace")]
     de_interlace: Option<bool>,
     #[serde(
-        rename = "audioChannels",
-        alias = "AudioChannels",
-        alias = "audiochannels"
-    )]
-    audio_channels: Option<i32>,
-    #[serde(
-        rename = "maxAudioChannels",
-        alias = "MaxAudioChannels",
-        alias = "maxaudiochannels"
-    )]
-    max_audio_channels: Option<i32>,
-    #[serde(
         rename = "transcodingMaxAudioChannels",
         alias = "TranscodingMaxAudioChannels",
         alias = "transcodingmaxaudiochannels"
     )]
-    transcoding_max_audio_channels: Option<i32>,
+    max_audio_channels: Option<i32>,
     #[serde(
         rename = "segmentContainer",
         alias = "SegmentContainer",
@@ -181,32 +152,12 @@ pub(crate) struct TranscodeQuery {
         alias = "starttimeticks"
     )]
     start_time_ticks: Option<i64>,
-    #[serde(
-        rename = "cpuCoreLimit",
-        alias = "CpuCoreLimit",
-        alias = "cpucorelimit"
-    )]
-    cpu_core_limit: Option<i32>,
-    #[serde(
-        rename = "enableAudioVbrEncoding",
-        alias = "EnableAudioVbrEncoding",
-        alias = "enableaudiovbrencoding"
-    )]
-    enable_audio_vbr_encoding: Option<bool>,
-    #[serde(
-        default,
-        rename = "streamOptions",
-        alias = "StreamOptions",
-        alias = "streamoptions"
-    )]
-    stream_options: Vec<String>,
 }
 
 impl TranscodeQuery {
     pub(crate) fn universal_audio(
         media_source_id: Option<String>,
         device_id: Option<String>,
-        play_session_id: Option<String>,
         user_id: Option<Uuid>,
         audio_codec: Option<String>,
         audio_bitrate: Option<i64>,
@@ -214,12 +165,10 @@ impl TranscodeQuery {
         audio_sample_rate: Option<i32>,
         audio_stream_index: Option<i32>,
         start_time_ticks: Option<i64>,
-        enable_audio_vbr_encoding: Option<bool>,
     ) -> Self {
         Self {
             media_source_id,
             device_id,
-            play_session_id,
             user_id,
             audio_codec,
             audio_bitrate,
@@ -227,7 +176,6 @@ impl TranscodeQuery {
             audio_sample_rate,
             audio_stream_index,
             start_time_ticks,
-            enable_audio_vbr_encoding,
             // Rust's current generated VOD playlist uses MPEG-TS segment URLs.
             // Do not promise fMP4 until it also emits the required init segment.
             segment_container: Some("ts".to_owned()),
@@ -247,9 +195,6 @@ impl TranscodeQuery {
         if let Some(value) = self.device_id.as_deref() {
             serializer.append_pair("deviceId", value);
         }
-        if let Some(value) = self.play_session_id.as_deref() {
-            serializer.append_pair("playSessionId", value);
-        }
         if let Some(value) = self.user_id {
             serializer.append_pair("userId", &value.to_string());
         }
@@ -260,7 +205,7 @@ impl TranscodeQuery {
             serializer.append_pair("audioBitrate", &value.to_string());
         }
         if let Some(value) = self.max_audio_channels {
-            serializer.append_pair("maxAudioChannels", &value.to_string());
+            serializer.append_pair("transcodingMaxAudioChannels", &value.to_string());
         }
         if let Some(value) = self.audio_sample_rate {
             serializer.append_pair("audioSampleRate", &value.to_string());
@@ -270,9 +215,6 @@ impl TranscodeQuery {
         }
         if let Some(value) = self.start_time_ticks {
             serializer.append_pair("startTimeTicks", &value.to_string());
-        }
-        if let Some(value) = self.enable_audio_vbr_encoding {
-            serializer.append_pair("enableAudioVbrEncoding", &value.to_string());
         }
         if !access_token.is_empty() {
             // The Universal Audio request builds its internal HLS master URI
@@ -306,16 +248,11 @@ impl TranscodeQuery {
             || self.profile.is_some()
             || self.level.is_some()
             || self.de_interlace == Some(true)
-            || self.audio_channels.is_some()
             || self.max_audio_channels.is_some()
-            || self.transcoding_max_audio_channels.is_some()
             || self.segment_container.is_some()
             || self.segment_length.is_some()
             || self.min_segments.is_some()
             || self.start_time_ticks.is_some()
-            || self.cpu_core_limit.is_some()
-            || self.enable_audio_vbr_encoding.is_some()
-            || !self.stream_options.is_empty()
     }
 }
 
@@ -366,24 +303,6 @@ pub(crate) async fn audio_main_playlist(
     ensure_main_playlist(&state, headers, &uri, query, &identity).await
 }
 
-pub(crate) async fn emby_audio_live_playlist(
-    State(state): State<Arc<AppState>>,
-    OriginalUri(uri): OriginalUri,
-    Path(item_id): Path<Uuid>,
-    Query(query): Query<TranscodeQuery>,
-    headers: HeaderMap,
-) -> Result<Response, ApiError> {
-    let identity = authorization::require_default(&state, &headers, &uri).await?;
-    let container = query.container.as_deref().ok_or(ApiError::InvalidRequest)?;
-    if !is_streaming_parameter(container) {
-        return Err(ApiError::InvalidRequest);
-    }
-    ensure_live_playlist(
-        &state, headers, &uri, query, &identity, item_id, "Audio", true,
-    )
-    .await
-}
-
 pub(crate) async fn audio_hls1_segment(
     State(state): State<Arc<AppState>>,
     OriginalUri(uri): OriginalUri,
@@ -427,37 +346,20 @@ pub(crate) async fn video_live_playlist(
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
     let identity = authorization::require_default(&state, &headers, &uri).await?;
-    ensure_live_playlist(
-        &state, headers, &uri, query, &identity, item_id, "Videos", false,
-    )
-    .await
-}
-
-async fn ensure_live_playlist(
-    state: &AppState,
-    headers: HeaderMap,
-    uri: &Uri,
-    query: TranscodeQuery,
-    identity: &crate::authentication::AuthenticatedIdentity,
-    item_id: Uuid,
-    media_type: &'static str,
-    force_transcode: bool,
-) -> Result<Response, ApiError> {
-    if !force_transcode && query.job_id.is_none() && !query.has_transcode_parameters() {
+    if query.job_id.is_none() && !query.has_transcode_parameters() {
         let path = resolve_transcode_file(&state.transcode_directory, "live.m3u8")?;
         return serve_file(path, headers).await;
     }
 
     let segment_length_ms = segment_length_ms(query.segment_length)?;
-    let job_id = existing_or_computed_job_id(&query, &uri, item_id, segment_length_ms);
+    let job_id = existing_or_computed_job_id(&query, item_id, segment_length_ms);
     start_hls_job(
-        state,
+        &state,
         &query,
-        uri,
         item_id,
         &job_id,
-        identity,
-        media_type,
+        &identity,
+        "Videos",
         segment_length_ms,
     )
     .await?;
@@ -515,12 +417,7 @@ pub(crate) async fn stop_active_encoding(
     query: Result<Query<ActiveEncodingQuery>, axum::extract::rejection::QueryRejection>,
 ) -> Result<StatusCode, ApiError> {
     authorization::require_default(&state, &headers, &uri).await?;
-    let query = if is_emby_request(&uri) {
-        parse_emby_active_encoding_query(&uri)?
-    } else {
-        let Query(query) = query.map_err(|_| ApiError::InvalidRequest)?;
-        query
-    };
+    let Query(query) = query.map_err(|_| ApiError::InvalidRequest)?;
     if query.device_id.trim().is_empty() || query.play_session_id.trim().is_empty() {
         return Err(ApiError::InvalidRequest);
     }
@@ -532,33 +429,6 @@ pub(crate) async fn stop_active_encoding(
         cleanup_transcode_job(&state.transcode_directory, job_id).await;
     }
     Ok(StatusCode::NO_CONTENT)
-}
-
-/// Bind Emby's two generated required query values with ASP.NET semantics.
-/// This is intentionally selected only by the `/emby` original URI so the
-/// root and `/api` Jellyfin query contract remains unchanged.
-fn parse_emby_active_encoding_query(uri: &Uri) -> Result<ActiveEncodingQuery, ApiError> {
-    let mut device_id = None;
-    let mut play_session_id = None;
-    for (name, value) in form_urlencoded::parse(uri.query().unwrap_or_default().as_bytes()) {
-        let value = value.into_owned();
-        if name.eq_ignore_ascii_case("DeviceId") {
-            device_id = Some(value);
-        } else if name.eq_ignore_ascii_case("PlaySessionId") {
-            play_session_id = Some(value);
-        }
-    }
-    Ok(ActiveEncodingQuery {
-        device_id: device_id.ok_or(ApiError::InvalidRequest)?,
-        play_session_id: play_session_id.ok_or(ApiError::InvalidRequest)?,
-    })
-}
-
-fn is_emby_request(uri: &Uri) -> bool {
-    uri.path()
-        .split('/')
-        .nth(1)
-        .is_some_and(|segment| segment.eq_ignore_ascii_case("emby"))
 }
 
 pub(crate) async fn ensure_master_playlist(
@@ -575,11 +445,10 @@ pub(crate) async fn ensure_master_playlist(
 
     let (item_id, media_type) = media_type_item_id(uri)?;
     let segment_length_ms = segment_length_ms(query.segment_length)?;
-    let job_id = existing_or_computed_job_id(&query, uri, item_id, segment_length_ms);
+    let job_id = existing_or_computed_job_id(&query, item_id, segment_length_ms);
     let playlist_type = start_hls_job(
         state,
         &query,
-        uri,
         item_id,
         &job_id,
         identity,
@@ -643,11 +512,10 @@ async fn ensure_main_playlist(
 
     let (item_id, media_type) = media_type_item_id(uri)?;
     let segment_length_ms = segment_length_ms(query.segment_length)?;
-    let job_id = existing_or_computed_job_id(&query, uri, item_id, segment_length_ms);
+    let job_id = existing_or_computed_job_id(&query, item_id, segment_length_ms);
     start_hls_job(
         state,
         &query,
-        uri,
         item_id,
         &job_id,
         identity,
@@ -662,48 +530,39 @@ async fn ensure_main_playlist(
 async fn start_hls_job(
     state: &AppState,
     query: &TranscodeQuery,
-    uri: &Uri,
     item_id: Uuid,
     job_id: &str,
     identity: &crate::authentication::AuthenticatedIdentity,
     media_type: &str,
     segment_length_ms: i32,
 ) -> Result<HlsPlaylistType, ApiError> {
-    let stream_options = StreamOptions::from_uri(uri);
-    let video_codec = query.video_codec.as_deref().unwrap_or("h264");
-    let audio_codec = query.audio_codec.as_deref().unwrap_or("aac");
     let mut target = TranscodeTarget {
         is_video: media_type == "Videos",
         hwaccel: query.hwaccel.clone(),
-        video_codec: Some(video_codec.to_owned()),
+        video_codec: query
+            .video_codec
+            .clone()
+            .or_else(|| Some("h264".to_owned())),
         video_profile: (media_type == "Videos")
             .then(|| {
                 output_video_profile(
-                    video_codec,
-                    query
-                        .profile
-                        .as_deref()
-                        .filter(|value| !value.is_empty())
-                        .or_else(|| stream_options.get_request_option(video_codec, "profile")),
+                    query.video_codec.as_deref().unwrap_or("h264"),
+                    query.profile.as_deref(),
                 )
             })
             .flatten(),
         video_level: (media_type == "Videos")
             .then(|| {
                 output_video_level(
-                    video_codec,
-                    query
-                        .level
-                        .as_deref()
-                        .filter(|value| !value.is_empty())
-                        .or_else(|| stream_options.get_request_option(video_codec, "level")),
+                    query.video_codec.as_deref().unwrap_or("h264"),
+                    query.level.as_deref(),
                 )
             })
             .flatten(),
-        audio_codec: Some(audio_codec.to_owned()),
+        audio_codec: query.audio_codec.clone().or_else(|| Some("aac".to_owned())),
         video_bitrate: query.video_bitrate,
-        audio_bitrate: None,
-        audio_channels: None,
+        audio_bitrate: query.audio_bitrate,
+        audio_channels: query.max_audio_channels,
         audio_sample_rate: query.audio_sample_rate,
         audio_stream_index: query.audio_stream_index,
         video_stream_index: query.video_stream_index,
@@ -714,7 +573,7 @@ async fn start_hls_job(
         max_width: query.max_width,
         max_height: query.max_height,
         max_framerate: query.max_framerate,
-        deinterlace: false,
+        deinterlace: query.de_interlace.unwrap_or(false),
         start_time_ticks: query.start_time_ticks,
     };
     let settings = HlsSegmentSettings {
@@ -725,6 +584,18 @@ async fn start_hls_job(
         segment_length_ms,
         min_segments: query.min_segments.unwrap_or(2),
     };
+    tracing::info!(
+        %item_id,
+        %job_id,
+        media_type,
+        segment_length_ms = settings.segment_length_ms,
+        container = %settings.container,
+        video_codec = target.video_codec.as_deref().unwrap_or_default(),
+        audio_codec = target.audio_codec.as_deref().unwrap_or_default(),
+        video_bitrate = ?target.video_bitrate,
+        audio_bitrate = ?target.audio_bitrate,
+        "starting HLS transcode job",
+    );
     let requested_user_id = query.user_id.filter(|user_id| !user_id.is_nil());
     let (requested_item, target_user_id) = match identity {
         crate::authentication::AuthenticatedIdentity::Device(session) => {
@@ -763,20 +634,7 @@ async fn start_hls_job(
             ),
         },
     };
-    let opened_source = query
-        .live_stream_id
-        .as_deref()
-        .filter(|value| !value.trim().is_empty())
-        .map(|live_stream_id| {
-            state
-                .live_streams
-                .get(item_id, live_stream_id)
-                .ok_or(ApiError::NotFound)
-        })
-        .transpose()?;
-    let item = if opened_source.is_some() {
-        requested_item
-    } else if let Some(media_source_id) = query
+    let item = if let Some(media_source_id) = query
         .media_source_id
         .as_deref()
         .map(str::trim)
@@ -802,78 +660,16 @@ async fn start_hls_job(
     } else {
         requested_item
     };
-    let media_streams = if let Some(source) = opened_source.as_ref() {
-        source.media_streams.clone()
-    } else {
-        state
-            .media_streams
-            .get_media_streams(jellyfin_controller::MediaStreamFilter::for_item(item.id))
-            .await?
-    };
-    let source_audio = media_streams.iter().find(|stream| {
-        stream.stream_type == MediaStreamType::Audio
-            && query
-                .audio_stream_index
-                .is_none_or(|index| stream.index == index)
-    });
-    let option_channels = stream_options
-        .get_request_option(audio_codec, "audiochannels")
-        .and_then(|value| value.parse().ok());
-    target.audio_channels =
-        encoding_runtime::normalize_hls_audio_channels(source_audio.and_then(|source| {
-            encoding_runtime::output_audio_channels(
-                audio_codec,
-                source.channels,
-                option_channels,
-                query.max_audio_channels,
-                query.audio_channels,
-                query.transcoding_max_audio_channels,
-            )
-        }));
-    target.audio_bitrate = encoding_runtime::output_audio_bitrate(
-        audio_codec,
-        source_audio.is_some(),
-        source_audio.and_then(|source| source.channels),
-        target.audio_channels,
-        query.audio_bitrate,
-    );
-    if audio_codec.eq_ignore_ascii_case("copy") {
-        target.audio_channels = None;
-        target.audio_sample_rate = None;
-    }
-    let source_video = media_streams.iter().find(|stream| {
-        stream.stream_type == MediaStreamType::Video
-            && query
-                .video_stream_index
-                .is_none_or(|index| stream.index == index)
-    });
-    target.deinterlace = source_video.is_some_and(|stream| stream.is_interlaced)
-        && (query.de_interlace.unwrap_or(false)
-            || stream_options
-                .get_request_option(video_codec, "deinterlace")
-                .is_some_and(|value| value.eq_ignore_ascii_case("true")));
     if target.burn_subtitles {
         if let Some(index) = target.subtitle_index {
-            target.subtitle_index = embedded_subtitle_filter_index(&media_streams, index);
+            let streams = state
+                .media_streams
+                .get_media_streams(jellyfin_controller::MediaStreamFilter::for_item(item.id))
+                .await?;
+            target.subtitle_index = embedded_subtitle_filter_index(&streams, index);
         }
     }
-    tracing::info!(
-        %item_id,
-        %job_id,
-        media_type,
-        segment_length_ms = settings.segment_length_ms,
-        container = %settings.container,
-        video_codec = target.video_codec.as_deref().unwrap_or_default(),
-        audio_codec = target.audio_codec.as_deref().unwrap_or_default(),
-        video_bitrate = ?target.video_bitrate,
-        audio_bitrate = ?target.audio_bitrate,
-        "starting HLS transcode job",
-    );
-    let runtime_ticks = opened_source
-        .as_ref()
-        .and_then(|source| source.run_time_ticks)
-        .or(item.runtime_ticks);
-    let playlist_type = if runtime_ticks.is_none() {
+    let playlist_type = if item.runtime_ticks.is_none() {
         HlsPlaylistType::Event
     } else {
         HlsPlaylistType::Vod
@@ -896,10 +692,8 @@ async fn start_hls_job(
         .map_err(|_| ApiError::Internal)?;
         return Ok(playlist_type);
     }
-    let input = opened_source
-        .as_ref()
-        .and_then(|source| source.path.clone())
-        .or_else(|| jellyfin_controller::media_source_path(&item).map(str::to_owned))
+    let input = jellyfin_controller::media_source_path(&item)
+        .map(str::to_owned)
         .ok_or(ApiError::NotFound)?;
     tokio::fs::create_dir_all(&state.transcode_directory)
         .await
@@ -909,7 +703,7 @@ async fn start_hls_job(
         let main = build_main_playlist(
             item_id,
             job_id,
-            runtime_ticks,
+            item.runtime_ticks,
             &settings,
             media_type,
             Some(identity.access_token()),
@@ -923,8 +717,7 @@ async fn start_hls_job(
         .await
         .map_err(|_| ApiError::Internal)?;
     }
-    let encoding_options = crate::configuration::encoding_runtime_options(state).await?;
-    let mut command = hls_command_with_playlist_type(
+    let command = hls_command_with_playlist_type(
         &state.ffmpeg_path,
         std::path::Path::new(&input),
         &output_prefix,
@@ -932,46 +725,12 @@ async fn start_hls_job(
         &settings,
         playlist_type,
     );
-    encoding_runtime::apply_audio_vbr(
-        &mut command,
-        target.audio_codec.as_deref().unwrap_or_default(),
-        target.audio_bitrate,
-        target.audio_channels,
-        encoding_runtime::audio_vbr_enabled(
-            encoding_options.enable_audio_vbr,
-            query.enable_audio_vbr_encoding,
-        ),
-    );
-    encoding_runtime::apply_thread_count(
-        &mut command,
-        query.cpu_core_limit,
-        encoding_options.encoding_thread_count,
-    );
     let job = match (query.device_id.as_deref(), query.play_session_id.as_deref()) {
         (Some(device_id), Some(play_session_id)) => state
             .transcode_jobs
             .register_for_session_with_path(job_id, device_id, play_session_id, &input),
         _ => state.transcode_jobs.register(job_id),
     };
-    state.transcode_jobs.set_transcode_reasons(
-        job_id,
-        query
-            .transcode_reasons
-            .as_deref()
-            .and_then(TranscodeReason::parse_names)
-            .unwrap_or(TranscodeReason::NONE),
-    );
-    state.transcode_jobs.set_direct_stream_flags(
-        job_id,
-        target
-            .video_codec
-            .as_deref()
-            .is_some_and(|codec| codec.eq_ignore_ascii_case("copy")),
-        target
-            .audio_codec
-            .as_deref()
-            .is_some_and(|codec| codec.eq_ignore_ascii_case("copy")),
-    );
     let jobs = Arc::clone(&state.transcode_jobs);
     let finished_job_id = job_id.to_owned();
     tokio::spawn(async move {
@@ -1049,7 +808,6 @@ fn media_type_item_id(uri: &Uri) -> Result<(Uuid, &'static str), ApiError> {
 
 fn existing_or_computed_job_id(
     query: &TranscodeQuery,
-    uri: &Uri,
     item_id: Uuid,
     segment_length_ms: i32,
 ) -> String {
@@ -1058,42 +816,28 @@ fn existing_or_computed_job_id(
         .as_deref()
         .filter(|id| !id.is_empty())
         .map_or_else(
-            || compute_job_id(item_id, query, uri, segment_length_ms),
+            || compute_job_id(item_id, query, segment_length_ms),
             str::to_owned,
         )
 }
 
-fn compute_job_id(
-    item_id: Uuid,
-    query: &TranscodeQuery,
-    uri: &Uri,
-    segment_length_ms: i32,
-) -> String {
-    let stream_options = StreamOptions::from_uri(uri);
-    let video_codec = query.video_codec.as_deref().unwrap_or("h264");
-    let audio_codec = query.audio_codec.as_deref().unwrap_or("aac");
-    let video_profile = query
-        .profile
-        .as_deref()
-        .filter(|value| !value.is_empty())
-        .or_else(|| stream_options.get_request_option(video_codec, "profile"));
-    let video_level = query
-        .level
-        .as_deref()
-        .filter(|value| !value.is_empty())
-        .or_else(|| stream_options.get_request_option(video_codec, "level"));
-    let deinterlace = query.de_interlace.unwrap_or(false)
-        || stream_options
-            .get_request_option(video_codec, "deinterlace")
-            .is_some_and(|value| value.eq_ignore_ascii_case("true"));
-    let base_job_id = hls_job_id_from_input(
+fn compute_job_id(item_id: Uuid, query: &TranscodeQuery, segment_length_ms: i32) -> String {
+    hls_job_id_from_input(
         item_id,
         HlsJobIdInput {
             media_source_id: query.media_source_id.as_deref(),
             start_time_ticks: query.start_time_ticks,
             video_codec: query.video_codec.as_deref(),
-            video_profile: output_video_profile(video_codec, video_profile).as_deref(),
-            video_level: output_video_level(video_codec, video_level).as_deref(),
+            video_profile: output_video_profile(
+                query.video_codec.as_deref().unwrap_or("h264"),
+                query.profile.as_deref(),
+            )
+            .as_deref(),
+            video_level: output_video_level(
+                query.video_codec.as_deref().unwrap_or("h264"),
+                query.level.as_deref(),
+            )
+            .as_deref(),
             audio_codec: query.audio_codec.as_deref(),
             video_bitrate: query.video_bitrate,
             audio_bitrate: query.audio_bitrate,
@@ -1102,7 +846,7 @@ fn compute_job_id(
             max_width: query.max_width,
             max_height: query.max_height,
             max_framerate: query.max_framerate,
-            deinterlace,
+            deinterlace: query.de_interlace.unwrap_or(false),
             hwaccel: query.hwaccel.as_deref(),
             subtitle_index: query.subtitle_stream_index,
             burn_subtitles: query.burn_subtitles.unwrap_or(false),
@@ -1111,90 +855,7 @@ fn compute_job_id(
             segment_length_ms,
             container: query.segment_container.as_deref().unwrap_or("ts"),
         },
-    );
-    let requested_audio_channels = stream_options
-        .get_request_option(audio_codec, "audiochannels")
-        .and_then(|value| value.parse::<i32>().ok())
-        .or(query.max_audio_channels)
-        .or(query.audio_channels)
-        .or(query.transcoding_max_audio_channels);
-    let base_job_id = isolate_audio_job_options(
-        base_job_id,
-        requested_audio_channels,
-        query.audio_sample_rate,
-        query.enable_audio_vbr_encoding.unwrap_or(true),
-    );
-    isolate_playback_job_options(
-        base_job_id,
-        query.live_stream_id.as_deref(),
-        query.device_id.as_deref(),
-        query.play_session_id.as_deref(),
     )
-}
-
-fn isolate_audio_job_options(
-    base_job_id: String,
-    audio_channels: Option<i32>,
-    audio_sample_rate: Option<i32>,
-    audio_vbr: bool,
-) -> String {
-    if audio_channels.is_none() && audio_sample_rate.is_none() && audio_vbr {
-        return base_job_id;
-    }
-    use md5::{Digest, Md5};
-    let mut digest = Md5::new();
-    digest.update(base_job_id.as_bytes());
-    if let Some(audio_channels) = audio_channels {
-        digest.update(b":audio_channels=");
-        digest.update(audio_channels.to_le_bytes());
-    }
-    if let Some(audio_sample_rate) = audio_sample_rate {
-        digest.update(b":audio_sample_rate=");
-        digest.update(audio_sample_rate.to_le_bytes());
-    }
-    if !audio_vbr {
-        digest.update(b":audio_vbr=false");
-    }
-    let encoded = format!("{:x}", digest.finalize());
-    let item_suffix = base_job_id
-        .rsplit_once('-')
-        .map_or("", |(_, suffix)| suffix);
-    format!("{}-{item_suffix}", &encoded[..16])
-}
-
-fn isolate_playback_job_options(
-    base_job_id: String,
-    live_stream_id: Option<&str>,
-    device_id: Option<&str>,
-    play_session_id: Option<&str>,
-) -> String {
-    let live_stream_id = live_stream_id.filter(|value| !value.is_empty());
-    let device_id = device_id.filter(|value| !value.is_empty());
-    let play_session_id = play_session_id.filter(|value| !value.is_empty());
-    if live_stream_id.is_none() && device_id.is_none() && play_session_id.is_none() {
-        return base_job_id;
-    }
-
-    use md5::{Digest, Md5};
-    let mut digest = Md5::new();
-    digest.update(base_job_id.as_bytes());
-    if let Some(live_stream_id) = live_stream_id {
-        digest.update(b":live_stream_id=");
-        digest.update(live_stream_id.to_ascii_lowercase().as_bytes());
-    }
-    if let Some(device_id) = device_id {
-        digest.update(b":device_id=");
-        digest.update(device_id.as_bytes());
-    }
-    if let Some(play_session_id) = play_session_id {
-        digest.update(b":play_session_id=");
-        digest.update(play_session_id.as_bytes());
-    }
-    let encoded = format!("{:x}", digest.finalize());
-    let item_suffix = base_job_id
-        .rsplit_once('-')
-        .map_or("", |(_, suffix)| suffix);
-    format!("{}-{item_suffix}", &encoded[..16])
 }
 
 fn segment_length_ms(segment_length_seconds: Option<i32>) -> Result<i32, ApiError> {
@@ -1321,10 +982,7 @@ async fn serve_authenticated_hls1_segment(
     let identity = authorization::require_default(state, &headers, uri).await?;
     match identity {
         crate::authentication::AuthenticatedIdentity::Device(session) => {
-            let target_user_id = query
-                .user_id
-                .filter(|user_id| !user_id.is_nil())
-                .unwrap_or(session.user.id);
+            let target_user_id = query.user_id.unwrap_or(session.user.id);
             if target_user_id != session.user.id && !session.user.is_administrator {
                 return Err(ApiError::Forbidden);
             }
@@ -1403,14 +1061,6 @@ fn resolve_transcode_file(root: &FilePath, filename: &str) -> Result<std::path::
 
 fn is_hls_container(container: &str) -> bool {
     !container.is_empty() && container.bytes().all(|byte| byte.is_ascii_alphanumeric())
-}
-
-fn is_streaming_parameter(value: &str) -> bool {
-    !value.is_empty()
-        && value.len() <= 40
-        && value.bytes().all(|byte| {
-            byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b',' | b'|')
-        })
 }
 
 async fn find_playlist(
@@ -1527,10 +1177,7 @@ mod tests {
     use axum_extra::extract::Query;
     use uuid::Uuid;
 
-    use super::{
-        TranscodeQuery, cleanup_transcode_job, is_streaming_parameter, media_type_item_id,
-        parse_emby_active_encoding_query, segment_length_ms,
-    };
+    use super::{TranscodeQuery, cleanup_transcode_job, media_type_item_id, segment_length_ms};
 
     #[test]
     fn generated_lowercase_transcode_paths_resolve_their_media_type() {
@@ -1562,68 +1209,12 @@ mod tests {
     }
 
     #[test]
-    fn emby_audio_hls_binds_required_container_case_insensitively() {
-        for name in ["Container", "container"] {
-            let uri: Uri = format!("/emby/Audio/item/live.m3u8?{name}=ts")
-                .parse()
-                .unwrap();
-            let query = Query::<TranscodeQuery>::try_from_uri(&uri).unwrap().0;
-            assert_eq!(query.container.as_deref(), Some("ts"), "{name}");
-        }
-    }
-
-    #[test]
-    fn emby_active_encoding_query_is_case_insensitive_and_last_wins() {
-        let uri: Uri = "/emby/Videos/ActiveEncodings?DEVICEID=discarded&deviceId=selected-device&PlaySessionId=discarded&pLaYsEsSiOnId=selected-session&Unknown=ignored"
-            .parse()
-            .unwrap();
-        let query = parse_emby_active_encoding_query(&uri).unwrap();
-        assert_eq!(query.device_id, "selected-device");
-        assert_eq!(query.play_session_id, "selected-session");
-    }
-
-    #[test]
-    fn emby_audio_hls_container_matches_the_official_validation_surface() {
-        for valid in ["ts", "audio,aac", "mpeg-ts_1.0|aac"] {
-            assert!(is_streaming_parameter(valid), "{valid}");
-        }
-        for invalid in ["", "audio/aac", "../ts", "contains space"] {
-            assert!(!is_streaming_parameter(invalid), "{invalid}");
-        }
-        assert!(!is_streaming_parameter(&"a".repeat(41)));
-    }
-
-    #[test]
     fn hls_binds_legacy_video_bitrate_spelling() {
         let uri: Uri = "/videos/item/master.m3u8?videoBitRate=2000000"
             .parse()
             .unwrap();
         let query = Query::<TranscodeQuery>::try_from_uri(&uri).unwrap().0;
         assert_eq!(query.video_bitrate, Some(2_000_000));
-    }
-
-    #[test]
-    fn hls_binds_live_stream_and_transcode_reason_sdk_parameters() {
-        let uri: Uri = "/videos/item/master.m3u8?LIVESTREAMID=live-1&TRANSCODEREASONS=VideoCodecNotSupported%2CAudioBitrateNotSupported"
-            .parse()
-            .unwrap();
-        let query = Query::<TranscodeQuery>::try_from_uri(&uri).unwrap().0;
-        assert_eq!(query.live_stream_id.as_deref(), Some("live-1"));
-        assert_eq!(
-            query.transcode_reasons.as_deref(),
-            Some("VideoCodecNotSupported,AudioBitrateNotSupported")
-        );
-    }
-
-    #[test]
-    fn hls_binds_all_audio_channel_limits_case_insensitively() {
-        let uri: Uri = "/videos/item/master.m3u8?audiochannels=6&MaxAudioChannels=5&transcodingMaxAudioChannels=4"
-            .parse()
-            .unwrap();
-        let query = Query::<TranscodeQuery>::try_from_uri(&uri).unwrap().0;
-        assert_eq!(query.audio_channels, Some(6));
-        assert_eq!(query.max_audio_channels, Some(5));
-        assert_eq!(query.transcoding_max_audio_channels, Some(4));
     }
 
     #[test]
@@ -1635,7 +1226,6 @@ mod tests {
         let query = TranscodeQuery::universal_audio(
             Some(source_id_string.clone()),
             Some("android-device".to_owned()),
-            Some("internal-session".to_owned()),
             Some(user_id),
             Some("aac".to_owned()),
             Some(128_000),
@@ -1643,7 +1233,6 @@ mod tests {
             Some(48_000),
             Some(1),
             Some(10_000),
-            Some(true),
         );
 
         let uri = query.audio_master_uri(item_id, "token").unwrap();
@@ -1654,7 +1243,6 @@ mod tests {
             Some(source_id_string.as_str())
         );
         assert_eq!(parsed.device_id.as_deref(), Some("android-device"));
-        assert_eq!(parsed.play_session_id.as_deref(), Some("internal-session"));
         assert_eq!(parsed.user_id, Some(user_id));
         assert_eq!(parsed.audio_codec.as_deref(), Some("aac"));
         assert_eq!(parsed.audio_bitrate, Some(128_000));
@@ -1662,7 +1250,6 @@ mod tests {
         assert_eq!(parsed.audio_sample_rate, Some(48_000));
         assert_eq!(parsed.audio_stream_index, Some(1));
         assert_eq!(parsed.start_time_ticks, Some(10_000));
-        assert_eq!(parsed.enable_audio_vbr_encoding, Some(true));
         assert_eq!(parsed.segment_container.as_deref(), Some("ts"));
         assert!(
             uri.query()
@@ -1687,8 +1274,8 @@ mod tests {
             .0;
         assert_eq!(second.video_stream_index, Some(3));
         assert_ne!(
-            super::compute_job_id(item_id, &first, &first_uri, 6_000),
-            super::compute_job_id(item_id, &second, &second_uri, 6_000),
+            super::compute_job_id(item_id, &first, 6_000),
+            super::compute_job_id(item_id, &second, 6_000),
         );
     }
 
@@ -1703,8 +1290,8 @@ mod tests {
             .0;
         assert_eq!(transformed.de_interlace, Some(true));
         assert_ne!(
-            super::compute_job_id(item_id, &plain, &plain_uri, 6_000),
-            super::compute_job_id(item_id, &transformed, &transformed_uri, 6_000),
+            super::compute_job_id(item_id, &plain, 6_000),
+            super::compute_job_id(item_id, &transformed, 6_000),
         );
     }
 
@@ -1722,66 +1309,8 @@ mod tests {
         assert_eq!(constrained.profile.as_deref(), Some("High"));
         assert_eq!(constrained.level.as_deref(), Some("4.1"));
         assert_ne!(
-            super::compute_job_id(item_id, &plain, &plain_uri, 6_000),
-            super::compute_job_id(item_id, &constrained, &constrained_uri, 6_000),
-        );
-    }
-
-    #[test]
-    fn hls_stream_options_and_audio_encoding_options_isolate_jobs() {
-        let item_id = Uuid::new_v4();
-        let plain_uri: Uri = "/Videos/item/master.m3u8?audioCodec=aac".parse().unwrap();
-        let plain = Query::<TranscodeQuery>::try_from_uri(&plain_uri).unwrap().0;
-        let constrained_uri: Uri = "/Videos/item/master.m3u8?audioCodec=aac&h264-profile=High&aac-audiochannels=2&audioSampleRate=48000&enableAudioVbrEncoding=false"
-            .parse()
-            .unwrap();
-        let constrained = Query::<TranscodeQuery>::try_from_uri(&constrained_uri)
-            .unwrap()
-            .0;
-
-        assert_ne!(
-            super::compute_job_id(item_id, &plain, &plain_uri, 6_000),
-            super::compute_job_id(item_id, &constrained, &constrained_uri, 6_000),
-        );
-    }
-
-    #[test]
-    fn hls_playback_identity_isolates_jobs_and_normalizes_live_stream_ids() {
-        let item_id = Uuid::new_v4();
-        let uri: Uri = "/Videos/item/master.m3u8".parse().unwrap();
-        let plain = TranscodeQuery::default();
-        let plain_job_id = super::compute_job_id(item_id, &plain, &uri, 6_000);
-
-        let live = TranscodeQuery {
-            live_stream_id: Some("Opened-Stream".to_owned()),
-            ..TranscodeQuery::default()
-        };
-        let live_case_variant = TranscodeQuery {
-            live_stream_id: Some("OPENED-STREAM".to_owned()),
-            ..TranscodeQuery::default()
-        };
-        let device = TranscodeQuery {
-            device_id: Some("device-1".to_owned()),
-            ..TranscodeQuery::default()
-        };
-        let session = TranscodeQuery {
-            play_session_id: Some("play-session-1".to_owned()),
-            ..TranscodeQuery::default()
-        };
-
-        let live_job_id = super::compute_job_id(item_id, &live, &uri, 6_000);
-        assert_ne!(plain_job_id, live_job_id);
-        assert_eq!(
-            live_job_id,
-            super::compute_job_id(item_id, &live_case_variant, &uri, 6_000)
-        );
-        assert_ne!(
-            plain_job_id,
-            super::compute_job_id(item_id, &device, &uri, 6_000)
-        );
-        assert_ne!(
-            plain_job_id,
-            super::compute_job_id(item_id, &session, &uri, 6_000)
+            super::compute_job_id(item_id, &plain, 6_000),
+            super::compute_job_id(item_id, &constrained, 6_000),
         );
     }
 

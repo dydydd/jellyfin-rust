@@ -125,47 +125,39 @@ async fn exercise_library_maintenance_routes(database_name: &str) {
         "http://127.0.0.1:8096".to_owned(),
     ));
 
-    for route in ["/Library/Refresh", "/library/refresh"] {
-        assert_eq!(
-            request(&app, route, None, None).await.status(),
-            StatusCode::UNAUTHORIZED,
-            "anonymous {route}"
-        );
-        assert_eq!(
-            request(&app, route, Some(&user_token), None).await.status(),
-            StatusCode::FORBIDDEN,
-            "ordinary user {route}"
-        );
-        assert_eq!(
-            request(&app, route, Some(&admin_token), None)
-                .await
-                .status(),
-            StatusCode::NO_CONTENT,
-            "administrator {route}"
-        );
-        assert_eq!(
-            request(
-                &app,
-                &format!("{route}?api_key={api_key_token}"),
-                None,
-                None
-            )
+    assert_eq!(
+        request(&app, "/Library/Refresh", None, None).await.status(),
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        request(&app, "/Library/Refresh", Some(&user_token), None)
             .await
             .status(),
-            StatusCode::NO_CONTENT,
-            "API key {route}"
-        );
-    }
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        request(&app, "/Library/Refresh", Some(&admin_token), None)
+            .await
+            .status(),
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        request(
+            &app,
+            &format!("/Library/Refresh?api_key={api_key_token}"),
+            None,
+            None
+        )
+        .await
+        .status(),
+        StatusCode::NO_CONTENT
+    );
 
     for route in [
         "/Library/Series/Added?tvdbId=121361",
         "/Library/Series/Updated?TvdbId=121361",
         "/Library/Movies/Added?imdbId=tt0133093",
         "/Library/Movies/Updated?TmdbId=603",
-        "/library/series/added?tvdbid=missing",
-        "/library/series/updated?tvdbid=missing",
-        "/library/movies/added?imdbid=missing",
-        "/library/movies/updated?tmdbid=missing",
     ] {
         assert_eq!(
             request(&app, route, None, None).await.status(),
@@ -185,42 +177,6 @@ async fn exercise_library_maintenance_routes(database_name: &str) {
             &format!("/Library/Series/Added?api_key={api_key_token}&tvdbId=121361"),
             None,
             None
-        )
-        .await
-        .status(),
-        StatusCode::NO_CONTENT
-    );
-    assert_eq!(
-        request(
-            &app,
-            "/library/media/updated",
-            Some(&user_token),
-            Some(json!({ "updates": [{ "path": null }] })),
-        )
-        .await
-        .status(),
-        StatusCode::BAD_REQUEST,
-        "lowercase DTO properties must not be ignored as an empty update report"
-    );
-    assert_eq!(
-        request(
-            &app,
-            "/library/media/updated",
-            Some(&user_token),
-            Some(json!({
-                "updates": [{ "path": "/media/Movies/The Matrix.mkv" }]
-            })),
-        )
-        .await
-        .status(),
-        StatusCode::NO_CONTENT
-    );
-    assert_eq!(
-        request(
-            &app,
-            &format!("/library/media/updated?api_key={api_key_token}"),
-            None,
-            Some(json!({ "updates": [] })),
         )
         .await
         .status(),

@@ -37,17 +37,6 @@ async fn alternate_source_route_enforces_official_contract() {
         fixture
             .send(
                 Method::DELETE,
-                &Fixture::lowercase_route(fixture.group_a.primary),
-                Some(&fixture.user_token),
-            )
-            .await
-            .status(),
-        StatusCode::FORBIDDEN
-    );
-    assert_eq!(
-        fixture
-            .send(
-                Method::DELETE,
                 &Fixture::route(Uuid::new_v4()),
                 Some(&fixture.admin_token),
             )
@@ -64,7 +53,7 @@ async fn alternate_source_route_enforces_official_contract() {
             )
             .await
             .status(),
-        StatusCode::NOT_FOUND
+        StatusCode::BAD_REQUEST
     );
 
     let incorrect_official_test_uri = format!("/Videos/{}", fixture.group_a.primary);
@@ -79,49 +68,6 @@ async fn alternate_source_route_enforces_official_contract() {
             .status(),
         StatusCode::NOT_FOUND
     );
-    fixture.cleanup().await;
-}
-
-#[tokio::test]
-async fn elevated_api_key_can_mutate_versions_through_lowercase_aliases() {
-    let fixture = Fixture::new().await;
-    let alternate_route = format!(
-        "{}?ApiKey={}",
-        Fixture::lowercase_route(fixture.group_a.primary),
-        fixture.api_key_token
-    );
-    assert_eq!(
-        fixture
-            .send(Method::DELETE, &alternate_route, None)
-            .await
-            .status(),
-        StatusCode::NO_CONTENT
-    );
-
-    let merge_route = format!(
-        "/videos/mergeversions?ids={},{}&ApiKey={}",
-        fixture.group_a.primary, fixture.group_b.primary, fixture.api_key_token
-    );
-    assert_eq!(
-        fixture
-            .send(Method::POST, &merge_route, None)
-            .await
-            .status(),
-        StatusCode::NO_CONTENT
-    );
-
-    let expected_primary = fixture.group_a.primary.min(fixture.group_b.primary);
-    for item in fixture
-        .load_group(&fixture.group_a)
-        .await
-        .into_iter()
-        .chain(fixture.load_group(&fixture.group_b).await)
-    {
-        assert_eq!(
-            item.primary_version_id,
-            (item.id != expected_primary).then_some(expected_primary)
-        );
-    }
     fixture.cleanup().await;
 }
 
@@ -288,17 +234,6 @@ async fn merge_versions_route_enforces_official_contract_and_persists_group() {
     assert_eq!(
         fixture
             .send(Method::POST, &route, Some(&fixture.user_token))
-            .await
-            .status(),
-        StatusCode::FORBIDDEN
-    );
-    assert_eq!(
-        fixture
-            .send(
-                Method::POST,
-                &format!("/videos/mergeversions?ids={merge_ids}"),
-                Some(&fixture.user_token),
-            )
             .await
             .status(),
         StatusCode::FORBIDDEN
@@ -568,21 +503,6 @@ async fn additional_parts_route_reads_official_path_metadata() {
             .await,
     )
     .await;
-    let nil_user_body = body_json(
-        fixture
-            .send(
-                Method::GET,
-                &format!(
-                    "/videos/{}/additionalparts?userid={}",
-                    fixture.additional_main_id,
-                    Uuid::nil()
-                ),
-                Some(&fixture.user_token),
-            )
-            .await,
-    )
-    .await;
-    assert_eq!(nil_user_body, body);
     assert_eq!(body["TotalRecordCount"], 2);
     assert_eq!(body["StartIndex"], 0);
     assert_eq!(body["Items"].as_array().unwrap().len(), 2);
@@ -810,10 +730,6 @@ impl Fixture {
 
     fn route(item_id: Uuid) -> String {
         format!("/Videos/{item_id}/AlternateSources")
-    }
-
-    fn lowercase_route(item_id: Uuid) -> String {
-        format!("/videos/{item_id}/alternatesources")
     }
 
     async fn send(

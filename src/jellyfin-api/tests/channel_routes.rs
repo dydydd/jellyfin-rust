@@ -5,11 +5,7 @@ use axum::{
 };
 use jellyfin_api::AppState;
 use jellyfin_controller::UserService;
-use jellyfin_data::{
-    BaseItemRepository, DatabaseConfig, DeviceRepository, NewBaseItem, NewDevice, NewUserData,
-    UserDataRepository,
-};
-use jellyfin_model::UserPolicy;
+use jellyfin_data::{BaseItemRepository, DatabaseConfig, DeviceRepository, NewBaseItem, NewDevice};
 use sea_orm::{ConnectionTrait, DatabaseConnection};
 use serde_json::Value;
 use tower::ServiceExt;
@@ -97,20 +93,16 @@ async fn exercise_channels_route(database_name: &str) {
     let lowercase = body_json(
         fixture
             .get(
-                "/channels?startindex=0&limit=1&supportslatestitems=false&supportsmediadeletion=false&isfavorite=false",
+                "/channels?startindex=1&limit=1&supportslatestitems=true&supportsmediadeletion=false&isfavorite=false",
                 Some(&fixture.user_token),
             )
             .await,
     )
     .await;
-    assert_eq!(lowercase["StartIndex"], 0);
+    assert_eq!(lowercase["StartIndex"], 1);
     assert_eq!(lowercase["Items"].as_array().expect("items").len(), 1);
-    assert_eq!(
-        lowercase["Items"][0]["Id"],
-        fixture.second_channel_id.simple().to_string()
-    );
 
-    let latest_capable = body_json(
+    let filtered = body_json(
         fixture
             .get(
                 "/Channels?supportsLatestItems=true&supportsMediaDeletion=false&isFavorite=false",
@@ -119,63 +111,18 @@ async fn exercise_channels_route(database_name: &str) {
             .await,
     )
     .await;
-    assert_page(&latest_capable, 0, 0, 0);
-
-    let deletion_capable = body_json(
-        fixture
-            .get(
-                "/Channels?supportsMediaDeletion=true",
-                Some(&fixture.user_token),
-            )
-            .await,
-    )
-    .await;
-    assert_page(&deletion_capable, 0, 0, 0);
-
-    let favorite = body_json(
-        fixture
-            .get("/Channels?isFavorite=true", Some(&fixture.user_token))
-            .await,
-    )
-    .await;
-    assert_page(&favorite, 0, 1, 1);
-    assert_eq!(
-        favorite["Items"][0]["Id"],
-        fixture.first_channel_id.simple().to_string()
+    assert_eq!(filtered["TotalRecordCount"], 2);
+    assert!(
+        filtered["Items"]
+            .as_array()
+            .expect("items")
+            .iter()
+            .all(|item| item["Type"] == "Channel")
     );
 
-    let nil_user_favorite = body_json(
-        fixture
-            .get(
-                &format!("/Channels?userId={}&isFavorite=true", Uuid::nil()),
-                Some(&fixture.user_token),
-            )
-            .await,
-    )
-    .await;
-    assert_page(&nil_user_favorite, 0, 1, 1);
-    assert_eq!(
-        nil_user_favorite["Items"][0]["Id"],
-        fixture.first_channel_id.simple().to_string()
-    );
-
-    let not_favorite = body_json(
-        fixture
-            .get("/channels?isfavorite=false", Some(&fixture.user_token))
-            .await,
-    )
-    .await;
-    assert_page(&not_favorite, 0, 1, 1);
-    assert_eq!(
-        not_favorite["Items"][0]["Id"],
-        fixture.second_channel_id.simple().to_string()
-    );
-
-    assert_signed_channel_pagination(&fixture).await;
     assert_channel_features(&fixture).await;
     assert_channel_items(&fixture).await;
     assert_latest_channel_items(&fixture).await;
-    assert_channel_visibility_policy(&fixture).await;
 
     fixture.cleanup().await;
 }
@@ -184,7 +131,6 @@ struct Fixture {
     database: DatabaseConnection,
     app: axum::Router,
     admin_id: Uuid,
-    user_id: Uuid,
     admin_token: String,
     user_token: String,
     first_channel_id: Uuid,
@@ -227,39 +173,14 @@ impl Fixture {
         let first_channel = create_item(&items, "Channel", "A Channel", root.id).await;
         let second_channel = create_item(&items, "Channel", "B Channel", root.id).await;
         let movie = create_item(&items, "Movie", "Ignored Movie", root.id).await;
-        let first_channel_item =
+        let _first_channel_item =
             create_item(&items, "Movie", "A Channel Movie", first_channel.id).await;
-        let second_channel_item =
+        let _second_channel_item =
             create_item(&items, "Video", "B Channel Video", first_channel.id).await;
         let channel_folder = create_folder(&items, "Nested Channel Folder", first_channel.id).await;
         let channel_folder_item =
             create_item(&items, "Audio", "Folder Song", channel_folder.id).await;
         let outside_folder = create_folder(&items, "Other Channel Folder", second_channel.id).await;
-
-        let user_data = UserDataRepository::new(database.clone());
-        let mut favorite_channel = NewUserData::new(first_channel.id, user.id, "channel-favorite");
-        favorite_channel.is_favorite = true;
-        user_data
-            .upsert(favorite_channel)
-            .await
-            .expect("favorite channel user data");
-        let mut favorite_item =
-            NewUserData::new(first_channel_item.id, user.id, "channel-item-favorite");
-        favorite_item.is_favorite = true;
-        favorite_item.likes = Some(false);
-        user_data
-            .upsert(favorite_item)
-            .await
-            .expect("favorite channel item user data");
-        let mut played_item =
-            NewUserData::new(second_channel_item.id, user.id, "channel-item-played");
-        played_item.played = true;
-        played_item.playback_position_ticks = 1;
-        played_item.likes = Some(true);
-        user_data
-            .upsert(played_item)
-            .await
-            .expect("played channel item user data");
 
         let app = jellyfin_api::router(AppState::new(
             database.clone(),
@@ -270,7 +191,6 @@ impl Fixture {
             database,
             app,
             admin_id: admin.id,
-            user_id: user.id,
             admin_token,
             user_token,
             first_channel_id: first_channel.id,
@@ -300,38 +220,6 @@ impl Fixture {
     async fn cleanup(self) {
         self.database.close().await.unwrap();
     }
-}
-
-async fn assert_channel_visibility_policy(fixture: &Fixture) {
-    let users = UserService::new(fixture.database.clone());
-    let user = users.get(fixture.user_id).await.expect("user lookup");
-    let mut policy: UserPolicy = serde_json::from_value(user.policy).expect("stored user policy");
-    policy.blocked_channels = Some(vec![fixture.first_channel_id]);
-    users
-        .update_policy(fixture.user_id, &policy)
-        .await
-        .expect("block channel");
-
-    let blocked = body_json(fixture.get("/Channels", Some(&fixture.user_token)).await).await;
-    assert_page(&blocked, 0, 1, 1);
-    assert_eq!(
-        blocked["Items"][0]["Id"],
-        fixture.second_channel_id.simple().to_string()
-    );
-
-    policy.blocked_channels = None;
-    policy.enable_all_channels = false;
-    policy.enabled_channels = vec![fixture.first_channel_id];
-    users
-        .update_policy(fixture.user_id, &policy)
-        .await
-        .expect("enable one channel");
-    let enabled = body_json(fixture.get("/channels", Some(&fixture.user_token)).await).await;
-    assert_page(&enabled, 0, 1, 1);
-    assert_eq!(
-        enabled["Items"][0]["Id"],
-        fixture.first_channel_id.simple().to_string()
-    );
 }
 
 async fn create_item(
@@ -376,108 +264,6 @@ async fn session(repository: &DeviceRepository, user_id: Uuid, device_id: &str) 
 
 async fn body_json(response: axum::response::Response) -> Value {
     serde_json::from_slice(&body_bytes(response).await).expect("JSON response")
-}
-
-async fn assert_signed_channel_pagination(fixture: &Fixture) {
-    // ChannelManager.GetChannelsInternalAsync uses List.GetRange rather than
-    // InternalItemsQuery. Its non-positive limits are unlimited, while invalid
-    // list offsets retain the official server-error behavior.
-    for (route, start_index_name, limit_name) in [
-        ("/Channels", "StartIndex", "Limit"),
-        ("/channels", "startindex", "limit"),
-    ] {
-        for start_index in [-1_i64, i64::from(i32::MIN), 3, i64::from(i32::MAX)] {
-            let uri = format!("{route}?{start_index_name}={start_index}");
-            assert_eq!(
-                fixture.get(&uri, Some(&fixture.user_token)).await.status(),
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "{uri}"
-            );
-        }
-
-        let end = body_json(
-            fixture
-                .get(
-                    &format!("{route}?{start_index_name}=2"),
-                    Some(&fixture.user_token),
-                )
-                .await,
-        )
-        .await;
-        assert_page(&end, 2, 2, 0);
-
-        for limit in [0, -1, i32::MIN, i32::MAX] {
-            let uri = format!("{route}?{limit_name}={limit}");
-            let page = body_json(fixture.get(&uri, Some(&fixture.user_token)).await).await;
-            assert_page(&page, 0, 2, 2);
-        }
-    }
-
-    let channel_item_routes = [
-        format!("/Channels/{}/Items", fixture.first_channel_id),
-        format!("/channels/{}/items", fixture.first_channel_id),
-    ];
-    assert_internal_channel_pagination(fixture, &channel_item_routes).await;
-    let latest_routes = [
-        "/Channels/Items/Latest".to_owned(),
-        "/channels/items/latest".to_owned(),
-    ];
-    assert_internal_channel_pagination(fixture, &latest_routes).await;
-
-    for route in [
-        "/Channels".to_owned(),
-        "/channels".to_owned(),
-        format!("/Channels/{}/Items", fixture.first_channel_id),
-        format!("/channels/{}/items", fixture.first_channel_id),
-        "/Channels/Items/Latest".to_owned(),
-        "/channels/items/latest".to_owned(),
-    ] {
-        for query in [
-            "startIndex=2147483648",
-            "startindex=-2147483649",
-            "limit=2147483648",
-            "Limit=-2147483649",
-        ] {
-            let uri = format!("{route}?{query}");
-            assert_eq!(
-                fixture.get(&uri, Some(&fixture.user_token)).await.status(),
-                StatusCode::BAD_REQUEST,
-                "{uri}"
-            );
-        }
-    }
-}
-
-async fn assert_internal_channel_pagination(fixture: &Fixture, routes: &[String]) {
-    for (index, route) in routes.iter().enumerate() {
-        let (start_index_name, limit_name) = if index == 0 {
-            ("StartIndex", "Limit")
-        } else {
-            ("startindex", "limit")
-        };
-
-        for start_index in [-1, i32::MIN] {
-            let uri = format!("{route}?{start_index_name}={start_index}&{limit_name}=1");
-            let page = body_json(fixture.get(&uri, Some(&fixture.user_token)).await).await;
-            assert_page(&page, start_index, 3, 1);
-        }
-
-        let maximum_start = format!("{route}?{start_index_name}={}&{limit_name}=1", i32::MAX);
-        let page = body_json(fixture.get(&maximum_start, Some(&fixture.user_token)).await).await;
-        assert_page(&page, i32::MAX, 3, 0);
-
-        for (limit, expected_items) in [(0, 0), (-1, 3), (i32::MIN, 3), (i32::MAX, 3)] {
-            let uri = format!("{route}?{limit_name}={limit}");
-            let page = body_json(fixture.get(&uri, Some(&fixture.user_token)).await).await;
-            assert_page(&page, 0, 3, expected_items);
-        }
-    }
-}
-
-fn assert_page(page: &Value, start_index: i32, total_record_count: u64, item_count: usize) {
-    assert_eq!(page["StartIndex"], start_index);
-    assert_eq!(page["TotalRecordCount"], total_record_count);
-    assert_eq!(page["Items"].as_array().expect("items").len(), item_count);
 }
 
 async fn assert_channel_features(fixture: &Fixture) {
@@ -677,126 +463,6 @@ async fn assert_channel_items(fixture: &Fixture) {
     )
     .await;
     assert_eq!(lowercase["TotalRecordCount"], 1);
-
-    let folders = body_json(
-        fixture
-            .get(
-                &format!(
-                    "/Channels/{}/Items?filters=IsFolder",
-                    fixture.first_channel_id
-                ),
-                Some(&fixture.user_token),
-            )
-            .await,
-    )
-    .await;
-    assert_page(&folders, 0, 1, 1);
-    assert_eq!(folders["Items"][0]["Type"], "Folder");
-
-    let non_folders = body_json(
-        fixture
-            .get(
-                &format!("/channels/{}/items?filters=2", fixture.first_channel_id),
-                Some(&fixture.user_token),
-            )
-            .await,
-    )
-    .await;
-    assert_page(&non_folders, 0, 2, 2);
-    assert!(
-        non_folders["Items"]
-            .as_array()
-            .expect("non-folder items")
-            .iter()
-            .all(|item| item["Type"] != "Folder")
-    );
-
-    // The official comma-delimited binder converts each repeated value as a
-    // distinct enum and ignores unparseable elements.
-    let favorite_non_folder = body_json(
-        fixture
-            .get(
-                &format!(
-                    "/Channels/{}/Items?filters=IsNotFolder&filters=isfavorite&filters=unknown",
-                    fixture.first_channel_id
-                ),
-                Some(&fixture.user_token),
-            )
-            .await,
-    )
-    .await;
-    assert_page(&favorite_non_folder, 0, 1, 1);
-    assert_eq!(favorite_non_folder["Items"][0]["Name"], "A Channel Movie");
-
-    let nil_user_favorite = body_json(
-        fixture
-            .get(
-                &format!(
-                    "/Channels/{}/Items?userId={}&filters=IsFavorite",
-                    fixture.first_channel_id,
-                    Uuid::nil()
-                ),
-                Some(&fixture.user_token),
-            )
-            .await,
-    )
-    .await;
-    assert_page(&nil_user_favorite, 0, 1, 1);
-    assert_eq!(nil_user_favorite["Items"][0]["Name"], "A Channel Movie");
-
-    for (filters, expected_names) in [
-        ("IsNotFolder,IsUnplayed", &["A Channel Movie"][..]),
-        ("IsPlayed", &["B Channel Video"][..]),
-        ("IsResumable", &["B Channel Video"][..]),
-        ("Likes", &["B Channel Video"][..]),
-        (
-            "Dislikes",
-            &["A Channel Movie", "Nested Channel Folder"][..],
-        ),
-        (
-            "IsFavoriteOrLikes",
-            &["A Channel Movie", "B Channel Video"][..],
-        ),
-    ] {
-        let filtered = body_json(
-            fixture
-                .get(
-                    &format!(
-                        "/Channels/{}/Items?filters={filters}",
-                        fixture.first_channel_id
-                    ),
-                    Some(&fixture.user_token),
-                )
-                .await,
-        )
-        .await;
-        assert_eq!(
-            filtered["TotalRecordCount"],
-            u64::try_from(expected_names.len()).unwrap(),
-            "filters={filters}"
-        );
-        let actual_names = filtered["Items"]
-            .as_array()
-            .expect("filtered channel items")
-            .iter()
-            .map(|item| item["Name"].as_str().expect("item name"))
-            .collect::<Vec<_>>();
-        assert_eq!(actual_names, expected_names, "filters={filters}");
-    }
-
-    assert_eq!(
-        fixture
-            .get(
-                &format!(
-                    "/Channels/{}/Items?filters=IsFolder,IsNotFolder",
-                    fixture.first_channel_id
-                ),
-                Some(&fixture.user_token),
-            )
-            .await
-            .status(),
-        StatusCode::BAD_REQUEST
-    );
 }
 
 async fn assert_latest_channel_items(fixture: &Fixture) {
@@ -901,71 +567,6 @@ async fn assert_latest_channel_items(fixture: &Fixture) {
     )
     .await;
     assert_eq!(lowercase["TotalRecordCount"], 3);
-
-    let favorite = body_json(
-        fixture
-            .get(
-                &format!(
-                    "/Channels/Items/Latest?channelIds={}&filters=5",
-                    fixture.first_channel_id
-                ),
-                Some(&fixture.user_token),
-            )
-            .await,
-    )
-    .await;
-    assert_page(&favorite, 0, 1, 1);
-    assert_eq!(favorite["Items"][0]["Name"], "A Channel Movie");
-
-    let nil_user_favorite = body_json(
-        fixture
-            .get(
-                &format!(
-                    "/Channels/Items/Latest?userId={}&channelIds={}&filters=IsFavorite",
-                    Uuid::nil(),
-                    fixture.first_channel_id
-                ),
-                Some(&fixture.user_token),
-            )
-            .await,
-    )
-    .await;
-    assert_page(&nil_user_favorite, 0, 1, 1);
-    assert_eq!(nil_user_favorite["Items"][0]["Name"], "A Channel Movie");
-
-    // ChannelManager applies filters first and then forces latest-media
-    // queries to non-folders, so IsFolder is deliberately overridden here.
-    let forced_non_folders = body_json(
-        fixture
-            .get(
-                &format!(
-                    "/channels/items/latest?channelids={}&filters=isfolder",
-                    fixture.first_channel_id
-                ),
-                Some(&fixture.user_token),
-            )
-            .await,
-    )
-    .await;
-    assert_page(&forced_non_folders, 0, 3, 3);
-    assert!(
-        forced_non_folders["Items"]
-            .as_array()
-            .expect("latest items")
-            .iter()
-            .all(|item| item["Type"] != "Folder")
-    );
-
-    assert_eq!(
-        fixture
-            .get(
-                "/Channels/Items/Latest?filters=IsPlayed,IsUnplayed",
-                Some(&fixture.user_token),
-            )
-            .await
-            .status(),
-        StatusCode::BAD_REQUEST
-    );
 }
 
 fn assert_default_channel_features(features: &Value) {

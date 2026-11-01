@@ -6,7 +6,6 @@ mod collections;
 mod dashboard;
 mod environment;
 mod episode_parser;
-mod game_genre;
 mod genres;
 mod google_books;
 mod item_by_name;
@@ -18,7 +17,6 @@ pub mod library;
 mod library_controller;
 mod library_scan;
 pub mod library_watcher;
-mod live_stream;
 mod localization;
 mod lyrics;
 mod media_attachments;
@@ -42,7 +40,6 @@ mod music_genre;
 mod omdb;
 mod packages;
 mod persons;
-mod photo_metadata;
 mod playlists;
 mod playstate;
 mod plugins;
@@ -70,7 +67,6 @@ pub use chapter_images::{ChapterImageError, ChapterImageService};
 pub use collections::{CollectionError, CollectionService};
 pub use dashboard::{DashboardError, DashboardPage, DashboardService};
 pub use environment::{EnvironmentError, EnvironmentService};
-pub use game_genre::{GameGenre, GameGenreDetail, GameGenreError, GameGenrePage, GameGenreService};
 pub use genres::{Genre, GenreDetail, GenreError, GenreKind, GenrePage, GenreService};
 pub use google_books::{GoogleBooksMetadataProvider, GoogleBooksProviderError};
 pub use item_by_name::{
@@ -90,7 +86,6 @@ pub use library_scan::{
     LibraryScanError, LibraryScanService, LibraryScanSummary, MediaItemScanFailure,
     MediaItemScanFailureKind, MediaItemScanFailureStage,
 };
-pub use live_stream::{LiveStreamRegistry, LiveStreamRegistryError};
 pub use localization::LocalizationService;
 pub use lyrics::{
     LyricManager, LyricManagerError, LyricProvider, LyricProviderError, LyricProviderFuture,
@@ -123,7 +118,7 @@ pub use persons::{
     PersonReconciliationError, PersonReconciliationService, PersonReconciliationSummary,
     PersonService,
 };
-pub use playlists::{AddToPlaylistInfo, PlaylistError, PlaylistService};
+pub use playlists::{PlaylistError, PlaylistService};
 pub use playstate::{
     PlaybackProgressUpdate, PlaybackStartUpdate, PlaybackStopUpdate, PlaystateError,
     PlaystateService, PlaystateUpdate, format_date_played, parse_date_played,
@@ -148,7 +143,7 @@ pub use user_library::{RelatedItemKind, UserLibraryError, UserLibraryService};
 pub use user_views::{
     UserViewGroupingOption, UserViewItem, UserViewManagerError, UserViewManagerService,
 };
-pub use users::{UserCopyOptions, UserError, UserService, validate_username};
+pub use users::{UserError, UserService, validate_username};
 pub use videos::{VideoError, VideoService};
 pub use virtual_folders::{VirtualFolder, VirtualFolderService, VirtualFolderServiceError};
 pub use years::{Year, YearError, YearItem, YearPage, YearService};

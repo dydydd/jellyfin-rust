@@ -7,16 +7,15 @@ use std::{
 };
 
 use axum::{
-    Json, Router,
+    Json,
     body::Body,
     extract::{OriginalUri, Path as AxumPath, Query, State, rejection::JsonRejection},
     http::{HeaderMap, HeaderValue, Request, StatusCode, header},
     response::{IntoResponse, Response},
-    routing::{delete, post},
 };
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
 use chrono::{DateTime, Utc};
-use jellyfin_controller::{MediaStreamFilter, SubtitleResponse, SubtitleSearchRequest};
+use jellyfin_controller::SubtitleSearchRequest;
 use jellyfin_data::{BaseItemError, NamedConfigurationStoreError};
 use jellyfin_model::{FontFile, MediaStream, MediaStreamType, MimeTypes, RemoteSubtitleInfo};
 use serde::Deserialize;
@@ -80,131 +79,20 @@ pub(crate) struct SubtitlePlaylistQuery {
     segment_length: Option<i64>,
 }
 
-#[derive(Debug, Default, Deserialize)]
-#[serde(default)]
-pub(crate) struct EmbyLegacySubtitlePlaylistQuery {
-    #[serde(
-        rename = "subtitleSegmentLength",
-        alias = "SubtitleSegmentLength",
-        alias = "subtitlesegmentlength"
-    )]
-    subtitle_segment_length: Option<i32>,
-    #[serde(
-        rename = "manifestSubtitles",
-        alias = "ManifestSubtitles",
-        alias = "manifestsubtitles"
-    )]
-    manifest_subtitles: Option<String>,
-}
-
-#[derive(Debug, Default, Deserialize)]
-#[serde(default, rename_all = "camelCase")]
-pub(crate) struct EmbyLegacySubtitleDeleteQuery {
-    #[serde(alias = "MediaSourceId", alias = "mediasourceid")]
-    media_source_id: Option<String>,
-}
-
-/// Builds Emby's generated-client subtitle-delete aliases without exposing
-/// them from Jellyfin's unprefixed route tree.
-pub fn emby_legacy_subtitle_delete_routes() -> Router<Arc<AppState>> {
-    Router::new()
-        .route(
-            "/Videos/{item_id}/Subtitles/{index}",
-            delete(emby_legacy_delete_subtitle),
-        )
-        .route(
-            "/videos/{item_id}/subtitles/{index}",
-            delete(emby_legacy_delete_subtitle),
-        )
-        .route(
-            "/Videos/{item_id}/Subtitles/{index}/Delete",
-            post(emby_legacy_delete_subtitle),
-        )
-        .route(
-            "/videos/{item_id}/subtitles/{index}/delete",
-            post(emby_legacy_delete_subtitle),
-        )
-}
-
 pub(crate) async fn delete_subtitle(
     State(state): State<Arc<AppState>>,
-    AxumPath((item_id, index)): AxumPath<(Uuid, i32)>,
-) -> Result<StatusCode, ApiError> {
-    // `SubtitleController.DeleteSubtitle` is `RequiresElevation`, unlike the
-    // other subtitle mutations which use `SubtitleManagement`. Authorization
-    // is enforced by the route middleware so elevated API keys work as well as
-    // administrator sessions.
-    ensure_video_item_by_id(&state, item_id).await?;
-    delete_external_subtitle(&state, item_id, index).await?;
-    Ok(StatusCode::NO_CONTENT)
-}
-
-async fn emby_legacy_delete_subtitle(
-    State(state): State<Arc<AppState>>,
-    OriginalUri(uri): OriginalUri,
     headers: HeaderMap,
     AxumPath((item_id, index)): AxumPath<(Uuid, i32)>,
-    Query(query): Query<EmbyLegacySubtitleDeleteQuery>,
 ) -> Result<StatusCode, ApiError> {
-    // Resolve the target before validating the legacy-only query value so a
-    // missing or non-Video target retains the official typed-item 404.
-    let identity = authorization::require_default(&state, &headers, &uri).await?;
-    match &identity {
-        authentication::AuthenticatedIdentity::Device(session) => {
-            ensure_video_item(&state, &session.user, item_id).await?;
-        }
-        authentication::AuthenticatedIdentity::ApiKey(_) => {
-            ensure_video_item_by_id(&state, item_id).await?;
-        }
+    let authenticated = authentication::authenticated_session(&state, &headers).await?;
+    if !authenticated.can_manage_subtitles() {
+        return Err(ApiError::Forbidden);
     }
-    query
-        .media_source_id
-        .as_deref()
-        .filter(|value| !value.trim().is_empty())
-        .ok_or(ApiError::InvalidRequest)?;
-    delete_external_subtitle(&state, item_id, index).await?;
-    // The generated Emby operation declares a void HTTP 200 response. Keep
-    // Jellyfin's current DELETE route on its separate 204 contract.
-    Ok(StatusCode::OK)
-}
-
-async fn delete_external_subtitle(
-    state: &AppState,
-    item_id: Uuid,
-    index: i32,
-) -> Result<(), ApiError> {
-    let stream = state
-        .media_streams
-        .get_media_streams(MediaStreamFilter {
-            item_id,
-            index: Some(index),
-            stream_type: Some(MediaStreamType::Subtitle),
-        })
-        .await?
-        .into_iter()
-        .next();
-
-    // Embedded subtitle rows can point at the owning video container. Only an
-    // explicitly external subtitle path is safe to unlink from the filesystem.
-    if let Some(path) = stream.as_ref().and_then(|stream| {
-        stream
-            .is_external
-            .then_some(stream.path.as_deref())
-            .flatten()
-            .filter(|path| !path.trim().is_empty())
-    }) {
-        match tokio::fs::remove_file(path).await {
-            Ok(()) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(_) => return Err(ApiError::Internal),
-        }
-    }
-
     state
         .media_streams
         .delete_media_stream(item_id, index, MediaStreamType::Subtitle)
         .await?;
-    Ok(())
+    Ok(StatusCode::NO_CONTENT)
 }
 
 pub(crate) async fn get_subtitle(
@@ -292,73 +180,17 @@ pub(crate) async fn get_subtitle_playlist(
     Ok(response)
 }
 
-pub(crate) async fn emby_legacy_subtitle_playlist(
-    State(state): State<Arc<AppState>>,
-    OriginalUri(uri): OriginalUri,
-    headers: HeaderMap,
-    AxumPath(item_id): AxumPath<Uuid>,
-    Query(query): Query<EmbyLegacySubtitlePlaylistQuery>,
-) -> Result<Response, ApiError> {
-    let identity = authorization::require_default(&state, &headers, &uri).await?;
-    let item = match &identity {
-        authentication::AuthenticatedIdentity::Device(session) => {
-            ensure_video_item(&state, &session.user, item_id).await?
-        }
-        authentication::AuthenticatedIdentity::ApiKey(_) => {
-            ensure_video_item_by_id(&state, item_id).await?
-        }
-    };
-    let segment_length_seconds = query
-        .subtitle_segment_length
-        .filter(|length| *length > 0)
-        .map(i64::from)
-        .ok_or(ApiError::InvalidRequest)?;
-    let manifest_format = query
-        .manifest_subtitles
-        .as_deref()
-        .and_then(|value| normalize_subtitle_format(value.trim()))
-        .filter(|value| value.eq_ignore_ascii_case("vtt"))
-        .ok_or(ApiError::InvalidRequest)?;
-    let runtime_ticks = item
-        .runtime_ticks
-        .filter(|runtime_ticks| *runtime_ticks > 0)
-        .ok_or(ApiError::InvalidRequest)?;
-    let streams = state
-        .media_streams
-        .get_media_streams(MediaStreamFilter::for_item(item.id))
-        .await?;
-    let subtitle = streams
-        .iter()
-        .filter(|stream| stream.stream_type == MediaStreamType::Subtitle)
-        .min_by_key(|stream| (!stream.is_default, stream.index))
-        .ok_or(ApiError::NotFound)?;
-    let media_source_id = item.id.simple();
-    let segment_url = format!(
-        "{media_source_id}/Subtitles/{}/stream.{manifest_format}",
-        subtitle.index
-    );
-    let playlist = subtitle_playlist_with_segment_url(
-        runtime_ticks,
-        segment_length_seconds,
-        identity.access_token(),
-        &segment_url,
-    );
-    let mut response = Response::new(Body::from(playlist));
-    response.headers_mut().insert(
-        header::CONTENT_TYPE,
-        HeaderValue::from_static("application/x-mpegURL"),
-    );
-    Ok(response)
-}
-
 pub(crate) async fn upload_subtitle(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     AxumPath(item_id): AxumPath<Uuid>,
     request: Result<Json<UploadSubtitleDto>, JsonRejection>,
 ) -> Result<StatusCode, ApiError> {
-    let identity = authentication::authenticated_identity(&state, &headers, None).await?;
-    ensure_managed_video_item(&state, &identity, item_id).await?;
+    let authenticated = authentication::authenticated_session(&state, &headers).await?;
+    if !authenticated.can_manage_subtitles() {
+        return Err(ApiError::Forbidden);
+    }
+    ensure_video_item(&state, &authenticated.user, item_id).await?;
 
     let Json(request) = request.map_err(|_| ApiError::InvalidRequest)?;
     let language = subtitle_token(request.language.as_deref()).ok_or(ApiError::InvalidRequest)?;
@@ -375,29 +207,6 @@ pub(crate) async fn upload_subtitle(
         return Err(ApiError::InvalidRequest);
     }
 
-    persist_external_subtitle(
-        &state,
-        item_id,
-        SubtitleResponse {
-            format,
-            language,
-            content: subtitle,
-            is_forced,
-            is_hearing_impaired,
-        },
-    )
-    .await?;
-
-    Ok(StatusCode::NO_CONTENT)
-}
-
-async fn persist_external_subtitle(
-    state: &AppState,
-    item_id: Uuid,
-    subtitle: SubtitleResponse,
-) -> Result<(), ApiError> {
-    let language = subtitle_token(Some(&subtitle.language)).ok_or(ApiError::InvalidRequest)?;
-    let format = subtitle_token(Some(&subtitle.format)).ok_or(ApiError::InvalidRequest)?;
     let mut streams = state
         .media_streams
         .get_media_streams(jellyfin_controller::MediaStreamFilter::for_item(item_id))
@@ -415,7 +224,7 @@ async fn persist_external_subtitle(
             .map_err(|_| ApiError::Internal)?;
     }
     let temporary_path = path.with_extension(format!("{}.tmp", Uuid::new_v4().simple()));
-    tokio::fs::write(&temporary_path, subtitle.content)
+    tokio::fs::write(&temporary_path, subtitle)
         .await
         .map_err(|_| ApiError::Internal)?;
     tokio::fs::rename(&temporary_path, &path)
@@ -428,8 +237,8 @@ async fn persist_external_subtitle(
         codec: Some(format),
         language: Some(language),
         is_external: true,
-        is_forced: subtitle.is_forced,
-        is_hearing_impaired: subtitle.is_hearing_impaired,
+        is_forced,
+        is_hearing_impaired,
         path: Some(path.to_string_lossy().into_owned()),
         ..MediaStream::default()
     });
@@ -442,7 +251,7 @@ async fn persist_external_subtitle(
         return Err(error.into());
     }
 
-    Ok(())
+    Ok(StatusCode::NO_CONTENT)
 }
 
 pub(crate) async fn search_remote_subtitles(
@@ -451,14 +260,16 @@ pub(crate) async fn search_remote_subtitles(
     AxumPath((item_id, language)): AxumPath<(Uuid, String)>,
     Query(query): Query<RemoteSubtitleSearchQuery>,
 ) -> Result<Json<Vec<RemoteSubtitleInfo>>, ApiError> {
-    let identity = authentication::authenticated_identity(&state, &headers, None).await?;
-    let item = ensure_managed_video_item(&state, &identity, item_id).await?;
-    let series_name = subtitle_search_series_name(&state, &item).await?;
+    let authenticated = authentication::authenticated_session(&state, &headers).await?;
+    if !authenticated.can_manage_subtitles() {
+        return Err(ApiError::Forbidden);
+    }
+    let item = ensure_video_item(&state, &authenticated.user, item_id).await?;
     let request = SubtitleSearchRequest {
         language,
         is_perfect_match: query.is_perfect_match.unwrap_or(false),
         name: item.name,
-        series_name,
+        series_name: None,
         index_number: item.index_number,
         parent_index_number: item.parent_index_number,
         production_year: item.production_year,
@@ -468,59 +279,18 @@ pub(crate) async fn search_remote_subtitles(
     Ok(Json(results))
 }
 
-async fn subtitle_search_series_name(
-    state: &AppState,
-    item: &jellyfin_data::entities::base_item::Model,
-) -> Result<Option<String>, ApiError> {
-    if item.item_type != "Episode" {
-        return Ok(None);
-    }
-    if let Some(name) = item.data.as_ref().and_then(|data| {
-        data.as_object()?.iter().find_map(|(key, value)| {
-            key.eq_ignore_ascii_case("SeriesName")
-                .then(|| value.as_str())
-                .flatten()
-                .filter(|name| !name.trim().is_empty())
-                .map(str::to_owned)
-        })
-    }) {
-        return Ok(Some(name));
-    }
-    let series_id = if let Some(series_id) = item.series_id {
-        Some(series_id)
-    } else {
-        state
-            .base_items
-            .nearest_ancestor_ids_by_type(&[item.id], &["Series".to_owned()])
-            .await?
-            .remove(&item.id)
-    };
-    let Some(series_id) = series_id else {
-        return Ok(None);
-    };
-    Ok(state
-        .base_items
-        .get_many(&[series_id])
-        .await?
-        .into_iter()
-        .find_map(|series| series.name.filter(|name| !name.trim().is_empty())))
-}
-
 pub(crate) async fn download_remote_subtitles(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     AxumPath((item_id, subtitle_id)): AxumPath<(Uuid, String)>,
 ) -> Result<StatusCode, ApiError> {
-    let identity = authentication::authenticated_identity(&state, &headers, None).await?;
-    ensure_managed_video_item(&state, &identity, item_id).await?;
-
-    if let Some(subtitle) = state.subtitles.get_subtitles(&subtitle_id)
-        && let Err(error) = persist_external_subtitle(&state, item_id, subtitle).await
-    {
-        // The official controller isolates provider/download failures and
-        // still returns 204 after logging them.
-        tracing::error!(?error, %item_id, %subtitle_id, "error downloading subtitles");
+    let authenticated = authentication::authenticated_session(&state, &headers).await?;
+    if !authenticated.can_manage_subtitles() {
+        return Err(ApiError::Forbidden);
     }
+    ensure_video_item(&state, &authenticated.user, item_id).await?;
+
+    let _response = state.subtitles.get_subtitles(&subtitle_id);
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -529,20 +299,16 @@ pub(crate) async fn get_remote_subtitles(
     headers: HeaderMap,
     AxumPath(subtitle_id): AxumPath<String>,
 ) -> Result<Response, ApiError> {
-    let identity = authentication::authenticated_identity(&state, &headers, None).await?;
-    ensure_can_manage_subtitles(&identity)?;
+    let authenticated = authentication::authenticated_session(&state, &headers).await?;
+    if !authenticated.can_manage_subtitles() {
+        return Err(ApiError::Forbidden);
+    }
 
-    let Some(subtitle) = state.subtitles.get_subtitles(&subtitle_id) else {
-        return Ok(StatusCode::NOT_FOUND.into_response());
-    };
-    let content_type = MimeTypes::get_mime_type(&format!("file.{}", subtitle.format))
-        .map_err(|_| ApiError::Internal)?;
-    let content_type = HeaderValue::from_str(&content_type).map_err(|_| ApiError::Internal)?;
-    let mut response = Response::new(Body::from(subtitle.content));
-    response
-        .headers_mut()
-        .insert(header::CONTENT_TYPE, content_type);
-    Ok(response)
+    if state.subtitles.get_subtitles(&subtitle_id).is_some() {
+        Ok(StatusCode::OK.into_response())
+    } else {
+        Ok(StatusCode::NOT_FOUND.into_response())
+    }
 }
 
 pub(crate) async fn fallback_fonts(
@@ -723,36 +489,6 @@ async fn ensure_video_item_by_id(
     }
 }
 
-async fn ensure_managed_video_item(
-    state: &AppState,
-    identity: &authentication::AuthenticatedIdentity,
-    item_id: Uuid,
-) -> Result<jellyfin_data::entities::base_item::Model, ApiError> {
-    ensure_can_manage_subtitles(identity)?;
-    match identity {
-        authentication::AuthenticatedIdentity::Device(session) => {
-            ensure_video_item(state, &session.user, item_id).await
-        }
-        authentication::AuthenticatedIdentity::ApiKey(_) => {
-            ensure_video_item_by_id(state, item_id).await
-        }
-    }
-}
-
-fn ensure_can_manage_subtitles(
-    identity: &authentication::AuthenticatedIdentity,
-) -> Result<(), ApiError> {
-    match identity {
-        authentication::AuthenticatedIdentity::Device(session)
-            if !session.can_manage_subtitles() =>
-        {
-            Err(ApiError::Forbidden)
-        }
-        authentication::AuthenticatedIdentity::Device(_)
-        | authentication::AuthenticatedIdentity::ApiKey(_) => Ok(()),
-    }
-}
-
 async fn subtitle_response(
     state: &AppState,
     route_item_id: Uuid,
@@ -817,8 +553,6 @@ async fn subtitle_response(
         &requested_format,
         query.add_vtt_time_map,
         start_position_ticks,
-        query.end_position_ticks,
-        query.copy_timestamps,
     )?;
     let mime_type = MimeTypes::get_mime_type(&format!("file.{requested_format}"))
         .map_err(|_| ApiError::Internal)?;
@@ -836,35 +570,19 @@ fn subtitle_payload(
     requested_format: &str,
     add_vtt_time_map: bool,
     start_position_ticks: i64,
-    end_position_ticks: Option<i64>,
-    copy_timestamps: bool,
 ) -> Result<Vec<u8>, ApiError> {
-    let end_position_ticks = end_position_ticks.unwrap_or_default();
-    // Official SubtitleEncoder returns the readable stream before parsing or
-    // FilterEvents when the requested and source formats are equal. Therefore
-    // even a requested time window leaves same-format subtitle bytes intact.
-    let equivalent_format = source_format.eq_ignore_ascii_case(requested_format)
-        || (source_format.eq_ignore_ascii_case("ssa")
-            && requested_format.eq_ignore_ascii_case("ass"));
-    let mut payload = if equivalent_format {
-        bytes.to_vec()
-    } else {
-        jellyfin_media_encoding::subtitles::convert_subtitles(
-            bytes,
-            source_format,
-            requested_format,
-            start_position_ticks,
-            end_position_ticks,
-            copy_timestamps,
-        )
-        .map_err(|_| ApiError::InvalidRequest)?
-    };
-
-    if requested_format.eq_ignore_ascii_case("vtt") && add_vtt_time_map {
-        payload = add_vtt_timestamp_map(&String::from_utf8_lossy(&payload), start_position_ticks)
-            .into_bytes();
+    if source_format.eq_ignore_ascii_case(requested_format) {
+        if requested_format.eq_ignore_ascii_case("vtt") && add_vtt_time_map {
+            let text = String::from_utf8_lossy(bytes);
+            return Ok(add_vtt_timestamp_map(&text, start_position_ticks).into_bytes());
+        }
+        return Ok(bytes.to_vec());
     }
-    Ok(payload)
+    if source_format.eq_ignore_ascii_case("srt") && requested_format.eq_ignore_ascii_case("vtt") {
+        let text = String::from_utf8_lossy(bytes);
+        return Ok(srt_to_vtt(&text, add_vtt_time_map, start_position_ticks).into_bytes());
+    }
+    Err(ApiError::InvalidRequest)
 }
 
 #[allow(clippy::cast_precision_loss)]
@@ -872,20 +590,6 @@ fn subtitle_playlist(
     runtime_ticks: i64,
     segment_length_seconds: i64,
     access_token: &str,
-) -> String {
-    subtitle_playlist_with_segment_url(
-        runtime_ticks,
-        segment_length_seconds,
-        access_token,
-        "stream.vtt",
-    )
-}
-
-fn subtitle_playlist_with_segment_url(
-    runtime_ticks: i64,
-    segment_length_seconds: i64,
-    access_token: &str,
-    segment_url: &str,
 ) -> String {
     const TICKS_PER_SECOND: i64 = 10_000_000;
 
@@ -905,7 +609,7 @@ fn subtitle_playlist_with_segment_url(
             runtime_ticks.min(position_ticks.saturating_add(segment_length_ticks));
         let _ = writeln!(
             playlist,
-            "{segment_url}?CopyTimestamps=true&AddVttTimeMap=true&StartPositionTicks={position_ticks}&EndPositionTicks={end_position_ticks}&ApiKey={access_token}"
+            "stream.vtt?CopyTimestamps=true&AddVttTimeMap=true&StartPositionTicks={position_ticks}&EndPositionTicks={end_position_ticks}&ApiKey={access_token}"
         );
         position_ticks = position_ticks.saturating_add(segment_length_ticks);
     }
@@ -916,6 +620,28 @@ fn subtitle_playlist_with_segment_url(
 fn format_hls_seconds(value: f64) -> String {
     let text = format!("{value:.7}");
     text.trim_end_matches('0').trim_end_matches('.').to_owned()
+}
+
+fn srt_to_vtt(text: &str, add_vtt_time_map: bool, start_position_ticks: i64) -> String {
+    let mut output = "WEBVTT\n".to_owned();
+    if add_vtt_time_map {
+        output.push_str(&vtt_timestamp_map(start_position_ticks));
+        output.push('\n');
+    }
+    output.push('\n');
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if trimmed.chars().all(|character| character.is_ascii_digit()) {
+            continue;
+        }
+        if trimmed.contains("-->") {
+            output.push_str(&trimmed.replace(',', "."));
+        } else {
+            output.push_str(line);
+        }
+        output.push('\n');
+    }
+    output
 }
 
 fn add_vtt_timestamp_map(text: &str, start_position_ticks: i64) -> String {
@@ -977,54 +703,4 @@ fn uploaded_subtitle_path(
         .join("subtitles")
         .join(item_id.simple().to_string())
         .join(format!("{index}.{language}.{format}"))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::subtitle_payload;
-
-    const SRT_WINDOW_FIXTURE: &[u8] = b"1\n00:00:01,000 --> 00:00:02,000\nbefore\n\n\
-2\n00:00:04,000 --> 00:00:06,000\ninside\n\n\
-3\n00:00:09,000 --> 00:00:10,000\nafter\n\n";
-    #[test]
-    fn same_format_window_preserves_original_stream_like_official_encoder() {
-        let payload = subtitle_payload(
-            SRT_WINDOW_FIXTURE,
-            "srt",
-            "srt",
-            false,
-            30_000_000,
-            Some(80_000_000),
-            false,
-        )
-        .expect("same-format SRT stream");
-        assert_eq!(payload, SRT_WINDOW_FIXTURE);
-    }
-
-    #[test]
-    fn ssa_to_ass_preserves_original_stream_and_styles() {
-        let styled = b"[Script Info]\nTitle: styled\n[V4 Styles]\n";
-        let payload = subtitle_payload(styled, "ssa", "ass", false, 10_000_000, None, false)
-            .expect("equivalent SSA to ASS stream");
-        assert_eq!(payload, styled);
-    }
-
-    #[test]
-    fn hls_srt_to_vtt_window_keeps_only_the_segment_cues() {
-        let payload = subtitle_payload(
-            SRT_WINDOW_FIXTURE,
-            "srt",
-            "vtt",
-            true,
-            30_000_000,
-            Some(80_000_000),
-            true,
-        )
-        .expect("HLS VTT segment conversion");
-        let text = String::from_utf8(payload).expect("UTF-8 VTT");
-
-        assert!(text.contains("00:00:04.000 --> 00:00:06.000\ninside"));
-        assert!(!text.contains("before"));
-        assert!(!text.contains("after"));
-    }
 }

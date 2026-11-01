@@ -15,7 +15,6 @@ use axum::{
     extract::{Extension, State},
     http::{HeaderValue, StatusCode, header},
     response::{IntoResponse, Response},
-    routing::get,
 };
 use indexmap::IndexMap;
 use jellyfin_model::PublicSystemInfo;
@@ -110,10 +109,6 @@ pub(crate) fn documented_routes() -> Router<Arc<AppState>> {
                     })
             }),
         )
-        // Emby clients use these conventional aliases for the same document.
-        .route("/openapi", get(serve_document))
-        .route("/openapi.json", get(serve_document))
-        .route("/swagger.json", get(serve_document))
         .finish_api(&mut document);
 
     add_route_inventory(&mut document);
@@ -182,9 +177,6 @@ fn inventory_operation_id(method: &str, path: &str) -> String {
 }
 
 const ROUTE_METHODS: &[(&str, &[&str])] = &[
-    ("/openapi", &["get"]),
-    ("/openapi.json", &["get"]),
-    ("/swagger.json", &["get"]),
     ("/metrics", &["get"]),
     ("/websocket", &["get"]),
     ("/socket", &["get"]),
@@ -199,7 +191,7 @@ const ROUTE_METHODS: &[(&str, &[&str])] = &[
     ("/Channels/{channel_id}/Items", &["get"]),
     (
         "/Artists/{name}/Images/{image_type}/{image_index}",
-        &["get", "head"],
+        &["get"],
     ),
     ("/Search/Hints", &["get"]),
     ("/Backup", &["get"]),
@@ -209,15 +201,11 @@ const ROUTE_METHODS: &[(&str, &[&str])] = &[
     ("/Items/{item_id}/Images", &["get"]),
     (
         "/Items/{item_id}/Images/{image_type}",
-        &["get", "head", "post", "delete"],
+        &["get", "post", "delete"],
     ),
     (
         "/Items/{item_id}/Images/{image_type}/{image_index}",
-        &["get", "head", "post", "delete"],
-    ),
-    (
-        "/Items/{item_id}/Images/{image_type}/{image_index}/Url",
-        &["post"],
+        &["get", "post", "delete"],
     ),
     (
         "/Items/{item_id}/Images/{image_type}/{image_index}/Index",
@@ -225,15 +213,11 @@ const ROUTE_METHODS: &[(&str, &[&str])] = &[
     ),
     (
         "/Items/{item_id}/Images/{image_type}/{image_index}/{tag}/{format}/{max_width}/{max_height}/{percent_played}/{unplayed_count}",
-        &["get", "head"],
+        &["get"],
     ),
     ("/Items/{item_id}/RemoteImages", &["get"]),
     ("/Items/{item_id}/RemoteImages/Providers", &["get"]),
     ("/Items/{item_id}/RemoteImages/Download", &["post"]),
-    ("/Images/Remote", &["get"]),
-    ("/Items/{item_id}/DeleteInfo", &["get"]),
-    ("/Items/{item_id}/MakePublic", &["post"]),
-    ("/Items/{item_id}/MakePrivate", &["post"]),
     ("/System/Configuration", &["get", "post"]),
     ("/System/Configuration/MetadataOptions/Default", &["get"]),
     ("/System/Configuration/Branding", &["post"]),
@@ -256,9 +240,7 @@ const ROUTE_METHODS: &[(&str, &[&str])] = &[
     ),
     ("/Audio/{item_id}/stream", &["get", "head"]),
     ("/Audio/{item_id}/stream.{container}", &["get", "head"]),
-    ("/Audio/{item_id}/{stream_file_name}", &["get", "head"]),
     ("/Audio/{item_id}/universal", &["get", "head"]),
-    ("/Audio/{item_id}/universal.{container}", &["get", "head"]),
     ("/Videos/{item_id}/hls/{*legacy_path}", &["get"]),
     ("/Videos/{item_id}/live.m3u8", &["get"]),
     ("/Videos/{item_id}/master.m3u8", &["get", "head"]),
@@ -268,18 +250,14 @@ const ROUTE_METHODS: &[(&str, &[&str])] = &[
         &["get"],
     ),
     ("/Videos/ActiveEncodings", &["delete"]),
-    ("/Videos/ActiveEncodings/Delete", &["post"]),
     ("/Videos/{item_id}/stream", &["get", "head"]),
     ("/Videos/{item_id}/stream.{container}", &["get", "head"]),
-    ("/Videos/{item_id}/{stream_file_name}", &["get", "head"]),
     ("/Plugins", &["get"]),
     ("/Plugins/{plugin_id}/{version}/Enable", &["post"]),
     ("/Plugins/{plugin_id}/{version}/Disable", &["post"]),
     ("/Plugins/{plugin_id}/{version}", &["delete"]),
     ("/Plugins/{plugin_id}", &["delete"]),
-    ("/Plugins/{plugin_id}/Delete", &["post"]),
     ("/Plugins/{plugin_id}/Configuration", &["get", "post"]),
-    ("/Plugins/{plugin_id}/Thumb", &["get"]),
     ("/Plugins/{plugin_id}/Manifest", &["post"]),
     ("/Plugins/{plugin_id}/{version}/Image", &["get"]),
     ("/Users/{user_id}/Items/Root", &["get"]),
@@ -297,45 +275,38 @@ const ROUTE_METHODS: &[(&str, &[&str])] = &[
     ("/Years/{year}", &["get"]),
     ("/Genres", &["get"]),
     ("/Genres/{genre_name}", &["get"]),
-    ("/Genres/{name}/Images/{image_type}", &["get", "head"]),
-    (
-        "/Genres/{name}/Images/{image_type}/{image_index}",
-        &["get", "head"],
-    ),
+    ("/Genres/{name}/Images/{image_type}", &["get"]),
+    ("/Genres/{name}/Images/{image_type}/{image_index}", &["get"]),
     ("/Studios", &["get"]),
     ("/Studios/{name}", &["get"]),
-    ("/Studios/{name}/Images/{image_type}", &["get", "head"]),
+    ("/Studios/{name}/Images/{image_type}", &["get"]),
     (
         "/Studios/{name}/Images/{image_type}/{image_index}",
-        &["get", "head"],
+        &["get"],
     ),
     ("/Trailers", &["get"]),
     ("/MusicGenres", &["get"]),
     ("/MusicGenres/{genre_name}", &["get"]),
-    ("/MusicGenres/{name}/Images/{image_type}", &["get", "head"]),
+    ("/MusicGenres/{name}/Images/{image_type}", &["get"]),
     (
         "/MusicGenres/{name}/Images/{image_type}/{image_index}",
-        &["get", "head"],
+        &["get"],
     ),
     ("/Persons", &["get"]),
     ("/Persons/{name}", &["get"]),
-    ("/Persons/{name}/Images/{image_type}", &["get", "head"]),
+    ("/Persons/{name}/Images/{image_type}", &["get"]),
     (
         "/Persons/{name}/Images/{image_type}/{image_index}",
-        &["get", "head"],
+        &["get"],
     ),
     ("/Library/VirtualFolders", &["get", "post", "delete"]),
-    ("/Library/VirtualFolders/Query", &["get"]),
-    ("/Library/VirtualFolders/Delete", &["post"]),
     ("/Library/VirtualFolders/Name", &["post"]),
     ("/Library/VirtualFolders/Paths", &["post", "delete"]),
-    ("/Library/VirtualFolders/Paths/Delete", &["post"]),
     ("/Library/VirtualFolders/Paths/Update", &["post"]),
     ("/Library/VirtualFolders/LibraryOptions", &["post"]),
     ("/System/ActivityLog/Entries", &["get"]),
     ("/System/Logs", &["get"]),
     ("/System/Logs/Log", &["get"]),
-    ("/System/Logs/{Name}", &["get"]),
     ("/System/Info", &["get"]),
     ("/System/Info/Storage", &["get"]),
     ("/System/Endpoint", &["get"]),
@@ -346,7 +317,6 @@ const ROUTE_METHODS: &[(&str, &[&str])] = &[
     ("/GetUtcTime", &["get"]),
     ("/ScheduledTasks", &["get"]),
     ("/ScheduledTasks/Running/{task_id}", &["post", "delete"]),
-    ("/ScheduledTasks/Running/{task_id}/Delete", &["post"]),
     ("/ScheduledTasks/{task_id}/Triggers", &["post"]),
     ("/ScheduledTasks/{task_id}", &["get"]),
     ("/SyncPlay/New", &["post"]),
@@ -387,7 +357,6 @@ const ROUTE_METHODS: &[(&str, &[&str])] = &[
     ("/Packages", &["get"]),
     ("/Packages/Installed/{name}", &["post"]),
     ("/Packages/Installing/{package_id}", &["delete"]),
-    ("/Packages/Installing/{package_id}/Delete", &["post"]),
     ("/Packages/{name}", &["get"]),
     ("/Repositories", &["get", "post"]),
     ("/Startup/Configuration", &["get", "post"]),
@@ -411,7 +380,7 @@ const ROUTE_METHODS: &[(&str, &[&str])] = &[
         "/DisplayPreferences/{display_preferences_id}",
         &["get", "post"],
     ),
-    ("/UserImage", &["get", "head", "post", "delete"]),
+    ("/UserImage", &["get", "post", "delete"]),
     ("/Users", &["get", "post"]),
     ("/Users/Public", &["get"]),
     ("/Users/New", &["post"]),
@@ -486,7 +455,6 @@ const ROUTE_METHODS: &[(&str, &[&str])] = &[
         &["post", "delete"],
     ),
     ("/Items", &["get", "delete"]),
-    ("/Items/Delete", &["post"]),
     ("/Items/Suggestions", &["get"]),
     ("/Items/Latest", &["get"]),
     ("/UserItems/Resume", &["get"]),
@@ -504,7 +472,6 @@ const ROUTE_METHODS: &[(&str, &[&str])] = &[
         &["get", "post", "delete"],
     ),
     ("/Playlists/{playlist_id}/Items", &["get", "post", "delete"]),
-    ("/Playlists/{playlist_id}/AddToPlaylistInfo", &["get"]),
     (
         "/Playlists/{playlist_id}/Items/{item_id}/Move/{new_index}",
         &["post"],
@@ -528,7 +495,6 @@ const ROUTE_METHODS: &[(&str, &[&str])] = &[
     ("/Library/Refresh", &["post"]),
     ("/Library/PhysicalPaths", &["get"]),
     ("/Library/MediaFolders", &["get"]),
-    ("/Library/SelectableMediaFolders", &["get"]),
     ("/Library/Series/Added", &["post"]),
     ("/Library/Series/Updated", &["post"]),
     ("/Library/Movies/Added", &["post"]),
@@ -596,7 +562,6 @@ const ROUTE_METHODS: &[(&str, &[&str])] = &[
         &["get"],
     ),
     ("/Videos/{item_id}/Trickplay/{width}/tiles.m3u8", &["get"]),
-    ("/Videos/{item_id}/Trickplay/{width}/{index}.jpg", &["get"]),
     ("/Videos/{item_id}/Trickplay/{width}/{*tile}", &["get"]),
     ("/LiveTv/Info", &["get"]),
     ("/LiveTv/Channels", &["get"]),

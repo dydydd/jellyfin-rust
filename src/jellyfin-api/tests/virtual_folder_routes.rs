@@ -9,422 +9,21 @@ use jellyfin_data::{
     entities::{user, virtual_folder},
 };
 use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
-use sea_orm::{ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter, sea_query::Expr};
+use sea_orm::{ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter};
 use serde_json::{Value, json};
 use tower::ServiceExt;
 use uuid::Uuid;
 
 const AUTHORIZATION: &str = "MediaBrowser Client=\"Virtual Folder Tests\", DeviceId=\"vf-tests\", Device=\"Test\", Version=\"1.0\"";
-static VIRTUAL_FOLDER_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 #[tokio::test]
 async fn library_structure_controller_contract_and_success_paths() {
-    let _test_guard = VIRTUAL_FOLDER_TEST_LOCK.lock().await;
     let fixture = Fixture::new().await;
     assert_library_access(&fixture).await;
     let (name, id) = create_library(&fixture).await;
     assert_library_options_and_conflicts(&fixture, &name, &id).await;
     assert_library_deletion(&fixture, &name).await;
     fixture.cleanup().await;
-}
-
-#[tokio::test]
-async fn create_virtual_folder_binds_kotlin_sdk_repeated_paths() {
-    let _test_guard = VIRTUAL_FOLDER_TEST_LOCK.lock().await;
-    let fixture = Fixture::new().await;
-    fixture.complete_startup().await;
-    let name = format!("Repeated paths {}", fixture.suffix);
-    // UrlBuilder emits one query key per Collection element. The official
-    // CommaDelimitedCollectionModelBinder preserves both repeated values.
-    let uri = format!(
-        "/Library/VirtualFolders?name={}&collectionType=movies&paths={}&paths={}",
-        encoded(&name),
-        encoded(&fixture.media_path),
-        encoded(&fixture.stale_path),
-    );
-    let response = fixture
-        .send(
-            Method::POST,
-            &uri,
-            Some(&fixture.admin_token),
-            Some(json!({ "LibraryOptions": {} })),
-        )
-        .await;
-    assert_eq!(response.status(), StatusCode::NO_CONTENT);
-
-    let list = fixture.get_list().await;
-    let locations = list
-        .as_array()
-        .expect("virtual folder array")
-        .iter()
-        .find(|folder| folder["Name"] == name)
-        .and_then(|folder| folder["Locations"].as_array())
-        .expect("created virtual folder locations");
-    assert_eq!(locations.len(), 2);
-    assert!(locations.iter().any(|path| path == &fixture.media_path));
-    assert!(locations.iter().any(|path| path == &fixture.stale_path));
-
-    fixture.cleanup().await;
-}
-
-#[tokio::test]
-async fn virtual_folder_options_match_official_defaults_and_normalize_legacy_rows() {
-    let _test_guard = VIRTUAL_FOLDER_TEST_LOCK.lock().await;
-    let fixture = Fixture::new().await;
-    fixture.complete_startup().await;
-    let name = format!("Default options {}", fixture.suffix);
-    let uri = format!("/Library/VirtualFolders?name={}", encoded(&name));
-
-    // The generated Kotlin client sends no body when AddVirtualFolderDto is
-    // null. Official Jellyfin constructs a complete `new LibraryOptions()`.
-    let response = fixture
-        .send(Method::POST, &uri, Some(&fixture.admin_token), None)
-        .await;
-    assert_eq!(response.status(), StatusCode::NO_CONTENT);
-
-    let created = folder(&fixture.get_list().await, &name);
-    assert_official_library_option_defaults(&created["LibraryOptions"]);
-
-    // Rust versions predating the complete DTO persisted partial arbitrary
-    // JSON. Reads must fill the official constructor defaults so strict mobile
-    // SDK models remain decodable without rewriting the row.
-    let id = Uuid::parse_str(created["ItemId"].as_str().expect("library item id"))
-        .expect("valid library item id");
-    virtual_folder::Entity::update_many()
-        .col_expr(
-            virtual_folder::Column::LibraryOptions,
-            Expr::value(json!({ "enabled": false })),
-        )
-        .filter(virtual_folder::Column::Id.eq(id))
-        .exec(&fixture.database)
-        .await
-        .expect("seed legacy partial library options");
-
-    let legacy = folder(&fixture.get_list().await, &name);
-    assert_eq!(legacy["LibraryOptions"]["Enabled"], false);
-    assert!(legacy["LibraryOptions"].get("enabled").is_none());
-    assert_official_library_option_defaults_except_enabled(&legacy["LibraryOptions"]);
-
-    fixture.cleanup().await;
-}
-
-fn assert_official_library_option_defaults(options: &Value) {
-    assert_eq!(options["Enabled"], true);
-    assert_official_library_option_defaults_except_enabled(options);
-}
-
-fn assert_official_library_option_defaults_except_enabled(options: &Value) {
-    let expected = json!({
-        "EnablePhotos": true,
-        "EnableRealtimeMonitor": false,
-        "EnableLUFSScan": false,
-        "EnableChapterImageExtraction": false,
-        "ExtractChapterImagesDuringLibraryScan": false,
-        "EnableTrickplayImageExtraction": false,
-        "ExtractTrickplayImagesDuringLibraryScan": false,
-        "PathInfos": [],
-        "SaveLocalMetadata": false,
-        "EnableInternetProviders": false,
-        "EnableAutomaticSeriesGrouping": true,
-        "EnableEmbeddedTitles": false,
-        "EnableEmbeddedExtrasTitles": false,
-        "EnableEmbeddedEpisodeInfos": false,
-        "AutomaticRefreshIntervalDays": 0,
-        "SeasonZeroDisplayName": "Specials",
-        "DisabledLocalMetadataReaders": [],
-        "DisabledSubtitleFetchers": [],
-        "SubtitleFetcherOrder": [],
-        "DisabledMediaSegmentProviders": [],
-        "MediaSegmentProviderOrder": [],
-        "SkipSubtitlesIfEmbeddedSubtitlesPresent": false,
-        "SkipSubtitlesIfAudioTrackMatches": true,
-        "RequirePerfectSubtitleMatch": true,
-        "SaveSubtitlesWithMedia": true,
-        "SaveLyricsWithMedia": false,
-        "SaveTrickplayWithMedia": false,
-        "DisabledLyricFetchers": [],
-        "LyricFetcherOrder": [],
-        "PreferNonstandardArtistsTag": false,
-        "UseCustomTagDelimiters": false,
-        "CustomTagDelimiters": ["/", "|", ";", "\\"],
-        "DelimiterWhitelist": [],
-        "AutomaticallyAddToCollection": false,
-        "AllowEmbeddedSubtitles": "AllowAll",
-        "TypeOptions": []
-    });
-    for (name, expected_value) in expected.as_object().expect("expected options object") {
-        assert_eq!(
-            &options[name], expected_value,
-            "official LibraryOptions default for {name}"
-        );
-    }
-}
-
-#[tokio::test]
-async fn library_structure_lowercase_routes_and_binding_match_canonical() {
-    let _test_guard = VIRTUAL_FOLDER_TEST_LOCK.lock().await;
-    let fixture = Fixture::new().await;
-    fixture.complete_startup().await;
-
-    for (method, canonical, lowercase) in [
-        (
-            Method::GET,
-            "/Library/VirtualFolders",
-            "/library/virtualfolders",
-        ),
-        (
-            Method::POST,
-            "/Library/VirtualFolders",
-            "/library/virtualfolders",
-        ),
-        (
-            Method::DELETE,
-            "/Library/VirtualFolders",
-            "/library/virtualfolders",
-        ),
-        (
-            Method::POST,
-            "/Library/VirtualFolders/Name",
-            "/library/virtualfolders/name",
-        ),
-        (
-            Method::POST,
-            "/Library/VirtualFolders/Paths",
-            "/library/virtualfolders/paths",
-        ),
-        (
-            Method::DELETE,
-            "/Library/VirtualFolders/Paths",
-            "/library/virtualfolders/paths",
-        ),
-        (
-            Method::POST,
-            "/Library/VirtualFolders/Paths/Update",
-            "/library/virtualfolders/paths/update",
-        ),
-        (
-            Method::POST,
-            "/Library/VirtualFolders/LibraryOptions",
-            "/library/virtualfolders/libraryoptions",
-        ),
-    ] {
-        for route in [canonical, lowercase] {
-            assert_eq!(
-                fixture
-                    .send(method.clone(), route, None, None)
-                    .await
-                    .status(),
-                StatusCode::UNAUTHORIZED,
-                "anonymous {method} {route}"
-            );
-            assert_eq!(
-                fixture
-                    .send(method.clone(), route, Some(&fixture.user_token), None)
-                    .await
-                    .status(),
-                StatusCode::FORBIDDEN,
-                "ordinary user {method} {route}"
-            );
-        }
-    }
-
-    exercise_library_structure_lifecycle(&fixture, false).await;
-    exercise_library_structure_lifecycle(&fixture, true).await;
-    fixture.cleanup().await;
-}
-
-async fn exercise_library_structure_lifecycle(fixture: &Fixture, lowercase: bool) {
-    let root = if lowercase {
-        "/library/virtualfolders"
-    } else {
-        "/Library/VirtualFolders"
-    };
-    let name = format!(
-        "{} lifecycle {}",
-        if lowercase { "lowercase" } else { "canonical" },
-        fixture.suffix
-    );
-    let create_uri = if lowercase {
-        format!(
-            "{root}?Name={}&collectiontype=movies&refreshlibrary=false",
-            encoded(&name)
-        )
-    } else {
-        format!(
-            "{root}?name={}&collectionType=movies&refreshLibrary=false",
-            encoded(&name)
-        )
-    };
-    let create_body = if lowercase {
-        json!({ "libraryoptions": { "Enabled": false } })
-    } else {
-        json!({ "LibraryOptions": { "Enabled": false } })
-    };
-    assert_eq!(
-        fixture
-            .send(
-                Method::POST,
-                &create_uri,
-                Some(&fixture.admin_token),
-                Some(create_body),
-            )
-            .await
-            .status(),
-        StatusCode::NO_CONTENT
-    );
-
-    let list = body_json(
-        fixture
-            .send(Method::GET, root, Some(&fixture.admin_token), None)
-            .await,
-    )
-    .await;
-    let created = folder(&list, &name);
-    assert_eq!(created["CollectionType"], "movies");
-    assert_eq!(created["LibraryOptions"]["Enabled"], false);
-    let id = created["ItemId"].as_str().expect("library item id");
-
-    let options_route = format!(
-        "{root}/{}",
-        if lowercase {
-            "libraryoptions"
-        } else {
-            "LibraryOptions"
-        }
-    );
-    let options_body = if lowercase {
-        json!({ "id": id, "libraryoptions": { "Enabled": true, "PathInfos": [] } })
-    } else {
-        json!({ "Id": id, "LibraryOptions": { "Enabled": true, "PathInfos": [] } })
-    };
-    assert_eq!(
-        fixture
-            .send(
-                Method::POST,
-                &options_route,
-                Some(&fixture.admin_token),
-                Some(options_body),
-            )
-            .await
-            .status(),
-        StatusCode::NO_CONTENT
-    );
-
-    let paths_route = format!("{root}/{}", if lowercase { "paths" } else { "Paths" });
-    let add_uri = format!(
-        "{paths_route}?{}=false",
-        if lowercase {
-            "refreshlibrary"
-        } else {
-            "refreshLibrary"
-        }
-    );
-    let add_body = if lowercase {
-        json!({ "name": name, "pathinfo": { "path": fixture.media_path } })
-    } else {
-        json!({ "Name": name, "PathInfo": { "Path": fixture.media_path } })
-    };
-    assert_eq!(
-        fixture
-            .send(
-                Method::POST,
-                &add_uri,
-                Some(&fixture.admin_token),
-                Some(add_body),
-            )
-            .await
-            .status(),
-        StatusCode::NO_CONTENT
-    );
-
-    let update_route = format!(
-        "{paths_route}/{}",
-        if lowercase { "update" } else { "Update" }
-    );
-    let update_body = if lowercase {
-        json!({ "name": name, "pathInfo": { "path": fixture.media_path } })
-    } else {
-        json!({ "Name": name, "PathInfo": { "Path": fixture.media_path } })
-    };
-    assert_eq!(
-        fixture
-            .send(
-                Method::POST,
-                &update_route,
-                Some(&fixture.admin_token),
-                Some(update_body),
-            )
-            .await
-            .status(),
-        StatusCode::NO_CONTENT
-    );
-
-    let remove_path_uri = if lowercase {
-        format!(
-            "{paths_route}?Name={}&Path={}&refreshlibrary=false",
-            encoded(&name),
-            encoded(&fixture.media_path)
-        )
-    } else {
-        format!(
-            "{paths_route}?name={}&path={}&refreshLibrary=false",
-            encoded(&name),
-            encoded(&fixture.media_path)
-        )
-    };
-    assert_eq!(
-        fixture
-            .send(
-                Method::DELETE,
-                &remove_path_uri,
-                Some(&fixture.admin_token),
-                None,
-            )
-            .await
-            .status(),
-        StatusCode::NO_CONTENT
-    );
-
-    let renamed = format!("renamed {name}");
-    let name_route = format!("{root}/{}", if lowercase { "name" } else { "Name" });
-    let rename_uri = if lowercase {
-        format!(
-            "{name_route}?Name={}&newname={}&refreshlibrary=false",
-            encoded(&name),
-            encoded(&renamed)
-        )
-    } else {
-        format!(
-            "{name_route}?name={}&newName={}&refreshLibrary=false",
-            encoded(&name),
-            encoded(&renamed)
-        )
-    };
-    assert_eq!(
-        fixture
-            .send(Method::POST, &rename_uri, Some(&fixture.admin_token), None,)
-            .await
-            .status(),
-        StatusCode::NO_CONTENT
-    );
-
-    let delete_uri = if lowercase {
-        format!("{root}?Name={}&refreshlibrary=false", encoded(&renamed))
-    } else {
-        format!("{root}?name={}&refreshLibrary=false", encoded(&renamed))
-    };
-    assert_eq!(
-        fixture
-            .send(
-                Method::DELETE,
-                &delete_uri,
-                Some(&fixture.admin_token),
-                None,
-            )
-            .await
-            .status(),
-        StatusCode::NO_CONTENT
-    );
 }
 
 async fn assert_library_access(fixture: &Fixture) {
@@ -517,7 +116,7 @@ fn assert_sdk_required_library_option_defaults(options: &Value) {
         "SaveSubtitlesWithMedia": true,
         "DisabledLyricFetchers": [],
         "LyricFetcherOrder": [],
-        "CustomTagDelimiters": ["/", "|", ";", "\\"],
+        "CustomTagDelimiters": ["/", "|", ";", "\\\\"],
         "DelimiterWhitelist": [],
         "AutomaticallyAddToCollection": false,
         "AllowEmbeddedSubtitles": "AllowAll",
@@ -610,7 +209,6 @@ async fn assert_library_deletion(fixture: &Fixture, name: &str) {
 
 #[tokio::test]
 async fn official_media_structure_controller_contract() {
-    let _test_guard = VIRTUAL_FOLDER_TEST_LOCK.lock().await;
     let fixture = Fixture::new().await;
     fixture.complete_startup().await;
     for (method, uri, body, expected) in [
@@ -671,7 +269,6 @@ async fn official_media_structure_controller_contract() {
 
 #[tokio::test]
 async fn media_path_mutations_validate_and_persist_real_directories() {
-    let _test_guard = VIRTUAL_FOLDER_TEST_LOCK.lock().await;
     let fixture = Fixture::new().await;
     fixture.complete_startup().await;
     let name = create_and_rename_folder(&fixture).await;
@@ -896,10 +493,6 @@ fn folder(list: &Value, name: &str) -> Value {
         .find(|folder| folder["Name"] == name)
         .unwrap()
         .clone()
-}
-
-async fn body_json(response: axum::response::Response) -> Value {
-    serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap()
 }
 
 struct Fixture {

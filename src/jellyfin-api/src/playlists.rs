@@ -1,4 +1,4 @@
-use std::{fmt, sync::Arc};
+use std::sync::Arc;
 
 use axum::{
     Json,
@@ -6,7 +6,7 @@ use axum::{
     http::{HeaderMap, StatusCode},
 };
 use jellyfin_data::{BaseItemPage, PlaylistUserPermission};
-use serde::{Deserialize, Deserializer, Serialize, de};
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::user_library::BaseItemQueryResult;
@@ -23,9 +23,9 @@ pub(crate) struct CreateQuery {
         deserialize_with = "crate::query::comma::deserialize"
     )]
     ids: Vec<Uuid>,
-    #[serde(alias = "UserId", alias = "userid")]
+    #[serde(alias = "UserId")]
     user_id: Option<Uuid>,
-    #[serde(alias = "MediaType", alias = "mediatype")]
+    #[serde(alias = "MediaType")]
     media_type: Option<String>,
 }
 
@@ -50,17 +50,10 @@ pub(crate) struct ItemsQuery {
         alias = "IDs",
         alias = "entryIds",
         alias = "EntryIds",
-        alias = "entryids",
         deserialize_with = "crate::query::comma::deserialize"
     )]
     ids: Vec<Uuid>,
-    #[serde(
-        default,
-        rename = "userId",
-        alias = "UserId",
-        alias = "userid",
-        alias = "user_id"
-    )]
+    #[serde(default, rename = "userId", alias = "UserId", alias = "user_id")]
     user_id: Option<Uuid>,
     #[serde(default, alias = "Position")]
     position: Option<i32>,
@@ -127,13 +120,6 @@ pub(crate) struct PlaylistDto {
     item_ids: Vec<Uuid>,
 }
 
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "PascalCase")]
-pub(crate) struct AddToPlaylistInfo {
-    item_count: usize,
-    contains_duplicates: bool,
-}
-
 #[derive(Debug, Default, Deserialize)]
 #[serde(default, rename_all = "PascalCase")]
 pub(crate) struct UpdateBody {
@@ -143,39 +129,10 @@ pub(crate) struct UpdateBody {
     is_public: Option<bool>,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, rename_all = "PascalCase")]
 pub(crate) struct UpdateUserBody {
     can_edit: Option<bool>,
-}
-
-impl<'de> Deserialize<'de> for UpdateUserBody {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        struct UpdateUserVisitor;
-
-        impl<'de> de::Visitor<'de> for UpdateUserVisitor {
-            type Value = UpdateUserBody;
-
-            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-                formatter.write_str("a playlist user update object")
-            }
-
-            fn visit_map<M: de::MapAccess<'de>>(self, mut map: M) -> Result<Self::Value, M::Error> {
-                let mut request = UpdateUserBody::default();
-                while let Some(key) = map.next_key::<String>()? {
-                    if key.eq_ignore_ascii_case("CanEdit") {
-                        // ASP.NET binds JSON property names without regard to
-                        // case, and the last duplicate property wins.
-                        request.can_edit = map.next_value()?;
-                    } else {
-                        map.next_value::<de::IgnoredAny>()?;
-                    }
-                }
-                Ok(request)
-            }
-        }
-
-        deserializer.deserialize_map(UpdateUserVisitor)
-    }
 }
 
 pub(crate) async fn create(
@@ -256,40 +213,6 @@ pub(crate) async fn update(
             request.users.as_deref(),
             request.is_public,
         )
-        .await?;
-    Ok(StatusCode::NO_CONTENT)
-}
-
-pub(crate) async fn make_public(
-    State(state): State<Arc<AppState>>,
-    OriginalUri(uri): OriginalUri,
-    headers: HeaderMap,
-    Path(playlist_id): Path<Uuid>,
-) -> Result<StatusCode, ApiError> {
-    set_public(state, uri, headers, playlist_id, true).await
-}
-
-pub(crate) async fn make_private(
-    State(state): State<Arc<AppState>>,
-    OriginalUri(uri): OriginalUri,
-    headers: HeaderMap,
-    Path(playlist_id): Path<Uuid>,
-) -> Result<StatusCode, ApiError> {
-    set_public(state, uri, headers, playlist_id, false).await
-}
-
-async fn set_public(
-    state: Arc<AppState>,
-    uri: axum::http::Uri,
-    headers: HeaderMap,
-    playlist_id: Uuid,
-    is_public: bool,
-) -> Result<StatusCode, ApiError> {
-    let identity = authorization::require_default(&state, &headers, &uri).await?;
-    let user_id = identity.target_user_id(None)?;
-    state
-        .playlists
-        .update(playlist_id, user_id, None, None, None, Some(is_public))
         .await?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -377,28 +300,6 @@ pub(crate) async fn add_items(
     Ok(StatusCode::NO_CONTENT)
 }
 
-pub(crate) async fn add_to_playlist_info(
-    State(state): State<Arc<AppState>>,
-    OriginalUri(uri): OriginalUri,
-    headers: HeaderMap,
-    Path(playlist_id): Path<Uuid>,
-    Query(query): Query<ItemsQuery>,
-) -> Result<Json<AddToPlaylistInfo>, ApiError> {
-    let identity = authorization::require_default(&state, &headers, &uri).await?;
-    let user_id = identity.target_user_id(query.user_id)?;
-    if query.ids.is_empty() {
-        return Err(ApiError::InvalidRequest);
-    }
-    let info = state
-        .playlists
-        .add_to_playlist_info(playlist_id, user_id, &query.ids)
-        .await?;
-    Ok(Json(AddToPlaylistInfo {
-        item_count: info.item_count,
-        contains_duplicates: info.contains_duplicates,
-    }))
-}
-
 pub(crate) async fn get_items(
     State(state): State<Arc<AppState>>,
     OriginalUri(uri): OriginalUri,
@@ -454,7 +355,6 @@ pub(crate) async fn get_items(
     for (dto, entry_id) in result.items.iter_mut().zip(entry_ids) {
         dto.playlist_item_id = Some(entry_id.simple().to_string());
     }
-    crate::user_library::omit_incompatible_emby_relations(&uri, &mut result.items);
     Ok(Json(result))
 }
 
@@ -462,7 +362,7 @@ pub(crate) async fn move_item(
     State(state): State<Arc<AppState>>,
     OriginalUri(uri): OriginalUri,
     headers: HeaderMap,
-    Path((playlist_id, item_id, new_index)): Path<(Uuid, Uuid, i32)>,
+    Path((playlist_id, item_id, new_index)): Path<(Uuid, Uuid, usize)>,
 ) -> Result<StatusCode, ApiError> {
     let identity = authorization::require_default(&state, &headers, &uri).await?;
     let user_id = identity.target_user_id(None)?;

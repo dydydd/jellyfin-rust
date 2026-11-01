@@ -75,7 +75,7 @@ impl VirtualFolderService {
         &self,
         name: &str,
         collection_type: Option<String>,
-        options: Value,
+        mut options: Value,
         query_paths: Vec<String>,
         refresh_requested: bool,
     ) -> Result<(), VirtualFolderServiceError> {
@@ -87,9 +87,6 @@ impl VirtualFolderService {
                     .ok_or(VirtualFolderServiceError::InvalidCollectionType)
             })
             .transpose()?;
-        let mut options = options;
-        object_options(&mut options)?;
-        let mut options = normalize_library_options(options);
         let object = object_options(&mut options)?;
         let path_infos = if query_paths.is_empty() {
             object
@@ -163,11 +160,8 @@ impl VirtualFolderService {
     pub async fn update_options(
         &self,
         id: Uuid,
-        options: Value,
+        mut options: Value,
     ) -> Result<(), VirtualFolderServiceError> {
-        let mut options = options;
-        object_options(&mut options)?;
-        let mut options = normalize_library_options(options);
         let object = object_options(&mut options)?;
         object.remove("PathInfos");
         object.remove("pathInfos");
@@ -256,15 +250,10 @@ fn folder_from_model(model: VirtualFolderWithPaths) -> VirtualFolder {
         path_infos.push(path.path_info);
         locations.push(path.path);
     }
-    // Older Rust releases persisted only the options explicitly submitted by
-    // the client. The official server deserializes into `new LibraryOptions()`,
-    // so omitted properties retain constructor defaults and are serialized on
-    // every read. Normalize legacy rows before exposing this strongly typed DTO.
-    let mut options = normalize_library_options(model.folder.library_options);
-    options
-        .as_object_mut()
-        .expect("normalized library options must be an object")
-        .insert("PathInfos".to_owned(), Value::Array(path_infos));
+    let mut options = complete_library_options(model.folder.library_options);
+    if let Some(object) = options.as_object_mut() {
+        object.insert("PathInfos".to_owned(), Value::Array(path_infos));
+    }
     VirtualFolder {
         id: model.folder.id,
         name: model.folder.name,
@@ -280,39 +269,10 @@ fn folder_from_model(model: VirtualFolderWithPaths) -> VirtualFolder {
     }
 }
 
-/// Applies the defaults from the official `LibraryOptions` constructor while
-/// retaining persisted values and extension properties.
-///
-/// Property matching is case-insensitive because ASP.NET's JSON binding is
-/// case-insensitive. Canonical names are emitted so generated mobile SDKs can
-/// decode the response. A legacy non-object value cannot represent official
-/// `LibraryOptions` and safely falls back to a fresh default instance.
-fn normalize_library_options(options: Value) -> Value {
-    let mut normalized = default_library_options();
-    let Some(submitted) = options.as_object() else {
-        return Value::Object(normalized);
-    };
-
-    for (name, value) in submitted {
-        let canonical_name = normalized
-            .keys()
-            .find(|candidate| candidate.eq_ignore_ascii_case(name))
-            .cloned()
-            .unwrap_or_else(|| name.clone());
-        // Legacy rows may contain explicit nulls for constructor-backed
-        // properties. Keep the official non-null default in that case while
-        // still preserving null-valued extension properties verbatim.
-        if value.is_null() && normalized.contains_key(&canonical_name) {
-            continue;
-        }
-        normalized.insert(canonical_name, value.clone());
-    }
-
-    Value::Object(normalized)
-}
-
-fn default_library_options() -> Map<String, Value> {
-    json!({
+/// Supplies the official `LibraryOptions` defaults for legacy partial JSONB rows.
+/// The mobile Kotlin SDK has non-nullable fields for these defaults.
+fn complete_library_options(mut options: Value) -> Value {
+    let defaults = json!({
         "Enabled": true,
         "EnablePhotos": true,
         "EnableRealtimeMonitor": false,
@@ -345,15 +305,20 @@ fn default_library_options() -> Map<String, Value> {
         "LyricFetcherOrder": [],
         "PreferNonstandardArtistsTag": false,
         "UseCustomTagDelimiters": false,
-        "CustomTagDelimiters": ["/", "|", ";", "\\"],
+        "CustomTagDelimiters": ["/", "|", ";", "\\\\"],
         "DelimiterWhitelist": [],
         "AutomaticallyAddToCollection": false,
         "AllowEmbeddedSubtitles": "AllowAll",
-        "TypeOptions": []
-    })
-    .as_object()
-    .expect("library options literal must be an object")
-    .clone()
+        "TypeOptions": [],
+    });
+    if let (Some(options), Some(defaults)) = (options.as_object_mut(), defaults.as_object()) {
+        for (key, value) in defaults {
+            if !options.get(key).is_some_and(|existing| !existing.is_null()) {
+                options.insert(key.clone(), value.clone());
+            }
+        }
+    }
+    options
 }
 
 pub(crate) fn canonical_collection_type_option(value: &str) -> Option<&'static str> {
@@ -420,15 +385,9 @@ mod library_options_tests {
     use super::*;
 
     #[test]
-    fn normalized_library_options_preserve_values_and_supply_sdk_defaults() {
-        let options = normalize_library_options(json!({
-            "Enabled": false,
-            "EnablePhotos": null,
-            "FutureOption": null
-        }));
+    fn complete_library_options_preserves_values_and_supplies_sdk_defaults() {
+        let options = complete_library_options(json!({ "Enabled": false }));
         assert_eq!(options["Enabled"], false);
-        assert_eq!(options["EnablePhotos"], true);
-        assert!(options["FutureOption"].is_null());
         for key in [
             "Enabled",
             "EnablePhotos",
@@ -498,9 +457,7 @@ async fn canonical_directory(path: &str) -> Result<String, VirtualFolderServiceE
 
 #[cfg(test)]
 mod tests {
-    use serde_json::json;
-
-    use super::{canonical_collection_type_option, normalize_library_options};
+    use super::canonical_collection_type_option;
 
     #[test]
     fn collection_type_options_are_case_insensitive_and_canonical() {
@@ -525,36 +482,5 @@ mod tests {
         );
         assert_eq!(canonical_collection_type_option("livetv"), None);
         assert_eq!(canonical_collection_type_option("not-a-collection"), None);
-    }
-
-    #[test]
-    fn legacy_partial_library_options_receive_official_defaults() {
-        let options = normalize_library_options(json!({
-            "enabled": false,
-            "seasonzerodisplayname": "Bonus",
-            "PathInfos": [{ "Path": "/media" }],
-            "FutureOption": "preserved"
-        }));
-
-        assert_eq!(options["Enabled"], false);
-        assert_eq!(options["SeasonZeroDisplayName"], "Bonus");
-        assert_eq!(options["PathInfos"], json!([{ "Path": "/media" }]));
-        assert_eq!(options["FutureOption"], "preserved");
-        assert!(options.get("enabled").is_none());
-        assert_eq!(options["EnablePhotos"], true);
-        assert_eq!(options["EnableAutomaticSeriesGrouping"], true);
-        assert_eq!(options["AllowEmbeddedSubtitles"], "AllowAll");
-        assert_eq!(options["CustomTagDelimiters"], json!(["/", "|", ";", "\\"]));
-        assert_eq!(options["TypeOptions"], json!([]));
-    }
-
-    #[test]
-    fn invalid_legacy_library_options_fall_back_to_official_defaults() {
-        let options = normalize_library_options(serde_json::Value::Null);
-
-        assert_eq!(options["Enabled"], true);
-        assert_eq!(options["PathInfos"], json!([]));
-        assert_eq!(options["DisabledSubtitleFetchers"], json!([]));
-        assert_eq!(options["SaveSubtitlesWithMedia"], true);
     }
 }

@@ -117,14 +117,13 @@ pub(crate) struct MusicGenreByNameQuery {
 #[serde(rename_all = "PascalCase")]
 pub(crate) struct MusicGenresResult {
     items: Vec<user_library::BaseItemDto>,
-    total_record_count: i32,
+    total_record_count: usize,
     start_index: i32,
 }
 
 pub(crate) async fn list(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    OriginalUri(uri): OriginalUri,
     Query(query): Query<MusicGenreQuery>,
 ) -> Result<Json<MusicGenresResult>, ApiError> {
     let authenticated = authentication::authenticated_session(&state, &headers).await?;
@@ -174,25 +173,22 @@ pub(crate) async fn list(
         .map(|genre| {
             user_library::music_genre_to_dto(genre, state.server_id(), include_item_counts)
         })
-        .collect::<Result<Vec<_>, _>>()?;
+        .collect::<Vec<_>>();
     let total_record_count = if enable_total_record_count {
-        user_library::checked_int32(page.total_record_count)?
+        usize::try_from(page.total_record_count).unwrap_or(usize::MAX)
     } else {
         0
     };
-    let mut result = MusicGenresResult {
+    Ok(Json(MusicGenresResult {
         items,
         total_record_count,
         start_index: requested_start_index,
-    };
-    user_library::omit_incompatible_emby_relations(&uri, &mut result.items);
-    Ok(Json(result))
+    }))
 }
 
 pub(crate) async fn get(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    OriginalUri(uri): OriginalUri,
     Path(genre_name): Path<String>,
     Query(query): Query<MusicGenreByNameQuery>,
 ) -> Result<Json<user_library::BaseItemDto>, ApiError> {
@@ -233,8 +229,7 @@ pub(crate) async fn get(
     } else {
         project_music_genre_without_user(&state, genre.item).await?
     };
-    apply_music_genre_counts(&mut dto, genre.item_count, genre.counts)?;
-    user_library::omit_incompatible_emby_relations(&uri, std::slice::from_mut(&mut dto));
+    apply_music_genre_counts(&mut dto, genre.item_count, genre.counts);
     Ok(Json(dto))
 }
 
@@ -266,13 +261,12 @@ fn apply_music_genre_counts(
     dto: &mut user_library::BaseItemDto,
     item_count: u64,
     counts: jellyfin_data::ItemValueCounts,
-) -> Result<(), ApiError> {
-    dto.child_count = Some(user_library::checked_int32(item_count)?);
-    dto.album_count = Some(user_library::checked_int32(counts.album_count)?);
-    dto.artist_count = Some(user_library::checked_int32(counts.artist_count)?);
-    dto.music_video_count = Some(user_library::checked_int32(counts.music_video_count)?);
-    dto.song_count = Some(user_library::checked_int32(counts.song_count)?);
-    Ok(())
+) {
+    dto.child_count = Some(item_count);
+    dto.album_count = Some(counts.album_count);
+    dto.artist_count = Some(counts.artist_count);
+    dto.music_video_count = Some(counts.music_video_count);
+    dto.song_count = Some(counts.song_count);
 }
 
 pub(crate) async fn get_image(

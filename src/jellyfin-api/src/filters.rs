@@ -1,7 +1,10 @@
 use std::sync::Arc;
 
-use axum::{Json, extract::State, http::HeaderMap};
-use axum_extra::extract::Query;
+use axum::{
+    Json,
+    extract::{Query, State},
+    http::HeaderMap,
+};
 use jellyfin_data::{BaseItemQuery, ItemValueQuery, ProductionYearOrder, entities::item_value};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -12,16 +15,15 @@ const MUSIC_ITEM_TYPES: [&str; 4] = ["Audio", "MusicVideo", "MusicAlbum", "Music
 
 #[derive(Debug, Default, Deserialize)]
 pub(crate) struct FiltersQuery {
-    #[serde(default, rename = "userId", alias = "UserId", alias = "userid")]
+    #[serde(default, rename = "userId", alias = "UserId")]
     user_id: Option<Uuid>,
-    #[serde(rename = "parentId", alias = "ParentId", alias = "parentid")]
+    #[serde(rename = "parentId", alias = "ParentId")]
     parent_id: Option<Uuid>,
     #[serde(
         default,
         rename = "includeItemTypes",
         alias = "IncludeItemTypes",
-        alias = "includeitemtypes",
-        deserialize_with = "crate::query::comma::deserialize_model_binder"
+        deserialize_with = "crate::query::comma::deserialize"
     )]
     include_item_types: Vec<String>,
     #[serde(rename = "recursive", alias = "Recursive")]
@@ -42,8 +44,7 @@ pub(crate) struct FiltersQuery {
         default,
         rename = "mediaTypes",
         alias = "MediaTypes",
-        alias = "mediatypes",
-        deserialize_with = "crate::query::comma::deserialize_model_binder"
+        deserialize_with = "crate::query::comma::deserialize"
     )]
     media_types: Vec<String>,
 }

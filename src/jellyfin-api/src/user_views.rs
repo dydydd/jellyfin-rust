@@ -1,11 +1,11 @@
-use std::{collections::HashMap, str::FromStr, sync::Arc};
+use std::{collections::HashMap, sync::Arc};
 
 use axum::{
     Json,
     extract::{OriginalUri, Path, State},
     http::HeaderMap,
 };
-use axum_extra::extract::{Query, QueryRejection};
+use axum_extra::extract::Query;
 use jellyfin_controller::{UserViewGroupingOption, UserViewItem, VirtualFolder};
 use jellyfin_data::BaseItemQuery;
 use jellyfin_model::CollectionType;
@@ -20,74 +20,6 @@ use crate::{
 };
 
 const USER_VIEW_DISPLAY_PREFERENCES_ID: &str = "cb46bc72e78d95cc6cd072de3a65b93a";
-
-const COLLECTION_TYPE_QUERY_VALUES: &[(i32, &str)] = &[
-    (0, "unknown"),
-    (1, "movies"),
-    (2, "tvshows"),
-    (3, "music"),
-    (4, "musicvideos"),
-    (5, "trailers"),
-    (6, "homevideos"),
-    (7, "boxsets"),
-    (8, "books"),
-    (9, "photos"),
-    (10, "livetv"),
-    (11, "playlists"),
-    (12, "folders"),
-    (101, "tvshowseries"),
-    (102, "tvgenres"),
-    (103, "tvgenre"),
-    (104, "tvlatest"),
-    (105, "tvnextup"),
-    (106, "tvresume"),
-    (107, "tvfavoriteseries"),
-    (108, "tvfavoriteepisodes"),
-    (109, "movielatest"),
-    (110, "movieresume"),
-    (111, "moviemovies"),
-    (112, "moviecollection"),
-    (113, "moviefavorites"),
-    (114, "moviegenres"),
-    (115, "moviegenre"),
-];
-
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct CollectionTypeQuery(&'static str);
-
-impl CollectionTypeQuery {
-    pub(crate) const fn as_str(self) -> &'static str {
-        self.0
-    }
-
-    pub(crate) fn as_collection_type(self) -> Option<CollectionType> {
-        self.0.parse().ok()
-    }
-}
-
-impl FromStr for CollectionTypeQuery {
-    type Err = ();
-
-    fn from_str(value: &str) -> Result<Self, Self::Err> {
-        let value = value.trim();
-        let parsed = value
-            .parse::<i32>()
-            .ok()
-            .and_then(|number| {
-                COLLECTION_TYPE_QUERY_VALUES
-                    .iter()
-                    .find(|(candidate, _)| *candidate == number)
-            })
-            .or_else(|| {
-                COLLECTION_TYPE_QUERY_VALUES
-                    .iter()
-                    .find(|(_, name)| name.eq_ignore_ascii_case(value))
-            })
-            .map(|(_, name)| *name)
-            .ok_or(())?;
-        Ok(Self(parsed))
-    }
-}
 
 #[derive(Debug, Default, Deserialize)]
 pub(crate) struct UserViewsQuery {
@@ -105,9 +37,9 @@ pub(crate) struct UserViewsQuery {
         rename = "presetViews",
         alias = "PresetViews",
         alias = "presetviews",
-        deserialize_with = "crate::query::comma::deserialize_model_binder"
+        deserialize_with = "crate::query::comma::deserialize"
     )]
-    preset_views: Vec<CollectionTypeQuery>,
+    preset_views: Vec<String>,
     #[serde(
         default,
         rename = "includeHidden",
@@ -128,14 +60,9 @@ pub(crate) async fn get(
     State(state): State<Arc<AppState>>,
     OriginalUri(uri): OriginalUri,
     headers: HeaderMap,
-    query: Result<Query<UserViewsQuery>, QueryRejection>,
+    Query(query): Query<UserViewsQuery>,
 ) -> Result<Json<BaseItemQueryResult>, ApiError> {
-    let identity = authentication::authenticated_identity(&state, &headers, Some(&uri)).await?;
-    let Query(query) = query.map_err(|_| ApiError::InvalidRequest)?;
-    let target_user_id = identity.target_user_id(query.user_id)?;
-    let mut result = user_views_for(&state, target_user_id, query).await?;
-    crate::user_library::omit_incompatible_emby_relations(&uri, &mut result.0.items);
-    Ok(result)
+    user_views_for(state, headers, &uri, query.user_id, query).await
 }
 
 pub(crate) async fn get_legacy(
@@ -143,26 +70,18 @@ pub(crate) async fn get_legacy(
     OriginalUri(uri): OriginalUri,
     headers: HeaderMap,
     Path(user_id): Path<Uuid>,
-    query: Result<Query<UserViewsQuery>, QueryRejection>,
+    Query(query): Query<UserViewsQuery>,
 ) -> Result<Json<BaseItemQueryResult>, ApiError> {
-    let identity = authentication::authenticated_identity(&state, &headers, Some(&uri)).await?;
-    let Query(query) = query.map_err(|_| ApiError::InvalidRequest)?;
-    let target_user_id = identity.target_user_id(Some(user_id))?;
-    let mut result = user_views_for(&state, target_user_id, query).await?;
-    crate::user_library::omit_incompatible_emby_relations(&uri, &mut result.0.items);
-    Ok(result)
+    user_views_for(state, headers, &uri, Some(user_id), query).await
 }
 
 pub(crate) async fn grouping_options(
     State(state): State<Arc<AppState>>,
     OriginalUri(uri): OriginalUri,
     headers: HeaderMap,
-    query: Result<Query<UserViewsQuery>, QueryRejection>,
+    Query(query): Query<UserViewsQuery>,
 ) -> Result<Json<Vec<SpecialViewOptionDto>>, ApiError> {
-    let identity = authentication::authenticated_identity(&state, &headers, Some(&uri)).await?;
-    let Query(query) = query.map_err(|_| ApiError::InvalidRequest)?;
-    let target_user_id = identity.target_user_id(query.user_id)?;
-    grouping_options_for(state, target_user_id).await
+    grouping_options_for(state, headers, &uri, query.user_id).await
 }
 
 pub(crate) async fn grouping_options_legacy(
@@ -171,32 +90,21 @@ pub(crate) async fn grouping_options_legacy(
     headers: HeaderMap,
     Path(user_id): Path<Uuid>,
 ) -> Result<Json<Vec<SpecialViewOptionDto>>, ApiError> {
-    let identity = authentication::authenticated_identity(&state, &headers, Some(&uri)).await?;
-    let target_user_id = identity.target_user_id(Some(user_id))?;
-    grouping_options_for(state, target_user_id).await
+    grouping_options_for(state, headers, &uri, Some(user_id)).await
 }
 
 async fn user_views_for(
-    state: &AppState,
-    target_user_id: Uuid,
+    state: Arc<AppState>,
+    headers: HeaderMap,
+    uri: &axum::http::Uri,
+    requested_user_id: Option<Uuid>,
     query: UserViewsQuery,
 ) -> Result<Json<BaseItemQueryResult>, ApiError> {
-    // `UserViewQuery` initializes this to true in the official server, so an
-    // omitted query value includes policy-visible external Channel views.
-    let include_external_content = query.include_external_content.unwrap_or(true);
-    let preset_views = query
-        .preset_views
-        .into_iter()
-        .map(|preset| preset.as_str().to_owned())
-        .collect::<Vec<_>>();
+    let target_user_id = target_user_id(&state, &headers, uri, requested_user_id).await?;
+    let _ = query.include_external_content;
     let views = state
         .user_views
-        .list(
-            target_user_id,
-            &preset_views,
-            query.include_hidden,
-            include_external_content,
-        )
+        .list(target_user_id, &query.preset_views, query.include_hidden)
         .await?;
     let target_user = state.users.get(target_user_id).await?;
     let mut parent_ids = views
@@ -229,23 +137,15 @@ async fn user_views_for(
         .await
         .map_err(|_| ApiError::Internal)?;
     let mut items = Vec::with_capacity(views.len());
-    for mut view in views {
+    for view in views {
         let view_id = view.id;
         let item_type = view.item_type.clone();
-        let source_item = view.source_item.take();
         let child_count = view
             .content_parent_ids
             .iter()
-            .try_fold(0_i32, |total, parent_id| {
-                let count = crate::user_library::checked_int32(
-                    child_counts.get(parent_id).copied().unwrap_or_default(),
-                )?;
-                total.checked_add(count).ok_or(ApiError::Internal)
-            })?;
-        let mut dto = source_item.map_or_else(
-            || user_view_to_dto(view, state.server_id()),
-            |item| crate::user_library::item_to_dto(item, state.server_id()),
-        );
+            .map(|parent_id| child_counts.get(parent_id).copied().unwrap_or_default())
+            .sum();
+        let mut dto = user_view_to_dto(view, state.server_id());
         dto.child_count = Some(child_count);
         dto.display_preferences_id = Some(if item_type.eq_ignore_ascii_case("UserView") {
             USER_VIEW_DISPLAY_PREFERENCES_ID.to_owned()
@@ -258,38 +158,19 @@ async fn user_views_for(
         items.push(dto);
     }
     Ok(Json(BaseItemQueryResult {
-        total_record_count: crate::user_library::checked_int32(items.len())?,
+        total_record_count: items.len(),
         start_index: 0,
         items,
     }))
 }
 
-/// Projects Emby's required-flag legacy view request through the shared view
-/// implementation without changing Jellyfin's optional query contract.
-///
-/// # Errors
-///
-/// Returns user, item-policy, image-projection, and persistence failures.
-pub(crate) async fn user_views_for_emby(
-    state: &AppState,
-    target_user_id: Uuid,
-    include_external_content: bool,
-) -> Result<Json<BaseItemQueryResult>, ApiError> {
-    user_views_for(
-        state,
-        target_user_id,
-        UserViewsQuery {
-            include_external_content: Some(include_external_content),
-            ..UserViewsQuery::default()
-        },
-    )
-    .await
-}
-
 async fn grouping_options_for(
     state: Arc<AppState>,
-    target_user_id: Uuid,
+    headers: HeaderMap,
+    uri: &axum::http::Uri,
+    requested_user_id: Option<Uuid>,
 ) -> Result<Json<Vec<SpecialViewOptionDto>>, ApiError> {
+    let target_user_id = target_user_id(&state, &headers, uri, requested_user_id).await?;
     Ok(Json(
         state
             .user_views
@@ -305,6 +186,16 @@ async fn grouping_options_for(
             })
             .collect(),
     ))
+}
+
+async fn target_user_id(
+    state: &AppState,
+    headers: &HeaderMap,
+    uri: &axum::http::Uri,
+    requested_user_id: Option<Uuid>,
+) -> Result<Uuid, ApiError> {
+    let identity = authentication::authenticated_identity(state, headers, Some(uri)).await?;
+    identity.target_user_id(requested_user_id)
 }
 
 pub(crate) fn view_to_dto(folder: VirtualFolder, server_id: &str) -> BaseItemDto {
@@ -366,7 +257,6 @@ pub(crate) fn user_view_to_dto(item: UserViewItem, server_id: &str) -> BaseItemD
         parent_id,
         item_type,
         is_virtual_item,
-        source_item: _,
     } = item;
     let collection_type = base_item_collection_type(collection_type);
     BaseItemDto {

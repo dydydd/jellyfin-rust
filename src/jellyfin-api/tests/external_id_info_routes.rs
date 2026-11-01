@@ -7,8 +7,8 @@ use axum::{
 use jellyfin_api::AppState;
 use jellyfin_controller::UserService;
 use jellyfin_data::{
-    ApiKeyRepository, BaseItemRepository, DatabaseConfig, DeviceRepository, NewBaseItem, NewDevice,
-    NewVirtualFolder, VirtualFolderRepository, entities::base_item,
+    BaseItemRepository, DatabaseConfig, DeviceRepository, NewBaseItem, NewDevice,
+    entities::base_item,
 };
 use sea_orm::{ConnectionTrait, EntityTrait};
 use serde_json::{Value, json};
@@ -74,11 +74,6 @@ async fn exercise_route(database_name: &str) {
     let administrator_token =
         create_session(&devices, administrator.id, &format!("admin-{suffix}")).await;
     let ordinary_token = create_session(&devices, ordinary.id, &format!("user-{suffix}")).await;
-    let api_key_token = ApiKeyRepository::new(database.clone())
-        .create(&format!("external-id-key-{suffix}"))
-        .await
-        .expect("API key creation")
-        .access_token;
     let movie = BaseItemRepository::new(database.clone())
         .create(NewBaseItem::new(Uuid::new_v4(), "Movie"))
         .await
@@ -87,58 +82,6 @@ async fn exercise_route(database_name: &str) {
         .create(NewBaseItem::new(Uuid::new_v4(), "Video"))
         .await
         .expect("scanned video creation");
-    let virtual_folders = VirtualFolderRepository::new(database.clone());
-    let library = virtual_folders
-        .create(
-            NewVirtualFolder {
-                name: format!("Remote search library {suffix}"),
-                collection_type: Some("music".to_owned()),
-                library_options: json!({
-                    "typeoptions": [{
-                        "type": "musicartist",
-                        "metadatafetchers": [],
-                        "metadatafetcherorder": []
-                    }]
-                }),
-                refresh_requested: false,
-            },
-            Vec::new(),
-        )
-        .await
-        .expect("remote search virtual library creation");
-    let items = BaseItemRepository::new(database.clone());
-    let mut collection = NewBaseItem::new(library.folder.id, "CollectionFolder");
-    collection.is_folder = true;
-    items
-        .create(collection)
-        .await
-        .expect("remote search collection folder creation");
-    let own_options = virtual_folders
-        .library_options_for_item(library.folder.id)
-        .await
-        .expect("collection-folder library options lookup")
-        .expect("collection folder exists");
-    assert_eq!(own_options.item_type, "CollectionFolder");
-    assert_eq!(
-        own_options.library_options.as_ref(),
-        Some(&library.folder.library_options)
-    );
-    let mut artist = NewBaseItem::new(Uuid::new_v4(), "MusicArtist");
-    artist.parent_id = Some(library.folder.id);
-    let artist = items
-        .create(artist)
-        .await
-        .expect("remote search reference artist creation");
-    let resolved = virtual_folders
-        .library_options_for_item(artist.id)
-        .await
-        .expect("containing virtual library lookup")
-        .expect("reference artist exists");
-    assert_eq!(resolved.item_type, "MusicArtist");
-    assert_eq!(
-        resolved.library_options.as_ref(),
-        Some(&library.folder.library_options)
-    );
     let route_app = app(database.clone());
 
     assert_eq!(
@@ -166,24 +109,14 @@ async fn exercise_route(database_name: &str) {
         { "Name": "TheMovieDb", "Key": "TmdbCollection", "Type": "BoxSet" }
     ]);
     assert_eq!(body_json(response).await, expected);
-    let lowercase = get_uri(
-        &route_app,
-        &format!("/items/{}/externalidinfos", movie.id),
-        Some(&administrator_token),
-    )
-    .await;
-    assert_eq!(lowercase.status(), StatusCode::OK);
-    assert_eq!(body_json(lowercase).await, expected);
 
     assert_remote_search_contract(
         &route_app,
         &database,
         movie.id,
         scanned_video.id,
-        artist.id,
         &ordinary_token,
         &administrator_token,
-        &api_key_token,
     )
     .await;
 
@@ -203,53 +136,9 @@ async fn assert_remote_search_contract(
     database: &sea_orm::DatabaseConnection,
     item_id: Uuid,
     scanned_video_id: Uuid,
-    library_artist_id: Uuid,
     ordinary_token: &str,
     administrator_token: &str,
-    api_key_token: &str,
 ) {
-    for (route, body) in [
-        (
-            "/Items/RemoteSearch/MusicArtist",
-            json!({
-                "SearchInfo": { "Name": "Provider must remain disabled" },
-                "ItemId": library_artist_id,
-                "SearchProviderName": "MusicBrainz"
-            }),
-        ),
-        (
-            "/items/remotesearch/musicartist",
-            json!({
-                "searchinfo": { "name": "Provider must remain disabled" },
-                "itemid": library_artist_id,
-                "searchprovidername": "MusicBrainz"
-            }),
-        ),
-    ] {
-        let response = post_json(app, route, Some(ordinary_token), &body).await;
-        assert_eq!(response.status(), StatusCode::OK, "{route}");
-        assert_eq!(body_json(response).await, json!([]), "{route}");
-    }
-
-    for route in [
-        "/Items/RemoteSearch/MusicArtist",
-        "/items/remotesearch/musicartist",
-    ] {
-        let response = post_json(
-            app,
-            route,
-            Some(ordinary_token),
-            &json!({
-                "SearchInfo": { "Name": "Missing reference item" },
-                "ItemId": Uuid::new_v4(),
-                "SearchProviderName": "Unregistered Provider"
-            }),
-        )
-        .await;
-        assert_eq!(response.status(), StatusCode::OK, "{route}");
-        assert_eq!(body_json(response).await, json!([]), "{route}");
-    }
-
     let body = json!({
         "SearchInfo": {
             "Name": "Remote Candidate",
@@ -268,14 +157,6 @@ async fn assert_remote_search_contract(
         "/Items/RemoteSearch/MusicArtist",
         "/Items/RemoteSearch/MusicAlbum",
         "/Items/RemoteSearch/Book",
-        "/items/remotesearch/movie",
-        "/items/remotesearch/trailer",
-        "/items/remotesearch/musicvideo",
-        "/items/remotesearch/series",
-        "/items/remotesearch/boxset",
-        "/items/remotesearch/musicartist",
-        "/items/remotesearch/musicalbum",
-        "/items/remotesearch/book",
     ] {
         assert_eq!(
             post_json(app, route, None, &body).await.status(),
@@ -304,35 +185,6 @@ async fn assert_remote_search_contract(
         "/Items/RemoteSearch/Person",
         Some(administrator_token),
         &body,
-    )
-    .await;
-    assert_eq!(person.status(), StatusCode::OK);
-    assert_eq!(body_json(person).await, Value::Array(Vec::new()));
-    let lowercase_person_body = json!({
-        "searchinfo": {
-            "name": "Remote Candidate",
-            "providerids": { "Imdb": "tt0000001" }
-        },
-        "itemid": item_id,
-        "searchprovidername": "Example",
-        "includedisabledproviders": true
-    });
-    assert_eq!(
-        post_json(
-            app,
-            "/items/remotesearch/person",
-            Some(ordinary_token),
-            &lowercase_person_body,
-        )
-        .await
-        .status(),
-        StatusCode::FORBIDDEN
-    );
-    let person = post_json(
-        app,
-        &format!("/items/remotesearch/person?api_key={api_key_token}"),
-        None,
-        &lowercase_person_body,
     )
     .await;
     assert_eq!(person.status(), StatusCode::OK);
@@ -400,52 +252,6 @@ async fn assert_remote_search_contract(
         .expect("item lookup")
         .expect("scanned video exists after apply");
     assert_eq!(stored.item_type, "Movie");
-
-    let lowercase_apply_body = json!({
-        "name": "Lowercase Applied Candidate",
-        "type": "Movie",
-        "providerids": {
-            "Imdb": "tt1111111",
-            "Tmdb": "11111"
-        },
-        "productionyear": 2025,
-        "artists": []
-    });
-    let missing_apply_route = format!(
-        "/items/remotesearch/apply/{}?api_key={api_key_token}",
-        Uuid::new_v4()
-    );
-    assert_eq!(
-        post_raw_with_content_type(app, &missing_apply_route, None, b"not-json")
-            .await
-            .status(),
-        StatusCode::BAD_REQUEST,
-        "body binding precedes missing-item lookup after authorization"
-    );
-    assert_eq!(
-        post_json(app, &missing_apply_route, None, &lowercase_apply_body)
-            .await
-            .status(),
-        StatusCode::NOT_FOUND
-    );
-    let lowercase_apply_route = format!(
-        "/items/remotesearch/apply/{scanned_video_id}?replaceallimages=false&api_key={api_key_token}"
-    );
-    assert_eq!(
-        post_json(app, &lowercase_apply_route, None, &lowercase_apply_body)
-            .await
-            .status(),
-        StatusCode::NO_CONTENT
-    );
-    let stored = base_item::Entity::find_by_id(scanned_video_id)
-        .one(database)
-        .await
-        .expect("lowercase item lookup")
-        .expect("item exists after lowercase apply");
-    assert_eq!(stored.name.as_deref(), Some("Lowercase Applied Candidate"));
-    assert_eq!(stored.production_year, Some(2025));
-    let metadata = stored.data.expect("metadata after lowercase apply");
-    assert_eq!(metadata["ProviderIds"]["Imdb"], "tt1111111");
 }
 
 fn app(database: sea_orm::DatabaseConnection) -> Router {
@@ -471,11 +277,7 @@ async fn create_session(devices: &DeviceRepository, user_id: Uuid, device_id: &s
 }
 
 async fn get(app: &Router, item_id: Uuid, token: Option<&str>) -> axum::response::Response {
-    get_uri(app, &format!("/Items/{item_id}/ExternalIdInfos"), token).await
-}
-
-async fn get_uri(app: &Router, uri: &str, token: Option<&str>) -> axum::response::Response {
-    let mut request = Request::get(uri);
+    let mut request = Request::get(format!("/Items/{item_id}/ExternalIdInfos"));
     if let Some(token) = token {
         request = request.header("x-emby-token", token);
     }

@@ -22,19 +22,10 @@ use tower::ServiceExt;
 use tower_http::services::ServeFile;
 use uuid::Uuid;
 
-use crate::{
-    ApiError, AppState, authentication, authorization, user_library,
-    user_views::CollectionTypeQuery,
-};
+use crate::{ApiError, AppState, authentication, authorization, user_library};
 
 #[derive(Debug, Default, Clone, Deserialize)]
 pub(crate) struct LibraryQuery {
-    #[serde(default, rename = "userId", alias = "UserId", alias = "userid")]
-    user_id: Option<Uuid>,
-}
-
-#[derive(Debug, Default, Clone, Deserialize)]
-pub(crate) struct CollectionsQuery {
     #[serde(default, rename = "userId", alias = "UserId", alias = "userid")]
     user_id: Option<Uuid>,
     #[serde(
@@ -46,13 +37,6 @@ pub(crate) struct CollectionsQuery {
     start_index: i32,
     #[serde(alias = "Limit")]
     limit: Option<i32>,
-    #[serde(
-        default,
-        rename = "fields",
-        alias = "Fields",
-        deserialize_with = "crate::items::deserialize_library_item_fields"
-    )]
-    fields: Vec<String>,
 }
 
 #[derive(Debug, Default, Clone, Deserialize)]
@@ -76,42 +60,6 @@ pub(crate) struct SimilarQuery {
         deserialize_with = "crate::query::comma::deserialize"
     )]
     fields: Vec<String>,
-}
-
-impl SimilarQuery {
-    fn parse(uri: &axum::http::Uri) -> Result<Self, ApiError> {
-        let mut query = Self::default();
-        for (name, value) in form_urlencoded::parse(uri.query().unwrap_or_default().as_bytes()) {
-            if name.eq_ignore_ascii_case("ExcludeArtistIds") {
-                query.exclude_artist_ids.extend(
-                    value
-                        .split(',')
-                        .filter_map(|value| Uuid::parse_str(value.trim()).ok()),
-                );
-            } else if name.eq_ignore_ascii_case("UserId") {
-                query.user_id = if value.trim().is_empty() {
-                    None
-                } else {
-                    Some(Uuid::parse_str(value.trim()).map_err(|_| ApiError::InvalidRequest)?)
-                };
-            } else if name.eq_ignore_ascii_case("Limit") {
-                query.limit = if value.trim().is_empty() {
-                    None
-                } else {
-                    Some(value.parse().map_err(|_| ApiError::InvalidRequest)?)
-                };
-            } else if name.eq_ignore_ascii_case("Fields") {
-                query.fields.extend(
-                    value
-                        .split(',')
-                        .map(str::trim)
-                        .filter(|value| !value.is_empty())
-                        .map(ToOwned::to_owned),
-                );
-            }
-        }
-        Ok(query)
-    }
 }
 
 #[derive(Debug, Default, Clone, Deserialize)]
@@ -215,10 +163,9 @@ pub(crate) struct AvailableOptionsQuery {
         default,
         rename = "libraryContentType",
         alias = "LibraryContentType",
-        alias = "librarycontenttype",
-        deserialize_with = "deserialize_optional_collection_type"
+        alias = "librarycontenttype"
     )]
-    library_content_type: Option<CollectionTypeQuery>,
+    library_content_type: Option<CollectionType>,
     #[serde(
         default,
         rename = "isNewLibrary",
@@ -245,14 +192,12 @@ pub(crate) struct UpdatedMoviesQuery {
 #[derive(Debug, Default, Deserialize)]
 #[serde(default, rename_all = "PascalCase")]
 pub(crate) struct MediaUpdateInfoDto {
-    #[serde(alias = "updates")]
     updates: Vec<MediaUpdateInfoPathDto>,
 }
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(default, rename_all = "PascalCase")]
 pub(crate) struct MediaUpdateInfoPathDto {
-    #[serde(alias = "path")]
     path: Option<String>,
 }
 
@@ -260,10 +205,9 @@ pub(crate) struct MediaUpdateInfoPathDto {
 #[serde(rename_all = "PascalCase")]
 pub(crate) struct ThemeMediaResult {
     items: Vec<user_library::BaseItemDto>,
-    total_record_count: i32,
-    start_index: i32,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    owner_id: Option<Uuid>,
+    total_record_count: usize,
+    start_index: usize,
+    owner_id: Uuid,
 }
 
 #[derive(Debug, Serialize)]
@@ -297,47 +241,42 @@ pub(crate) async fn download(
 pub(crate) async fn theme_songs(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    OriginalUri(uri): OriginalUri,
     Path(item_id): Path<Uuid>,
     Query(query): Query<ThemeMediaQuery>,
 ) -> Result<Json<ThemeMediaResult>, ApiError> {
-    let mut result = theme_result(
-        &state,
-        &headers,
-        item_id,
-        &query,
-        RelatedItemKind::ThemeSong,
-    )
-    .await?;
-    user_library::omit_incompatible_emby_relations(&uri, &mut result.items);
-    omit_incompatible_emby_theme_owner(&uri, &mut result);
-    Ok(Json(result))
+    Ok(Json(
+        theme_result(
+            &state,
+            &headers,
+            item_id,
+            &query,
+            RelatedItemKind::ThemeSong,
+        )
+        .await?,
+    ))
 }
 
 pub(crate) async fn theme_videos(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    OriginalUri(uri): OriginalUri,
     Path(item_id): Path<Uuid>,
     Query(query): Query<ThemeMediaQuery>,
 ) -> Result<Json<ThemeMediaResult>, ApiError> {
-    let mut result = theme_result(
-        &state,
-        &headers,
-        item_id,
-        &query,
-        RelatedItemKind::ThemeVideo,
-    )
-    .await?;
-    user_library::omit_incompatible_emby_relations(&uri, &mut result.items);
-    omit_incompatible_emby_theme_owner(&uri, &mut result);
-    Ok(Json(result))
+    Ok(Json(
+        theme_result(
+            &state,
+            &headers,
+            item_id,
+            &query,
+            RelatedItemKind::ThemeVideo,
+        )
+        .await?,
+    ))
 }
 
 pub(crate) async fn theme_media(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    OriginalUri(uri): OriginalUri,
     Path(item_id): Path<Uuid>,
     Query(query): Query<ThemeMediaQuery>,
 ) -> Result<Json<AllThemeMediaResult>, ApiError> {
@@ -357,80 +296,43 @@ pub(crate) async fn theme_media(
         RelatedItemKind::ThemeVideo,
     )
     .await?;
-    let mut result = AllThemeMediaResult {
+    Ok(Json(AllThemeMediaResult {
         theme_songs,
         theme_videos,
         soundtrack_songs: ThemeMediaResult {
             items: Vec::new(),
             total_record_count: 0,
             start_index: 0,
-            owner_id: Some(Uuid::nil()),
+            owner_id: Uuid::nil(),
         },
-    };
-    user_library::omit_incompatible_emby_relations(&uri, &mut result.theme_songs.items);
-    user_library::omit_incompatible_emby_relations(&uri, &mut result.theme_videos.items);
-    if is_emby_request(&uri) {
-        result.theme_songs.owner_id = None;
-        result.theme_videos.owner_id = None;
-        result.soundtrack_songs.owner_id = None;
-    }
-    Ok(Json(result))
-}
-
-fn omit_incompatible_emby_theme_owner(uri: &axum::http::Uri, result: &mut ThemeMediaResult) {
-    if is_emby_request(uri) {
-        // Emby's generated Android/iOS contract models OwnerId as Int64.
-        // Jellyfin UUIDs have no lossless numeric representation, and the
-        // property is optional, so omit it instead of making Swift reject the
-        // complete theme result.
-        result.owner_id = None;
-    }
-}
-
-fn is_emby_request(uri: &axum::http::Uri) -> bool {
-    uri.path()
-        .split('/')
-        .nth(1)
-        .is_some_and(|segment| segment.eq_ignore_ascii_case("emby"))
+    }))
 }
 
 pub(crate) async fn ancestors(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    OriginalUri(uri): OriginalUri,
     Path(item_id): Path<Uuid>,
     Query(query): Query<LibraryQuery>,
 ) -> Result<Json<Vec<user_library::BaseItemDto>>, ApiError> {
     let authenticated = authentication::authenticated_session(&state, &headers).await?;
-    let target_user_id = query
-        .user_id
-        .filter(|user_id| !user_id.is_nil())
-        .unwrap_or(authenticated.user.id);
+    let target_user_id = query.user_id.unwrap_or(authenticated.user.id);
     let items = state
         .library_controller
         .ancestors(&authenticated.user, target_user_id, item_id)
         .await?;
-    let total_record_count = u64::try_from(items.len()).unwrap_or(u64::MAX);
-    let mut projected = crate::items::page_to_dto_all_fields(
-        state.as_ref(),
-        BaseItemPage {
-            items,
-            total_record_count,
-            start_index: 0,
-        },
-        target_user_id,
-    )
-    .await?;
-    user_library::omit_incompatible_emby_relations(&uri, &mut projected.items);
-    Ok(Json(projected.items))
+    Ok(Json(
+        items
+            .into_iter()
+            .map(|item| user_library::item_to_dto(item, state.server_id()))
+            .collect(),
+    ))
 }
 
 pub(crate) async fn collections(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    OriginalUri(uri): OriginalUri,
     Path(item_id): Path<Uuid>,
-    RepeatedQuery(query): RepeatedQuery<CollectionsQuery>,
+    Query(query): Query<LibraryQuery>,
 ) -> Result<Json<user_library::BaseItemQueryResult>, ApiError> {
     let authenticated = authentication::authenticated_session(&state, &headers).await?;
     // The official controller applies Enumerable.Skip/Take: negative starts
@@ -440,10 +342,7 @@ pub(crate) async fn collections(
     let limit = query
         .limit
         .map(|limit| u64::try_from(limit.max(0)).unwrap_or_default());
-    let target_user_id = query
-        .user_id
-        .filter(|user_id| !user_id.is_nil())
-        .unwrap_or(authenticated.user.id);
+    let target_user_id = query.user_id.unwrap_or(authenticated.user.id);
     let page = state
         .library_controller
         .collections_containing_item(
@@ -454,20 +353,17 @@ pub(crate) async fn collections(
             limit,
         )
         .await?;
-    let mut result =
-        crate::items::page_to_dto(state.as_ref(), page, query.fields, target_user_id).await?;
+    let mut result = page_to_dto(page, state.server_id());
     result.start_index = requested_start_index;
-    user_library::omit_incompatible_emby_relations(&uri, &mut result.items);
     Ok(Json(result))
 }
 
 pub(crate) async fn similar(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    OriginalUri(uri): OriginalUri,
     Path(item_id): Path<Uuid>,
+    RepeatedQuery(query): RepeatedQuery<SimilarQuery>,
 ) -> Result<Json<user_library::BaseItemQueryResult>, ApiError> {
-    let query = SimilarQuery::parse(&uri)?;
     let authenticated = authentication::authenticated_session(&state, &headers).await?;
     let target_user_id = query
         .user_id
@@ -490,145 +386,54 @@ pub(crate) async fn similar(
     {
         fields.push("ProviderIds".to_owned());
     }
-    let mut result =
-        crate::items::page_to_dto(state.as_ref(), page, fields, target_user_id).await?;
-    user_library::omit_incompatible_emby_relations(&uri, &mut result.items);
-    Ok(Json(result))
-}
-
-pub(crate) async fn emby_game_similar(
-    State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
-    OriginalUri(uri): OriginalUri,
-    Path(item_id): Path<Uuid>,
-) -> Result<Json<user_library::BaseItemQueryResult>, ApiError> {
-    let query = SimilarQuery::parse(&uri)?;
-    let identity = authentication::authenticated_identity(&state, &headers, Some(&uri)).await?;
-    let requested_user_id = query.user_id.filter(|user_id| !user_id.is_nil());
-    let user_context = match (&identity, requested_user_id) {
-        (_, None) => None,
-        (authentication::AuthenticatedIdentity::Device(session), Some(target_user_id)) => {
-            if target_user_id != session.user.id && !session.user.is_administrator {
-                return Err(ApiError::Forbidden);
-            }
-            match state.users.get(target_user_id).await {
-                Ok(target) => Some((session.user.clone(), target)),
-                Err(UserError::NotFound) if session.user.is_administrator => None,
-                Err(error) => return Err(error.into()),
-            }
-        }
-        (authentication::AuthenticatedIdentity::ApiKey(_), Some(target_user_id)) => {
-            match state.users.get(target_user_id).await {
-                Ok(target) => Some((target.clone(), target)),
-                Err(UserError::NotFound) => None,
-                Err(error) => return Err(error.into()),
-            }
-        }
-    };
-    let (page, target_user_id) = if let Some((authenticated_user, target_user)) = user_context {
-        let target_user_id = target_user.id;
-        (
-            state
-                .library_controller
-                .similar_legacy_game_items(
-                    &authenticated_user,
-                    target_user_id,
-                    item_id,
-                    &query.exclude_artist_ids,
-                    query.limit,
-                )
-                .await?,
-            Some(target_user_id),
-        )
-    } else {
-        (
-            state
-                .library_controller
-                .similar_legacy_game_items_without_user(
-                    item_id,
-                    &query.exclude_artist_ids,
-                    query.limit,
-                )
-                .await?,
-            None,
-        )
-    };
-    let mut fields = query.fields;
-    if !fields
-        .iter()
-        .any(|field| field.eq_ignore_ascii_case("ProviderIds"))
-    {
-        fields.push("ProviderIds".to_owned());
-    }
-    let mut result =
-        crate::items::page_to_dto_optional_user(state.as_ref(), page, fields, target_user_id)
-            .await?;
-    user_library::omit_incompatible_emby_relations(&uri, &mut result.items);
-    Ok(Json(result))
+    Ok(Json(
+        crate::items::page_to_dto(state.as_ref(), page, fields, target_user_id).await?,
+    ))
 }
 
 pub(crate) async fn instant_mix(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    OriginalUri(uri): OriginalUri,
     Path(item_id): Path<Uuid>,
     RepeatedQuery(query): RepeatedQuery<InstantMixQuery>,
 ) -> Result<Json<user_library::BaseItemQueryResult>, ApiError> {
-    instant_mix_for(state, headers, &uri, query, InstantMixSeed::Item(item_id)).await
+    instant_mix_for(state, headers, query, InstantMixSeed::Item(item_id)).await
 }
 
 pub(crate) async fn instant_mix_playlist(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    OriginalUri(uri): OriginalUri,
     Path(item_id): Path<Uuid>,
     RepeatedQuery(query): RepeatedQuery<InstantMixQuery>,
 ) -> Result<Json<user_library::BaseItemQueryResult>, ApiError> {
-    instant_mix_for(
-        state,
-        headers,
-        &uri,
-        query,
-        InstantMixSeed::Playlist(item_id),
-    )
-    .await
+    instant_mix_for(state, headers, query, InstantMixSeed::Playlist(item_id)).await
 }
 
 pub(crate) async fn instant_mix_genre_by_id(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    OriginalUri(uri): OriginalUri,
     RepeatedQuery(query): RepeatedQuery<InstantMixQuery>,
 ) -> Result<Json<user_library::BaseItemQueryResult>, ApiError> {
     let genre_id = query.id.ok_or(ApiError::InvalidRequest)?;
-    instant_mix_for(
-        state,
-        headers,
-        &uri,
-        query,
-        InstantMixSeed::GenreId(genre_id),
-    )
-    .await
+    instant_mix_for(state, headers, query, InstantMixSeed::GenreId(genre_id)).await
 }
 
 pub(crate) async fn instant_mix_by_id(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    OriginalUri(uri): OriginalUri,
     RepeatedQuery(query): RepeatedQuery<InstantMixQuery>,
 ) -> Result<Json<user_library::BaseItemQueryResult>, ApiError> {
     let item_id = query.id.ok_or(ApiError::InvalidRequest)?;
-    instant_mix_for(state, headers, &uri, query, InstantMixSeed::Item(item_id)).await
+    instant_mix_for(state, headers, query, InstantMixSeed::Item(item_id)).await
 }
 
 pub(crate) async fn instant_mix_genre_by_name(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    OriginalUri(uri): OriginalUri,
     Path(name): Path<String>,
     RepeatedQuery(query): RepeatedQuery<InstantMixQuery>,
 ) -> Result<Json<user_library::BaseItemQueryResult>, ApiError> {
-    instant_mix_for(state, headers, &uri, query, InstantMixSeed::GenreName(name)).await
+    instant_mix_for(state, headers, query, InstantMixSeed::GenreName(name)).await
 }
 
 enum InstantMixSeed {
@@ -641,7 +446,6 @@ enum InstantMixSeed {
 async fn instant_mix_for(
     state: Arc<AppState>,
     headers: HeaderMap,
-    uri: &axum::http::Uri,
     query: InstantMixQuery,
     seed: InstantMixSeed,
 ) -> Result<Json<user_library::BaseItemQueryResult>, ApiError> {
@@ -684,16 +488,16 @@ async fn instant_mix_for(
         enable_image_types: crate::items::parse_image_type_selectors(&query.enable_image_types),
         enable_user_data: query.enable_user_data.unwrap_or(true),
     };
-    let mut result = crate::items::page_to_dto_with_options(
-        state.as_ref(),
-        page,
-        query.fields,
-        target_user_id,
-        &dto_options,
-    )
-    .await?;
-    user_library::omit_incompatible_emby_relations(uri, &mut result.items);
-    Ok(Json(result))
+    Ok(Json(
+        crate::items::page_to_dto_with_options(
+            state.as_ref(),
+            page,
+            query.fields,
+            target_user_id,
+            &dto_options,
+        )
+        .await?,
+    ))
 }
 
 pub(crate) async fn item_counts(
@@ -751,13 +555,11 @@ pub(crate) async fn media_folders(
         })
         .map(|folder| crate::user_views::view_to_dto(folder, state.server_id()))
         .collect::<Vec<_>>();
-    let mut result = user_library::BaseItemQueryResult {
-        total_record_count: user_library::checked_int32(items.len())?,
+    Ok(Json(user_library::BaseItemQueryResult {
+        total_record_count: items.len(),
         start_index: 0,
         items,
-    };
-    user_library::omit_incompatible_emby_relations(&uri, &mut result.items);
-    Ok(Json(result))
+    }))
 }
 
 pub(crate) async fn physical_paths(
@@ -1032,46 +834,12 @@ pub(crate) async fn delete_item(
     delete_for(state, headers, &uri, vec![item_id]).await
 }
 
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "PascalCase")]
-pub(crate) struct LibraryDeleteInfo {
-    paths: Vec<String>,
-}
-
-pub(crate) async fn delete_info(
-    State(state): State<Arc<AppState>>,
-    OriginalUri(uri): OriginalUri,
-    headers: HeaderMap,
-    Path(item_id): Path<Uuid>,
-) -> Result<Json<LibraryDeleteInfo>, ApiError> {
-    let identity = authentication::authenticated_identity(&state, &headers, Some(&uri)).await?;
-    let path = match identity {
-        authentication::AuthenticatedIdentity::Device(session) => {
-            state
-                .library_controller
-                .file_path(&session.user, session.user.id, item_id)
-                .await?
-        }
-        authentication::AuthenticatedIdentity::ApiKey(_) => {
-            state
-                .library_controller
-                .file_path_without_user(item_id)
-                .await?
-        }
-    };
-    Ok(Json(LibraryDeleteInfo { paths: vec![path] }))
-}
-
 pub(crate) async fn delete_items(
     State(state): State<Arc<AppState>>,
     OriginalUri(uri): OriginalUri,
     headers: HeaderMap,
 ) -> Result<StatusCode, ApiError> {
-    let ids = if is_emby_request(&uri) {
-        required_emby_delete_item_ids(&uri)?
-    } else {
-        delete_item_ids(&uri)
-    };
+    let ids = delete_item_ids(&uri);
     delete_for(state, headers, &uri, ids).await
 }
 
@@ -1083,10 +851,7 @@ async fn theme_result(
     kind: RelatedItemKind,
 ) -> Result<ThemeMediaResult, ApiError> {
     let authenticated = authentication::authenticated_session(state, headers).await?;
-    let target_user_id = query
-        .user_id
-        .filter(|user_id| !user_id.is_nil())
-        .unwrap_or(authenticated.user.id);
+    let target_user_id = query.user_id.unwrap_or(authenticated.user.id);
     let owner = state
         .user_library
         .item(&authenticated.user, target_user_id, item_id)
@@ -1140,8 +905,8 @@ async fn theme_result(
     Ok(ThemeMediaResult {
         items: page.items,
         total_record_count: page.total_record_count,
-        start_index: page.start_index,
-        owner_id: Some(owner_id),
+        start_index: usize::try_from(page.start_index).unwrap_or(usize::MAX),
+        owner_id,
     })
 }
 
@@ -1303,32 +1068,16 @@ fn delete_item_ids(uri: &axum::http::Uri) -> Vec<Uuid> {
     }
 }
 
-fn required_emby_delete_item_ids(uri: &axum::http::Uri) -> Result<Vec<Uuid>, ApiError> {
-    // Emby's generated clients expose Ids as one required string rather than
-    // a repeated collection. Retain only the last case-insensitive scalar and
-    // then apply the server's comma-delimited Guid[] binding strictly.
-    let value = uri
-        .query()
-        .into_iter()
-        .flat_map(|query| form_urlencoded::parse(query.as_bytes()))
-        .filter(|(key, _)| key.eq_ignore_ascii_case("ids"))
-        .map(|(_, value)| value.into_owned())
-        .last()
-        .ok_or(ApiError::InvalidRequest)?;
-    if value.trim().is_empty() {
-        return Err(ApiError::InvalidRequest);
+fn page_to_dto(page: BaseItemPage, server_id: &str) -> user_library::BaseItemQueryResult {
+    user_library::BaseItemQueryResult {
+        items: page
+            .items
+            .into_iter()
+            .map(|item| user_library::item_to_dto(item, server_id))
+            .collect(),
+        total_record_count: usize::try_from(page.total_record_count).unwrap_or(usize::MAX),
+        start_index: i32::try_from(page.start_index).unwrap_or(i32::MAX),
     }
-
-    value
-        .split(',')
-        .map(|value| {
-            let value = value.trim();
-            if value.is_empty() {
-                return Err(ApiError::InvalidRequest);
-            }
-            Uuid::parse_str(value).map_err(|_| ApiError::InvalidRequest)
-        })
-        .collect()
 }
 
 fn counts_to_dto(counts: BaseItemCounts) -> ItemCounts {
@@ -1360,8 +1109,8 @@ fn is_hidden(folder: &jellyfin_controller::VirtualFolder) -> bool {
     .unwrap_or(false)
 }
 
-fn representative_item_types(content_type: Option<CollectionTypeQuery>) -> Vec<&'static str> {
-    match content_type.and_then(CollectionTypeQuery::as_collection_type) {
+fn representative_item_types(content_type: Option<CollectionType>) -> Vec<&'static str> {
+    match content_type {
         Some(CollectionType::BoxSets) => vec!["BoxSet"],
         Some(CollectionType::Playlists) => vec!["Playlist"],
         Some(CollectionType::Movies) => vec!["Movie"],
@@ -1380,16 +1129,6 @@ fn representative_item_types(content_type: Option<CollectionTypeQuery>) -> Vec<&
         )
         | None => vec!["Series", "Season", "Episode", "Movie"],
     }
-}
-
-fn deserialize_optional_collection_type<'de, D>(
-    deserializer: D,
-) -> Result<Option<CollectionTypeQuery>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    Ok(Option::<String>::deserialize(deserializer)?
-        .and_then(|value| value.parse::<CollectionTypeQuery>().ok()))
 }
 
 fn distinct_option_infos<'a>(
@@ -1497,7 +1236,7 @@ mod tests {
     use axum::http::Uri;
     use uuid::Uuid;
 
-    use super::{delete_item_ids, movie_update_provider, required_emby_delete_item_ids};
+    use super::{delete_item_ids, movie_update_provider};
 
     const FIRST: &str = "00112233-4455-6677-8899-aabbccddeeff";
     const SECOND: &str = "11223344-5566-7788-99aa-bbccddeeff00";
@@ -1535,26 +1274,6 @@ mod tests {
             parse(&format!("/Items?ids={FIRST},{SECOND}&ids={THIRD}")),
             [Uuid::parse_str(THIRD).unwrap()]
         );
-    }
-
-    #[test]
-    fn emby_delete_item_ids_require_one_strict_last_scalar() {
-        let parse =
-            |uri: &str| required_emby_delete_item_ids(&uri.parse::<Uri>().expect("valid test URI"));
-
-        assert!(parse("/emby/Items").is_err());
-        assert!(parse("/emby/Items?ids=").is_err());
-        assert!(parse("/emby/Items?Ids=invalid").is_err());
-        assert!(parse(&format!("/emby/Items?Ids={FIRST},,{SECOND}")).is_err());
-        assert_eq!(
-            parse(&format!("/emby/Items?ids=invalid&IDS={FIRST},{SECOND}"))
-                .expect("last Ids scalar is valid"),
-            [
-                Uuid::parse_str(FIRST).unwrap(),
-                Uuid::parse_str(SECOND).unwrap()
-            ]
-        );
-        assert!(parse(&format!("/emby/Items?ids={FIRST}&IDS=invalid")).is_err());
     }
 
     #[test]

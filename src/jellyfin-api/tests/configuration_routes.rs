@@ -164,6 +164,7 @@ async fn exercise_configuration_routes(database_name: &str) {
     assert_eq!(
         metadata_options,
         json!({
+            "ItemType": "",
             "DisabledMetadataSavers": [],
             "LocalMetadataReaderOrder": [],
             "DisabledMetadataFetchers": [],
@@ -171,18 +172,6 @@ async fn exercise_configuration_routes(database_name: &str) {
             "DisabledImageFetchers": [],
             "ImageFetcherOrder": []
         })
-    );
-    assert_eq!(
-        body_json(
-            request(
-                &app,
-                "/system/configuration/metadataoptions/default",
-                Some(&admin_token),
-            )
-            .await,
-        )
-        .await,
-        metadata_options
     );
 
     let mut configuration =
@@ -214,10 +203,6 @@ async fn exercise_configuration_routes(database_name: &str) {
     );
     assert!(configuration.get("server_name").is_none());
     assert!(configuration.get("UiCulture").is_none());
-    assert_eq!(
-        body_json(request(&app, "/system/configuration", Some(&user_token)).await).await,
-        configuration
-    );
 
     let branding = body_json(request(&app, "/Branding/Configuration", None).await).await;
     assert_eq!(branding["LoginDisclaimer"], "旧免责声明");
@@ -240,10 +225,6 @@ async fn exercise_configuration_routes(database_name: &str) {
     assert_eq!(
         named_branding["SplashscreenLocation"],
         "/srv/jellyfin/private/splash.png"
-    );
-    assert_eq!(
-        body_json(request(&app, "/system/configuration/branding", Some(&user_token),).await,).await,
-        named_branding
     );
     assert_eq!(
         request(
@@ -306,17 +287,6 @@ async fn exercise_configuration_routes(database_name: &str) {
         StatusCode::NO_CONTENT
     );
     assert_eq!(
-        post_json(
-            &app,
-            "/system/configuration/encoding",
-            Some(&admin_token),
-            &named_configuration,
-        )
-        .await
-        .status(),
-        StatusCode::NO_CONTENT
-    );
-    assert_eq!(
         body_json(request(&app, "/System/Configuration/encoding", Some(&user_token)).await).await,
         named_configuration
     );
@@ -368,17 +338,6 @@ async fn exercise_configuration_routes(database_name: &str) {
         post_json(
             &app,
             "/System/Configuration/Branding",
-            Some(&admin_token),
-            &branding_update,
-        )
-        .await
-        .status(),
-        StatusCode::NO_CONTENT
-    );
-    assert_eq!(
-        post_json(
-            &app,
-            "/system/configuration/branding",
             Some(&admin_token),
             &branding_update,
         )
@@ -446,16 +405,6 @@ async fn exercise_configuration_routes(database_name: &str) {
     updated.insert("EnableNormalizedItemByNameIds".to_owned(), json!(false));
     updated.insert("EnableCaseSensitiveItemIds".to_owned(), json!(false));
     updated.insert("MetadataPath".to_owned(), json!("/media/metadata"));
-    updated
-        .remove("MetadataOptions")
-        .expect("default metadata options");
-    updated.insert(
-        "metadataoptions".to_owned(),
-        json!([{
-            "itemtype": "MusicArtist",
-            "disabledmetadatafetchers": ["MusicBrainz"]
-        }]),
-    );
     updated.insert(
         "SortReplaceCharacters".to_owned(),
         json!([".", "+", "%", "!"]),
@@ -533,17 +482,6 @@ async fn exercise_configuration_routes(database_name: &str) {
             .unwrap()
             .is_empty()
     );
-    assert_eq!(
-        post_json(
-            &app,
-            "/system/configuration",
-            Some(&admin_token),
-            &configuration,
-        )
-        .await
-        .status(),
-        StatusCode::NO_CONTENT
-    );
 
     let saved = body_json(request(&app, "/System/Configuration", Some(&user_token)).await).await;
     assert_eq!(saved["ServerName"], "Updated Configuration Server");
@@ -566,18 +504,6 @@ async fn exercise_configuration_routes(database_name: &str) {
     assert_eq!(saved["EnableNormalizedItemByNameIds"], false);
     assert_eq!(saved["EnableCaseSensitiveItemIds"], false);
     assert_eq!(saved["MetadataPath"], "/media/metadata");
-    assert_eq!(
-        saved["MetadataOptions"],
-        json!([{
-            "ItemType": "MusicArtist",
-            "DisabledMetadataSavers": [],
-            "LocalMetadataReaderOrder": [],
-            "DisabledMetadataFetchers": ["MusicBrainz"],
-            "MetadataFetcherOrder": [],
-            "DisabledImageFetchers": [],
-            "ImageFetcherOrder": []
-        }])
-    );
     assert_eq!(saved["SortReplaceCharacters"], json!([".", "+", "%", "!"]));
     assert_eq!(saved["SortRemoveCharacters"], json!(["&", "-", "'"]));
     assert_eq!(saved["SortRemoveWords"], json!(["the", "a"]));
@@ -624,59 +550,12 @@ async fn exercise_configuration_routes(database_name: &str) {
         ])
     );
     assert_eq!(persisted.trickplay_options["Interval"], 2_500);
-    assert_eq!(persisted.metadata_options, saved["MetadataOptions"]);
     assert!(!persisted.quick_connect_available);
     assert!(!persisted.enable_case_sensitive_item_ids);
     assert_eq!(
         body_json(request(&app, "/QuickConnect/Enabled", None).await).await,
         json!(false)
     );
-
-    let disabled_provider_search = post_json(
-        &app,
-        "/Items/RemoteSearch/MusicArtist",
-        Some(&user_token),
-        &json!({
-            "SearchInfo": { "Name": "Configured provider test" },
-            "IncludeDisabledProviders": false
-        }),
-    )
-    .await;
-    assert_eq!(disabled_provider_search.status(), StatusCode::OK);
-    assert_eq!(body_json(disabled_provider_search).await, json!([]));
-
-    assert_eq!(
-        post_json(
-            &app,
-            "/system/configuration/partial",
-            Some(&user_token),
-            &json!({ "servername": "Partial Configuration Server" }),
-        )
-        .await
-        .status(),
-        StatusCode::FORBIDDEN
-    );
-    let response = post_json(
-        &app,
-        "/system/configuration/partial",
-        Some(&admin_token),
-        &json!({
-            "servername": "Partial Configuration Server",
-            "logfileretentiondays": 12,
-        }),
-    )
-    .await;
-    assert_eq!(response.status(), StatusCode::OK);
-    assert!(
-        to_bytes(response.into_body(), MAX_RESPONSE_SIZE)
-            .await
-            .unwrap()
-            .is_empty()
-    );
-    let patched = body_json(request(&app, "/system/configuration", Some(&user_token)).await).await;
-    assert_eq!(patched["ServerName"], "Partial Configuration Server");
-    assert_eq!(patched["LogFileRetentionDays"], 12);
-    assert_eq!(patched["UICulture"], "ja-JP");
 
     user::Entity::delete_many()
         .exec(&database)

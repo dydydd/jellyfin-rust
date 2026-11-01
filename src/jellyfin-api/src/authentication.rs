@@ -1,7 +1,6 @@
 use std::{
     collections::HashMap,
     convert::Infallible,
-    fmt,
     net::{IpAddr, Ipv4Addr, SocketAddr},
     sync::Arc,
 };
@@ -22,45 +21,16 @@ use jellyfin_model::{
     SyncPlayUserAccessType, UserPolicy,
 };
 use percent_encoding::percent_decode_str;
-use serde::{Deserialize, Deserializer, Serialize, de};
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::{ApiError, AppState, user_primary_image_tags, user_to_dto, user_to_dto_with_server_id};
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, rename_all = "PascalCase")]
 pub struct AuthenticateUserByName {
     pub username: Option<String>,
     pub pw: Option<String>,
-}
-
-impl<'de> Deserialize<'de> for AuthenticateUserByName {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        struct Visitor;
-
-        impl<'de> de::Visitor<'de> for Visitor {
-            type Value = AuthenticateUserByName;
-
-            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-                formatter.write_str("an AuthenticateUserByName object")
-            }
-
-            fn visit_map<M: de::MapAccess<'de>>(self, mut map: M) -> Result<Self::Value, M::Error> {
-                let mut request = AuthenticateUserByName::default();
-                while let Some(name) = map.next_key::<String>()? {
-                    if name.eq_ignore_ascii_case("Username") {
-                        request.username = map.next_value()?;
-                    } else if name.eq_ignore_ascii_case("Pw") {
-                        request.pw = map.next_value()?;
-                    } else {
-                        map.next_value::<de::IgnoredAny>()?;
-                    }
-                }
-                Ok(request)
-            }
-        }
-
-        deserializer.deserialize_map(Visitor)
-    }
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -69,37 +39,11 @@ pub struct QuickConnectDto {
     pub secret: Option<String>,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
 pub struct AuthenticateUserQuery {
+    #[serde(rename = "pw", alias = "Pw")]
     pub pw: Option<String>,
-}
-
-impl<'de> Deserialize<'de> for AuthenticateUserQuery {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        struct Visitor;
-
-        impl<'de> de::Visitor<'de> for Visitor {
-            type Value = AuthenticateUserQuery;
-
-            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-                formatter.write_str("an AuthenticateUser query")
-            }
-
-            fn visit_map<M: de::MapAccess<'de>>(self, mut map: M) -> Result<Self::Value, M::Error> {
-                let mut query = AuthenticateUserQuery::default();
-                while let Some(name) = map.next_key::<String>()? {
-                    if name.eq_ignore_ascii_case("Pw") {
-                        query.pw = map.next_value()?;
-                    } else {
-                        map.next_value::<de::IgnoredAny>()?;
-                    }
-                }
-                Ok(query)
-            }
-        }
-
-        deserializer.deserialize_map(Visitor)
-    }
 }
 
 #[derive(Debug, Serialize)]
@@ -268,7 +212,6 @@ async fn authentication_result_from_device(
         serde_json::from_value(session.additional_users.clone()).unwrap_or_default();
     let now_playing_queue =
         serde_json::from_value(session.now_playing_queue.clone()).unwrap_or_default();
-    let transcoding_info = crate::session::transcoding_info(state, &session.device_id);
     let session_info = SessionInfoDto {
         play_state,
         additional_users,
@@ -288,7 +231,6 @@ async fn authentication_result_from_device(
         now_playing_item: session.now_playing_item.clone(),
         device_id: Some(session.device_id.clone()),
         application_version: Some(session.app_version.clone()),
-        transcoding_info,
         is_active: session.is_active,
         supports_media_control: capabilities.supports_media_control,
         supports_remote_control: capabilities.supports_media_control,
@@ -337,29 +279,6 @@ pub(crate) enum AuthenticatedIdentity {
 }
 
 impl AuthenticatedSession {
-    pub(crate) fn can_upload_camera(&self) -> bool {
-        self.user
-            .policy
-            .as_object()
-            .and_then(|policy| {
-                policy
-                    .iter()
-                    .find(|(name, _)| name.eq_ignore_ascii_case("EmbyUserPolicy"))
-                    .and_then(|(_, value)| value.as_object())
-            })
-            .and_then(|policy| {
-                policy
-                    .iter()
-                    .find(|(name, _)| name.eq_ignore_ascii_case("AllowCameraUpload"))
-                    .and_then(|(_, value)| value.as_bool())
-            })
-            .unwrap_or(false)
-    }
-
-    pub(crate) fn can_download_content(&self) -> bool {
-        self.user.is_administrator || self.policy.enable_content_downloading
-    }
-
     pub(crate) fn can_manage_collections(&self) -> bool {
         self.user.is_administrator || self.policy.enable_collection_management
     }
@@ -623,7 +542,6 @@ impl ClientMetadata {
     fn from_headers(headers: &HeaderMap) -> Result<Self, ApiError> {
         let header = headers
             .get(header::AUTHORIZATION)
-            .or_else(|| headers.get("x-emby-authorization"))
             .and_then(|value| value.to_str().ok())
             .ok_or(ApiError::InvalidRequest)?;
         let metadata = parse_authorization(header);
@@ -796,22 +714,6 @@ mod tests {
     use jellyfin_model::AccessSchedule;
 
     #[test]
-    fn credential_inputs_bind_case_insensitively_and_last_value_wins() {
-        let body: AuthenticateUserByName = serde_json::from_str(
-            r#"{"Username":"first","uSeRnAmE":"last","Pw":"old","pW":"new","Ignored":true}"#,
-        )
-        .expect("case-insensitive authentication body");
-        assert_eq!(body.username.as_deref(), Some("last"));
-        assert_eq!(body.pw.as_deref(), Some("new"));
-
-        let uri = "http://localhost/?Pw=old&pW=new".parse().unwrap();
-        let query = axum_extra::extract::Query::<AuthenticateUserQuery>::try_from_uri(&uri)
-            .expect("case-insensitive authentication query")
-            .0;
-        assert_eq!(query.pw.as_deref(), Some("new"));
-    }
-
-    #[test]
     fn parses_official_media_browser_header() {
         let metadata = parse_authorization(
             "MediaBrowser Client=\"Jellyfin.Server%20Integration%20Tests\", \
@@ -822,74 +724,6 @@ mod tests {
         assert_eq!(metadata.device, "Apple II");
         assert_eq!(metadata.version, "10.8.0");
         assert_eq!(metadata.token.as_deref(), Some("abc"));
-    }
-
-    #[test]
-    fn parses_emby_mobile_client_header() {
-        let metadata = parse_authorization(
-            "Emby Client=\"Emby for iOS\", DeviceId=\"ios-device\", Device=\"iPhone\", Version=\"2.1\", Token=\"abc\"",
-        );
-        assert_eq!(metadata.client, "Emby for iOS");
-        assert_eq!(metadata.device_id, "ios-device");
-        assert_eq!(metadata.token.as_deref(), Some("abc"));
-    }
-
-    #[test]
-    fn client_metadata_accepts_emby_generated_client_header() {
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            "x-emby-authorization",
-            HeaderValue::from_static(
-                "Emby Client=\"Emby for iOS\", DeviceId=\"ios-device\", Device=\"iPhone\", Version=\"2.1\"",
-            ),
-        );
-
-        let metadata = ClientMetadata::from_headers(&headers).unwrap();
-        assert_eq!(metadata.client, "Emby for iOS");
-        assert_eq!(metadata.device_id, "ios-device");
-        assert_eq!(metadata.device, "iPhone");
-        assert_eq!(metadata.version, "2.1");
-    }
-
-    #[test]
-    fn standard_authorization_header_takes_precedence_over_emby_alias() {
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            header::AUTHORIZATION,
-            HeaderValue::from_static(
-                "MediaBrowser Client=\"Jellyfin Android\", DeviceId=\"jellyfin-device\", Device=\"Phone\", Version=\"2.6\"",
-            ),
-        );
-        headers.insert(
-            "x-emby-authorization",
-            HeaderValue::from_static(
-                "Emby Client=\"Emby for iOS\", DeviceId=\"emby-device\", Device=\"iPhone\", Version=\"2.1\"",
-            ),
-        );
-
-        let metadata = ClientMetadata::from_headers(&headers).unwrap();
-        assert_eq!(metadata.client, "Jellyfin Android");
-        assert_eq!(metadata.device_id, "jellyfin-device");
-        assert_eq!(metadata.device, "Phone");
-        assert_eq!(metadata.version, "2.6");
-    }
-
-    #[test]
-    fn client_metadata_keeps_standard_jellyfin_authorization_behavior() {
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            header::AUTHORIZATION,
-            HeaderValue::from_static(
-                "MediaBrowser Client=\"Jellyfin Web\", DeviceId=\"web-device\", Device=\"Browser\", Version=\"10.11\", Token=\"jellyfin-token\"",
-            ),
-        );
-
-        let metadata = ClientMetadata::from_headers(&headers).unwrap();
-        assert_eq!(metadata.client, "Jellyfin Web");
-        assert_eq!(metadata.device_id, "web-device");
-        assert_eq!(metadata.device, "Browser");
-        assert_eq!(metadata.version, "10.11");
-        assert_eq!(metadata.token.as_deref(), Some("jellyfin-token"));
     }
 
     #[test]
@@ -1081,7 +915,6 @@ mod tests {
             day_of_week,
             start_hour,
             end_hour,
-            ..AccessSchedule::default()
         }
     }
 

@@ -1,12 +1,11 @@
 use chrono::{TimeZone, Timelike, Utc};
 use jellyfin_model::{
-    AccessSchedule, AuthenticationInfo, BackupManifestDto, BackupOptionsDto,
-    BackupRestoreRequestDto, BufferRequestDto, ClientCapabilitiesDto, DeviceInfoDto,
-    DeviceOptionsDto, DeviceProfile, DynamicDayOfWeek, EndPointInfo, FontFile,
-    ForgotPasswordAction, ForgotPasswordResult, GeneralCommand, GeneralCommandType, GroupInfoDto,
-    GroupQueueMode, GroupRepeatMode, GroupShuffleMode, GroupStateType, GroupStateUpdateDto,
-    GroupUpdateDto, GroupUpdateType, ImageInfo, ImageProviderInfo, ImageType, ItemCounts,
-    MediaSegmentDto, MediaSegmentType, MediaType, MessageCommand, MetadataOptions, NameIdPair,
+    AuthenticationInfo, BackupManifestDto, BackupOptionsDto, BackupRestoreRequestDto,
+    BufferRequestDto, ClientCapabilitiesDto, DeviceInfoDto, DeviceOptionsDto, EndPointInfo,
+    FontFile, ForgotPasswordAction, ForgotPasswordResult, GeneralCommand, GeneralCommandType,
+    GroupInfoDto, GroupQueueMode, GroupRepeatMode, GroupShuffleMode, GroupStateType,
+    GroupStateUpdateDto, GroupUpdateDto, GroupUpdateType, ImageInfo, ImageProviderInfo, ImageType,
+    ItemCounts, MediaSegmentDto, MediaSegmentType, MediaType, MessageCommand, NameIdPair,
     PackageInfo, PinRedeemResult, PlayCommand, PlayQueueUpdateDto, PlayQueueUpdateReason,
     PlayRequest, PlaybackRequestType, PlayerStateInfo, PlaystateCommand, PlaystateRequest,
     PublicSystemInfo, QueryResult, RemoteImageResult, RemoteSearchResult, RemoteSubtitleInfo,
@@ -48,7 +47,6 @@ fn name_id_pair_uses_official_pascal_case_contract() {
     let pair = NameIdPair {
         name: "Default".to_owned(),
         id: "Jellyfin.Server.Implementations.Users.DefaultAuthenticationProvider".to_owned(),
-        emby_id: None,
     };
 
     assert_eq!(
@@ -77,7 +75,7 @@ fn api_key_query_result_uses_official_authentication_info_contract() {
         user_name: None,
     };
 
-    let value = serde_json::to_value(QueryResult::from_items(vec![key]).unwrap()).unwrap();
+    let value = serde_json::to_value(QueryResult::from_items(vec![key])).unwrap();
     assert_eq!(value["StartIndex"], 0);
     assert_eq!(value["TotalRecordCount"], 1);
     assert_eq!(value["Items"][0]["Id"], 42);
@@ -100,16 +98,13 @@ fn api_key_query_result_uses_official_authentication_info_contract() {
 fn media_segments_use_official_query_result_contract() {
     let item_id = Uuid::parse_str("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa").unwrap();
     let segment_id = Uuid::parse_str("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb").unwrap();
-    let value = serde_json::to_value(
-        QueryResult::from_items(vec![MediaSegmentDto {
-            id: segment_id,
-            item_id,
-            segment_type: MediaSegmentType::Intro,
-            start_ticks: 12_000_000,
-            end_ticks: 45_000_000,
-        }])
-        .unwrap(),
-    )
+    let value = serde_json::to_value(QueryResult::from_items(vec![MediaSegmentDto {
+        id: segment_id,
+        item_id,
+        segment_type: MediaSegmentType::Intro,
+        start_ticks: 12_000_000,
+        end_ticks: 45_000_000,
+    }]))
     .unwrap();
 
     assert_eq!(value["StartIndex"], 0);
@@ -387,46 +382,6 @@ fn server_configuration_uses_official_pascal_case_defaults() {
 }
 
 #[test]
-fn metadata_options_use_official_defaults_and_case_insensitive_input() {
-    assert_eq!(
-        serde_json::to_value(MetadataOptions::default()).unwrap(),
-        json!({
-            "DisabledMetadataSavers": [],
-            "LocalMetadataReaderOrder": [],
-            "DisabledMetadataFetchers": [],
-            "MetadataFetcherOrder": [],
-            "DisabledImageFetchers": [],
-            "ImageFetcherOrder": []
-        })
-    );
-
-    let configuration: ServerConfiguration = serde_json::from_value(json!({
-        "metadataoptions": [{
-            "itemtype": "Movie",
-            "disabledmetadatasavers": ["Nfo"],
-            "localmetadatareaderorder": ["Nfo"],
-            "disabledmetadatafetchers": ["TheMovieDb"],
-            "metadatafetcherorder": ["TheMovieDb"],
-            "disabledimagefetchers": ["TheMovieDb"],
-            "imagefetcherorder": ["TheMovieDb"]
-        }]
-    }))
-    .unwrap();
-    assert_eq!(
-        configuration.metadata_options,
-        vec![MetadataOptions {
-            item_type: "Movie".to_owned(),
-            disabled_metadata_savers: vec!["Nfo".to_owned()],
-            local_metadata_reader_order: vec!["Nfo".to_owned()],
-            disabled_metadata_fetchers: vec!["TheMovieDb".to_owned()],
-            metadata_fetcher_order: vec!["TheMovieDb".to_owned()],
-            disabled_image_fetchers: vec!["TheMovieDb".to_owned()],
-            image_fetcher_order: vec!["TheMovieDb".to_owned()],
-        }]
-    );
-}
-
-#[test]
 fn search_hint_result_uses_official_wire_names_and_guid_format() {
     let item_id = Uuid::from_u128(0x1f75_3b4d_22f1_4fed_9e30_4cc8_14d1_0a11);
     let value = serde_json::to_value(SearchHintResult {
@@ -547,40 +502,6 @@ fn device_options_uses_official_wire_names() {
     assert_eq!(decoded.id, 0);
     assert_eq!(decoded.device_id, None);
     assert_eq!(decoded.custom_name.as_deref(), Some("Bedroom"));
-
-    let decoded: DeviceOptionsDto = serde_json::from_value(json!({
-        "id": 7,
-        "deviceid": "phone",
-        "customname": "Pocket"
-    }))
-    .unwrap();
-    assert_eq!(decoded.id, 7);
-    assert_eq!(decoded.device_id.as_deref(), Some("phone"));
-    assert_eq!(decoded.custom_name.as_deref(), Some("Pocket"));
-}
-
-#[test]
-fn backup_requests_accept_case_insensitive_json_properties() {
-    let options: BackupOptionsDto = serde_json::from_value(json!({
-        "metadata": true,
-        "TRICKPLAY": true,
-        "subtitles": true,
-        "database": false
-    }))
-    .unwrap();
-    assert_eq!(
-        options,
-        BackupOptionsDto {
-            metadata: true,
-            trickplay: true,
-            subtitles: true,
-            database: false
-        }
-    );
-
-    let request: BackupRestoreRequestDto =
-        serde_json::from_value(json!({ "archivefilename": "backup.zip" })).unwrap();
-    assert_eq!(request.archive_file_name, "backup.zip");
 }
 
 #[test]
@@ -662,55 +583,6 @@ fn session_commands_use_official_wire_names() {
 }
 
 #[test]
-fn session_command_bodies_bind_case_insensitively_and_accept_official_enums() {
-    for (name, expected) in [
-        (json!("play"), GeneralCommandType::Play),
-        (json!(40), GeneralCommandType::Play),
-        (json!("40"), GeneralCommandType::Play),
-    ] {
-        let command: GeneralCommand = serde_json::from_value(json!({
-            "nAmE": name,
-            "cOnTrOlLiNgUsErId": "f9c1ad0c820f44df8db852fbfc0d3d93",
-            "aRgUmEnTs": { "Volume": "50" }
-        }))
-        .unwrap();
-        assert_eq!(command.name, expected);
-        assert_eq!(command.arguments["Volume"], "50");
-    }
-
-    let message: MessageCommand = serde_json::from_value(json!({
-        "hEaDeR": "Header",
-        "tExT": "Text",
-        "tImEoUtMs": "1500"
-    }))
-    .unwrap();
-    assert_eq!(message.header.as_deref(), Some("Header"));
-    assert_eq!(message.text.as_deref(), Some("Text"));
-    assert_eq!(message.timeout_ms, Some(1500));
-
-    for (value, expected) in [
-        (json!("playnext"), PlayCommand::PlayNext),
-        (json!(1), PlayCommand::PlayNext),
-        (json!("1"), PlayCommand::PlayNext),
-    ] {
-        assert_eq!(
-            serde_json::from_value::<PlayCommand>(value).unwrap(),
-            expected
-        );
-    }
-    for (value, expected) in [
-        (json!("seek"), PlaystateCommand::Seek),
-        (json!(5), PlaystateCommand::Seek),
-        (json!("5"), PlaystateCommand::Seek),
-    ] {
-        assert_eq!(
-            serde_json::from_value::<PlaystateCommand>(value).unwrap(),
-            expected
-        );
-    }
-}
-
-#[test]
 fn session_info_uses_official_wire_names_and_guid_format() {
     let session = SessionInfoDto {
         play_state: PlayerStateInfo {
@@ -728,10 +600,9 @@ fn session_info_uses_official_wire_names_and_guid_format() {
             supported_commands: vec![GeneralCommandType::Play],
             supports_media_control: true,
             supports_persistent_identifier: true,
-            device_profile: Some(DeviceProfile {
-                name: Some("Browser profile".to_owned()),
-                ..DeviceProfile::default()
-            }),
+            device_profile: Some(json!({
+                "Name": "Browser profile"
+            })),
             ..ClientCapabilitiesDto::default()
         },
         playable_media_types: vec![MediaType::Video],
@@ -751,14 +622,6 @@ fn session_info_uses_official_wire_names_and_guid_format() {
         })),
         device_id: Some("device-id".to_owned()),
         application_version: Some("1.0".to_owned()),
-        transcoding_info: Some(jellyfin_model::TranscodingInfo {
-            is_video_direct: false,
-            is_audio_direct: true,
-            transcode_reasons: vec![
-                "VideoCodecNotSupported".to_owned(),
-                "AudioBitrateNotSupported".to_owned(),
-            ],
-        }),
         is_active: true,
         supports_media_control: true,
         supports_remote_control: true,
@@ -802,10 +665,6 @@ fn session_info_uses_official_wire_names_and_guid_format() {
     assert_eq!(value["NowPlayingItem"]["Name"], "Now Playing");
     assert_eq!(value["NowPlayingQueue"][0]["Id"], "queue-item");
     assert_eq!(value["NowViewingItem"]["Name"], "The Matrix");
-    assert_eq!(
-        value["TranscodingInfo"]["TranscodeReasons"],
-        json!(["VideoCodecNotSupported", "AudioBitrateNotSupported"])
-    );
     assert_eq!(value["LastActivityDate"], "2026-07-23T09:15:00.0000000Z");
     assert!(value.get("LastPausedDate").is_none());
     assert!(value.get("DeviceType").is_none());
@@ -823,114 +682,6 @@ fn client_capabilities_distinguish_wire_and_stored_defaults() {
         "SupportsPersistentIdentifier": false
     }));
     assert!(!explicit.supports_persistent_identifier);
-
-    let mixed_case = ClientCapabilitiesDto::from_stored_value(json!({
-        "sUpPoRtSpErSiStEnTiDeNtIfIeR": false
-    }));
-    assert!(!mixed_case.supports_persistent_identifier);
-}
-
-#[test]
-fn client_capabilities_bind_official_json_shapes() {
-    let capabilities: ClientCapabilitiesDto = serde_json::from_value(json!({
-        "pLaYaBlEmEdIaTyPeS": ["video", 2, "3"],
-        "sUpPoRtEdCoMmAnDs": ["play", 41, "42"],
-        "sUpPoRtSmEdIaCoNtRoL": true,
-        "sUpPoRtSpErSiStEnTiDeNtIfIeR": true,
-        "dEvIcEpRoFiLe": {
-            "nAmE": "Mixed-case profile",
-            "mAxStReAmInGbItRaTe": "123456",
-            "dIrEcTpLaYpRoFiLeS": [{
-                "cOnTaInEr": "mp4",
-                "tYpE": "video",
-                "UnknownNestedProperty": true
-            }],
-            "UnknownProfileProperty": "ignored"
-        },
-        "UnknownCapabilityProperty": "ignored"
-    }))
-    .unwrap();
-
-    assert_eq!(
-        capabilities.playable_media_types,
-        [MediaType::Video, MediaType::Audio, MediaType::Photo]
-    );
-    assert_eq!(
-        capabilities.supported_commands,
-        [
-            GeneralCommandType::Play,
-            GeneralCommandType::SetMaxStreamingBitrate,
-            GeneralCommandType::SetPlaybackOrder
-        ]
-    );
-    assert!(capabilities.supports_media_control);
-    assert!(capabilities.supports_persistent_identifier);
-
-    let value = serde_json::to_value(capabilities).unwrap();
-    assert_eq!(value["DeviceProfile"]["Name"], "Mixed-case profile");
-    assert_eq!(value["DeviceProfile"]["MaxStreamingBitrate"], 123_456);
-    assert_eq!(
-        value["DeviceProfile"]["DirectPlayProfiles"][0]["Type"],
-        "Video"
-    );
-    assert!(
-        value["DeviceProfile"]
-            .get("UnknownProfileProperty")
-            .is_none()
-    );
-    assert!(
-        value["DeviceProfile"]["DirectPlayProfiles"][0]
-            .get("UnknownNestedProperty")
-            .is_none()
-    );
-    assert!(value.get("UnknownCapabilityProperty").is_none());
-}
-
-#[test]
-fn client_capabilities_accept_comma_delimited_body_collections() {
-    let capabilities: ClientCapabilitiesDto = serde_json::from_value(json!({
-        "PlayableMediaTypes": "video,2,Book,invalid",
-        "SupportedCommands": "play,41,GoHome,invalid"
-    }))
-    .unwrap();
-
-    assert_eq!(
-        capabilities.playable_media_types,
-        [MediaType::Video, MediaType::Audio, MediaType::Book]
-    );
-    assert_eq!(
-        capabilities.supported_commands,
-        [
-            GeneralCommandType::Play,
-            GeneralCommandType::SetMaxStreamingBitrate,
-            GeneralCommandType::GoHome
-        ]
-    );
-}
-
-#[test]
-fn client_capabilities_reject_invalid_typed_values() {
-    for device_profile in [json!(42), json!([]), json!("profile")] {
-        assert!(
-            serde_json::from_value::<ClientCapabilitiesDto>(json!({
-                "DeviceProfile": device_profile.clone()
-            }))
-            .is_err(),
-            "accepted invalid device profile: {device_profile}"
-        );
-    }
-    assert!(
-        serde_json::from_value::<ClientCapabilitiesDto>(json!({
-            "PlayableMediaTypes": ["Video", "invalid"]
-        }))
-        .is_err()
-    );
-    assert!(
-        serde_json::from_value::<ClientCapabilitiesDto>(json!({
-            "SupportedCommands": [43]
-        }))
-        .is_err()
-    );
 }
 
 #[test]
@@ -1175,18 +926,7 @@ fn endpoint_info_matches_official_wire_contract() {
 
 #[test]
 fn user_policy_preserves_official_defaults_and_pascal_case() {
-    let schedule_user_id = Uuid::parse_str("f9c1ad0c-820f-44df-8db8-52fbfc0d3d93").unwrap();
-    let policy = UserPolicy {
-        access_schedules: vec![AccessSchedule {
-            id: 7,
-            user_id: schedule_user_id,
-            day_of_week: DynamicDayOfWeek::Everyday,
-            start_hour: 8.5,
-            end_hour: 17.0,
-        }],
-        ..UserPolicy::default()
-    };
-    let value = serde_json::to_value(policy).unwrap();
+    let value = serde_json::to_value(UserPolicy::default()).unwrap();
 
     assert_eq!(value["IsHidden"], true);
     assert_eq!(value["EnableMediaPlayback"], true);
@@ -1195,11 +935,6 @@ fn user_policy_preserves_official_defaults_and_pascal_case() {
     assert_eq!(value["LoginAttemptsBeforeLockout"], -1);
     assert_eq!(value["EnabledFolders"], json!([]));
     assert_eq!(value["SyncPlayAccess"], "CreateAndJoinGroups");
-    assert_eq!(value["AccessSchedules"][0]["Id"], 7);
-    assert_eq!(
-        value["AccessSchedules"][0]["UserId"],
-        "f9c1ad0c820f44df8db852fbfc0d3d93"
-    );
     assert!(value.get("MaxParentalRating").is_none());
     assert!(value.get("BlockedMediaFolders").is_none());
     assert!(value.get("AuthenticationProviderId").is_none());

@@ -31,10 +31,6 @@ pub struct TrickplayInfoDto {
 pub struct NameIdPair {
     pub name: String,
     pub id: String,
-    /// Stable private numeric relation id used only by the Emby protocol
-    /// adapter. Jellyfin serializes the normal string `Id` above.
-    #[serde(skip)]
-    pub emby_id: Option<i64>,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -187,7 +183,7 @@ pub struct BaseItemDto {
     pub remote_trailers: Option<Vec<crate::MediaUrl>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub provider_ids: Option<HashMap<String, String>>,
-    #[serde(rename = "IsHD", skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub is_hd: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub is_folder: Option<bool>,

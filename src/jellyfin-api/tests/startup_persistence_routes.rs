@@ -210,18 +210,18 @@ async fn assert_official_user_rows(
 async fn assert_configuration_roundtrip(app_a: &axum::Router, app_b: &axum::Router) {
     let response = post_json(
         app_a,
-        "/startup/configuration",
+        "/Startup/Configuration",
         &json!({
-            "serverName": null,
-            "uiCulture": null,
-            "metadataCountryCode": null,
-            "preferredMetadataLanguage": null
+            "ServerName": null,
+            "UICulture": null,
+            "MetadataCountryCode": null,
+            "PreferredMetadataLanguage": null
         }),
         None,
     )
     .await;
     assert_eq!(response.status(), StatusCode::NO_CONTENT);
-    let response = get(app_b, "/startup/configuration", None).await;
+    let response = get(app_b, "/Startup/Configuration", None).await;
     assert_eq!(
         body_json(response).await,
         json!({
@@ -246,8 +246,8 @@ async fn assert_remote_access_roundtrip(
 ) {
     let response = post_json(
         app_a,
-        "/startup/remoteaccess",
-        &json!({ "enableRemoteAccess": false }),
+        "/Startup/RemoteAccess",
+        &json!({ "EnableRemoteAccess": false }),
         None,
     )
     .await;
@@ -261,8 +261,8 @@ async fn assert_remote_access_roundtrip(
 
     let response = post_json(
         app_b,
-        "/startup/remoteaccess",
-        &json!({ "enableremoteaccess": true }),
+        "/Startup/RemoteAccess",
+        &json!({ "EnableRemoteAccess": true }),
         None,
     )
     .await;

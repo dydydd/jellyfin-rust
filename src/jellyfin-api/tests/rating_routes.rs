@@ -219,32 +219,6 @@ async fn assert_rating_values_aliases_and_keys(fixture: &RatingFixture) {
     let deleted =
         body_json(request(&fixture.app, "DELETE", &legacy, &fixture.user_token).await).await;
     assert_rating_body(&deleted, fixture.allowed_item_id, None, None);
-    let lowercase_legacy = format!(
-        "/users/{}/items/{}/rating",
-        fixture.user_id, fixture.allowed_item_id
-    );
-    let liked = body_json(
-        request(
-            &fixture.app,
-            "POST",
-            &format!("{lowercase_legacy}?likes=true"),
-            &fixture.user_token,
-        )
-        .await,
-    )
-    .await;
-    assert_rating_body(&liked, fixture.allowed_item_id, Some(10.0), Some(true));
-    let deleted = body_json(
-        request(
-            &fixture.app,
-            "DELETE",
-            &lowercase_legacy,
-            &fixture.user_token,
-        )
-        .await,
-    )
-    .await;
-    assert_rating_body(&deleted, fixture.allowed_item_id, None, None);
 
     let current = repository
         .get(
@@ -345,46 +319,6 @@ async fn assert_anonymous_and_ordinary_rules(fixture: &RatingFixture) {
                 .await
                 .status(),
             StatusCode::FORBIDDEN
-        );
-    }
-    for route in [
-        format!(
-            "/UserItems/{}/Rating?userId={}&likes=true",
-            fixture.allowed_item_id, fixture.administrator_id
-        ),
-        format!(
-            "/UserItems/{}/Rating?UserId={}&Likes=true",
-            fixture.allowed_item_id, fixture.administrator_id
-        ),
-        format!(
-            "/useritems/{}/rating?userid={}&likes=true",
-            fixture.allowed_item_id, fixture.administrator_id
-        ),
-    ] {
-        assert_eq!(
-            request(&fixture.app, "POST", &route, &fixture.user_token)
-                .await
-                .status(),
-            StatusCode::FORBIDDEN,
-            "rating target UserId must bind case-insensitively for {route}",
-        );
-    }
-    for route in [
-        format!(
-            "/UserItems/{}/Rating?userId=not-a-guid&likes=true",
-            fixture.allowed_item_id
-        ),
-        format!(
-            "/useritems/{}/rating?userid=not-a-guid&likes=true",
-            fixture.allowed_item_id
-        ),
-    ] {
-        assert_eq!(
-            request(&fixture.app, "POST", &route, &fixture.user_token)
-                .await
-                .status(),
-            StatusCode::BAD_REQUEST,
-            "malformed rating UserId must not be ignored for {route}",
         );
     }
 }
@@ -659,7 +593,6 @@ fn blocked_schedule_policy(is_administrator: bool) -> UserPolicy {
             day_of_week: DynamicDayOfWeek::Everyday,
             start_hour: 18.0,
             end_hour: 6.0,
-            ..AccessSchedule::default()
         }],
         ..policy()
     }

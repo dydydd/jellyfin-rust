@@ -24,19 +24,6 @@ PRIMITIVES = {
     "Data": "str", "URL": "str", "Any": None, "JSONValue": None,
 }
 
-INTEGER_BOUNDS = {
-    "Int": (-(2 ** 63), 2 ** 63 - 1),
-    "Int8": (-(2 ** 7), 2 ** 7 - 1),
-    "Int16": (-(2 ** 15), 2 ** 15 - 1),
-    "Int32": (-(2 ** 31), 2 ** 31 - 1),
-    "Int64": (-(2 ** 63), 2 ** 63 - 1),
-    "UInt": (0, 2 ** 64 - 1),
-    "UInt8": (0, 2 ** 8 - 1),
-    "UInt16": (0, 2 ** 16 - 1),
-    "UInt32": (0, 2 ** 32 - 1),
-    "UInt64": (0, 2 ** 64 - 1),
-}
-
 
 class Report:
     def __init__(self):
@@ -81,10 +68,8 @@ def json_type(value):
 def check_date(value):
     if not isinstance(value, str):
         return False
-    # JellyfinClient uses OpenISO8601DateFormatter, whose two accepted shapes
-    # both require a full timestamp and an explicit `Z` or numeric offset.
-    # `datetime.fromisoformat` alone is too broad (it accepts date-only and
-    # timezone-less values that the generated client's formatter rejects).
+    # The Swift SDK's OpenISO8601DateFormatter requires a time and an offset.
+    # Date-only values happen to parse in Python but fail Swift's Date decoder.
     if not re.fullmatch(
         r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})",
         value,
@@ -97,23 +82,9 @@ def check_date(value):
     return True
 
 
-def check(
-    structs,
-    enums,
-    aliases,
-    typ,
-    value,
-    path,
-    report,
-    depth=0,
-    nullable=False,
-    date_validator=check_date,
-):
-    optional = typ.strip().endswith("?")
+def check(structs, enums, aliases, typ, value, path, report, depth=0):
     typ = strip_optional(typ)
     if value is None:
-        if not (nullable or optional):
-            report.add(path, f"{typ} does not accept null")
         return
     if depth > 16:
         return
@@ -127,35 +98,21 @@ def check(
                     return
                 for key, item in value.items():
                     check(structs, enums, aliases, dictionary.group(1), item,
-                          f"{path}.{key}", report, depth + 1,
-                          date_validator=date_validator)
+                          f"{path}.{key}", report, depth + 1)
                 return
             if not isinstance(value, list):
                 report.add(path, f"expected array for {typ}, got {json_type(value)}")
                 return
             for index, item in enumerate(value):
-                check(structs, enums, aliases, parts[0], item, f"{path}[{index}]", report,
-                      depth + 1, date_validator=date_validator)
+                check(structs, enums, aliases, parts[0], item, f"{path}[{index}]", report, depth + 1)
             return
         if len(parts) == 2 and parts[0] == "String":
             if not isinstance(value, dict):
                 report.add(path, f"expected object for {typ}, got {json_type(value)}")
                 return
             for key, item in value.items():
-                check(structs, enums, aliases, parts[1], item, f"{path}.{key}", report,
-                      depth + 1, date_validator=date_validator)
+                check(structs, enums, aliases, parts[1], item, f"{path}.{key}", report, depth + 1)
             return
-    generic = re.match(r"^(?:List|Array)<(.+)>$", typ)
-    if generic:
-        if not isinstance(value, list):
-            report.add(path, f"expected array for {typ}, got {json_type(value)}")
-            return
-        item_type = generic.group(1).strip()
-        for index, item in enumerate(value):
-            check(structs, enums, aliases, item_type, item,
-                  f"{path}[{index}]", report, depth + 1,
-                  date_validator=date_validator)
-        return
     if typ in PRIMITIVES:
         expected = PRIMITIVES[typ]
         if expected is None:
@@ -165,14 +122,10 @@ def check(
             "int": isinstance(value, int) and not isinstance(value, bool),
             "num": isinstance(value, (int, float)) and not isinstance(value, bool),
             "str": isinstance(value, str),
-            "date": date_validator(value),
+            "date": check_date(value),
         }[expected]
         if not valid:
             report.add(path, f"{typ} expects {expected}, got {json_type(value)}")
-        elif typ in INTEGER_BOUNDS:
-            minimum, maximum = INTEGER_BOUNDS[typ]
-            if not minimum <= value <= maximum:
-                report.add(path, f"{typ} value is outside [{minimum}, {maximum}]: {value}")
         return
     if typ in enums:
         if not isinstance(value, str):
@@ -181,47 +134,26 @@ def check(
             report.add(path, f"{typ} value {value!r} is not supported by the Swift SDK")
         return
     if typ in aliases:
-        check(structs, enums, aliases, aliases[typ], value, path, report, depth + 1,
-              date_validator=date_validator)
+        check(structs, enums, aliases, aliases[typ], value, path, report, depth + 1)
         return
     if typ in structs:
         if not isinstance(value, dict):
             report.add(path, f"expected object for {typ}, got {json_type(value)}")
             return
         for key, field_type, required in structs[typ]:
+            if required and key not in value:
+                report.add(f"{path}.{key}", f"required {field_type} is absent")
+                continue
             if key in value:
-                check(structs, enums, aliases, field_type, value[key],
-                      f"{path}.{key}", report, depth + 1, nullable=not required,
-                      date_validator=date_validator)
-            elif required:
-                report.add(f"{path}.{key}", f"missing required {field_type}")
+                check(structs, enums, aliases, field_type, value[key], f"{path}.{key}", report, depth + 1)
         return
     # Hand-written discriminated unions are intentionally not guessed here.
 
 
-def validate(root, document, schema_loader=load, date_validator=check_date):
-    structs, enums, aliases = schema_loader()
+def validate(root, document):
+    structs, enums, aliases = load()
     report = Report()
-    root_type = strip_optional(root)
-    generic = re.match(r"^(?:List|Array)<(.+)>$", root_type)
-    if generic:
-        root_type = strip_optional(generic.group(1))
-    elif root_type.startswith("[") and root_type.endswith("]"):
-        root_type = strip_optional(root_type[1:-1])
-    if (root_type not in structs and root_type not in enums
-            and root_type not in aliases and root_type not in PRIMITIVES):
-        report.add(root, f"unknown Swift Codable root type {root_type}")
-        return report.errors
-    check(
-        structs,
-        enums,
-        aliases,
-        root,
-        document,
-        root,
-        report,
-        date_validator=date_validator,
-    )
+    check(structs, enums, aliases, root, document, root, report)
     return report.errors
 
 

@@ -30,70 +30,6 @@ async fn session_user_routes_manage_additional_users_in_postgres() {
     fixture.cleanup().await;
 }
 
-#[tokio::test]
-async fn session_user_routes_enforce_control_and_attach_permissions() {
-    let fixture = Fixture::new().await;
-    let devices = DeviceRepository::new(fixture.database.clone());
-    devices
-        .add_additional_user(
-            fixture.device_row_id,
-            fixture.additional_user_id,
-            &fixture.additional_user_name,
-        )
-        .await
-        .expect("ordinary controller association");
-
-    assert_eq!(
-        fixture
-            .request(
-                "POST",
-                &fixture.user_uri(fixture.user_id),
-                Some(&fixture.additional_user_token),
-            )
-            .await
-            .status(),
-        StatusCode::FORBIDDEN,
-        "an ordinary associated user cannot attach another user"
-    );
-    assert_eq!(
-        fixture
-            .request(
-                "POST",
-                &fixture.user_uri(fixture.additional_user_id),
-                Some(&fixture.additional_user_token),
-            )
-            .await
-            .status(),
-        StatusCode::NO_CONTENT,
-        "an ordinary user may attach itself to a controllable session"
-    );
-    assert_eq!(
-        fixture
-            .request(
-                "DELETE",
-                &fixture.user_uri(fixture.additional_user_id),
-                Some(&fixture.additional_user_token),
-            )
-            .await
-            .status(),
-        StatusCode::NO_CONTENT
-    );
-    assert_eq!(
-        fixture
-            .request(
-                "DELETE",
-                &fixture.user_uri(fixture.additional_user_id),
-                Some(&fixture.additional_user_token),
-            )
-            .await
-            .status(),
-        StatusCode::FORBIDDEN,
-        "a detached ordinary user can no longer control the target session"
-    );
-
-    fixture.cleanup().await;
-}
-
 async fn assert_additional_user_validation(fixture: &Fixture) {
     assert_eq!(
         fixture
@@ -147,7 +83,7 @@ async fn assert_additional_user_validation(fixture: &Fixture) {
             )
             .await
             .status(),
-        StatusCode::BAD_REQUEST
+        StatusCode::NOT_FOUND
     );
 }
 
@@ -231,7 +167,6 @@ struct Fixture {
     user_id: Uuid,
     additional_user_id: Uuid,
     additional_user_name: String,
-    additional_user_token: String,
     user_token: String,
     device_id: String,
     device_row_id: i64,
@@ -257,17 +192,8 @@ impl Fixture {
             .create(&additional_user_name)
             .await
             .expect("additional user creation");
-        let stored = users.get(user.id).await.expect("primary user");
-        let mut policy: jellyfin_model::UserPolicy =
-            serde_json::from_value(stored.policy).expect("primary user policy");
-        policy.is_administrator = true;
-        users
-            .update_policy(user.id, &policy)
-            .await
-            .expect("primary administrator policy");
         let device_id = format!("session-user-device-{suffix}");
-        let devices = DeviceRepository::new(database.clone());
-        let device = devices
+        let device = DeviceRepository::new(database.clone())
             .create_session(NewDevice::new(
                 user.id,
                 "Jellyfin Web",
@@ -277,16 +203,6 @@ impl Fixture {
             ))
             .await
             .expect("session creation");
-        let additional_device = devices
-            .create_session(NewDevice::new(
-                additional_user.id,
-                "Jellyfin Web",
-                "10.10.0",
-                "Additional Browser",
-                format!("session-additional-device-{suffix}"),
-            ))
-            .await
-            .expect("additional user session creation");
 
         Self {
             app: jellyfin_api::router(AppState::new(
@@ -298,7 +214,6 @@ impl Fixture {
             user_id: user.id,
             additional_user_id: additional_user.id,
             additional_user_name,
-            additional_user_token: additional_device.access_token,
             user_token: device.access_token,
             device_id: device.device_id.clone(),
             device_row_id: device.id,

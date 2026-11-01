@@ -112,7 +112,7 @@ async fn exercise_password_reset_routes(database_name: &str) {
         request(
             &app,
             "POST",
-            "/users/forgotpassword",
+            "/Users/ForgotPassword",
             json!({ "EnteredUsername": username.to_lowercase() }),
         )
         .await,
@@ -160,7 +160,7 @@ async fn exercise_password_reset_routes(database_name: &str) {
         request(
             &app,
             "POST",
-            "/users/forgotpassword/pin",
+            "/Users/ForgotPassword/Pin",
             json!({ "Pin": reset.pin_compact }),
         )
         .await,

@@ -22,12 +22,7 @@ const MAX_RESPONSE_SIZE: usize = 1024 * 1024;
 async fn elevated_identities_receive_official_auth_and_password_reset_providers() {
     let fixture = Fixture::new().await;
 
-    for route in [
-        "/Auth/Providers",
-        "/auth/providers",
-        "/Auth/PasswordResetProviders",
-        "/auth/passwordresetproviders",
-    ] {
+    for route in ["/Auth/Providers", "/Auth/PasswordResetProviders"] {
         assert_eq!(
             fixture.request(route, None).await.status(),
             StatusCode::UNAUTHORIZED
@@ -57,7 +52,7 @@ async fn elevated_identities_receive_official_auth_and_password_reset_providers(
     );
 
     let response = fixture
-        .request("/auth/passwordresetproviders", Some(&fixture.admin_token))
+        .request("/Auth/PasswordResetProviders", Some(&fixture.admin_token))
         .await;
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(
@@ -72,7 +67,7 @@ async fn elevated_identities_receive_official_auth_and_password_reset_providers(
 
     let response = fixture
         .request(
-            &format!("/auth/providers?api_key={}", fixture.api_key_token),
+            &format!("/Auth/Providers?api_key={}", fixture.api_key_token),
             None,
         )
         .await;

@@ -1,48 +1,39 @@
-use std::{
-    collections::{HashMap, HashSet},
-    path::PathBuf,
-    sync::Arc,
-};
+use std::{collections::HashMap, path::PathBuf, sync::Arc};
 
 use axum::{
     Json, Router,
     extract::State,
-    http::{HeaderMap, StatusCode, Uri},
+    http::StatusCode,
     middleware,
     response::{IntoResponse, Response},
     routing::{delete, get, post},
 };
-use futures_util::{StreamExt, stream};
 use jellyfin_controller::{
     ArtistError, ArtistService, ChapterImageService, CollectionError, CollectionService,
     DashboardError, DashboardPage, DashboardService, EnvironmentError, EnvironmentService,
-    GameGenreError, GameGenreService, GenreError, GenreService, InstalledPlugin, ItemByNameService,
-    ItemImageError, ItemImageService, ItemLookupError, ItemLookupService, ItemUpdateError,
-    ItemUpdateService, LibraryControllerError, LibraryControllerService, LibraryScanError,
-    LibraryScanService, LiveStreamRegistry, LocalizationService, MediaAttachmentService,
-    MediaAttachmentServiceError, MediaSegmentError, MediaSegmentManagerService, MediaStreamService,
-    MediaStreamServiceError, MetadataEditorError, MetadataEditorService, MetadataRefreshMode,
-    MetadataRefreshOptions, MetadataRefreshService, MusicGenreError, MusicGenreService,
+    GenreError, GenreService, InstalledPlugin, ItemByNameService, ItemImageError, ItemImageService,
+    ItemLookupError, ItemLookupService, ItemUpdateError, ItemUpdateService, LibraryControllerError,
+    LibraryControllerService, LibraryScanError, LibraryScanService, LocalizationService,
+    MediaAttachmentService, MediaAttachmentServiceError, MediaSegmentError,
+    MediaSegmentManagerService, MediaStreamService, MediaStreamServiceError, MetadataEditorError,
+    MetadataEditorService, MetadataRefreshService, MusicGenreError, MusicGenreService,
     PackageError, PackageService, PersonError, PersonService, PlaylistError, PlaylistService,
     PlaystateError, PlaystateService, PluginRegistry, PostgresSessionStore, ScheduledTaskError,
     ScheduledTaskService, SearchManager, SearchProvider, StudioError, StudioService,
     SubtitleManager, SubtitleProvider, SystemLogError, SystemLogService, SystemStorageService,
-    TranscodeJobRegistry, TrickplayError, TrickplayService, UserCopyOptions, UserDataService,
-    UserDataServiceError, UserError, UserLibraryError, UserLibraryService, UserService,
-    UserViewManagerError, UserViewManagerService, VideoError, VideoService, VirtualFolderService,
+    TranscodeJobRegistry, TrickplayError, TrickplayService, UserDataService, UserDataServiceError,
+    UserError, UserLibraryError, UserLibraryService, UserService, UserViewManagerError,
+    UserViewManagerService, VideoError, VideoService, VirtualFolderService,
     VirtualFolderServiceError, YearError, YearService, client_event::ClientEventLogger,
 };
 use jellyfin_data::{
     ActivityLogError, ActivityLogRepository, ApiKeyRepository, AuthenticationStoreError,
     BaseItemError, BaseItemImageRepository, BaseItemRepository, ChapterRepository,
     DeviceOptionsRepository, DeviceRepository, DisplayPreferenceRepository,
-    DisplayPreferenceStoreError, EmbyCameraUploadRepository, EmbyItemAccessLevel,
-    EmbyItemAccessRepository, EmbyItemAccessStoreError, ItemUpdateRepository, ItemUpdateStoreError,
-    ItemValueRepository, KeyframeDataRepository, NamedConfigurationRepository,
-    NamedConfigurationStoreError, PersonRepository, QuickConnectRepository,
-    RememberedTrackSelection, ServerConfigurationRepository, ServerConfigurationStoreError,
+    DisplayPreferenceStoreError, ItemUpdateStoreError, ItemValueRepository, KeyframeDataRepository,
+    NamedConfigurationRepository, NamedConfigurationStoreError, PersonRepository,
+    QuickConnectRepository, ServerConfigurationRepository, ServerConfigurationStoreError,
     SessionCommandRepository, SessionCommandStoreError, UserDataRepository,
-    UserSearchStateRepository,
     entities::{user, user_profile_image},
 };
 use jellyfin_drawing::{ImageProcessingError, ImageProcessor};
@@ -51,10 +42,7 @@ use jellyfin_live_tv::{
     tuner_hosts::{TunerHostError, TunerHostManager},
 };
 use jellyfin_media_encoding::encoder::EncoderCapabilities;
-use jellyfin_model::{
-    DisplayPreferencesDto, FileSystemEntryInfo, PublicSystemInfo, SystemInfo, TranscodeReason,
-    UserConfiguration, UserDto, UserItemDataDto, UserPolicy,
-};
+use jellyfin_model::{PublicSystemInfo, UserConfiguration, UserDto, UserPolicy};
 use jellyfin_networking::{NetworkConfiguration, NetworkManager};
 use jellyfin_server_implementations::{
     AuthenticationError, DefaultAuthenticationProvider, PersistedDtoImageProjectionService,
@@ -79,7 +67,7 @@ mod artists;
 mod audio;
 mod authentication;
 mod authorization;
-pub mod backup;
+mod backup;
 mod branding;
 mod channels;
 mod client_log;
@@ -88,11 +76,8 @@ mod configuration;
 mod dashboard;
 mod devices;
 mod display_preferences;
-mod emby_camera_upload;
-mod encoding_runtime;
 mod environment;
 mod filters;
-mod game_genre;
 mod genres;
 mod hls_segment;
 mod item_images;
@@ -122,7 +107,6 @@ mod scheduled_tasks;
 mod search;
 mod session;
 mod startup;
-mod stream_options;
 mod studios;
 mod subtitles;
 mod sync_play;
@@ -141,114 +125,13 @@ mod virtual_folders;
 mod websocket;
 mod years;
 
-pub use backup::restore_backup_at_startup;
 pub use branding::BrandingOptions;
-pub use emby_camera_upload::{EmbyCameraDeviceContext, EmbyCameraUploadMetadata};
-pub use subtitles::emby_legacy_subtitle_delete_routes;
-pub use system::emby_log_file_lines;
-
-/// Emby-only legacy GameGenre routes. These are deliberately not merged into
-/// [`unprefixed_router`].
-pub fn emby_game_genre_routes() -> Router<Arc<AppState>> {
-    game_genre::routes()
-}
-
-/// Emby-only legacy Game routes. These reuse the shared policy-aware
-/// implementation without adding removed Game endpoints to Jellyfin.
-pub fn emby_game_routes() -> Router<Arc<AppState>> {
-    Router::new()
-        .route("/Games/{item_id}/Similar", get(library::emby_game_similar))
-        .route("/games/{item_id}/similar", get(library::emby_game_similar))
-        .route(
-            "/Items/RemoteSearch/Game",
-            post(item_lookup::emby_game_remote_search),
-        )
-        .route(
-            "/items/remotesearch/game",
-            post(item_lookup::emby_game_remote_search),
-        )
-}
-
-/// Emby-only item-image metadata routes whose response contract differs from
-/// Jellyfin's current `ImageType` surface.
-pub fn emby_item_image_routes() -> Router<Arc<AppState>> {
-    Router::new().route("/Items/{item_id}/Images", get(item_images::list_emby))
-}
 
 /// Host lifecycle commands exposed by the system API.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SystemCommand {
     Restart,
     Shutdown,
-    /// Restart the server and restore the validated archive before serving requests.
-    Restore(PathBuf),
-}
-
-const EMBY_METADATA_REFRESH_QUEUE_CAPACITY: usize = 64;
-const EMBY_METADATA_REFRESH_CONCURRENCY: usize = 4;
-const EMBY_METADATA_REFRESH_CHUNK_SIZE: usize = 128;
-
-struct QueuedEmbyMetadataRefresh {
-    item_ids: Vec<Uuid>,
-    tmdb_api_key: Arc<str>,
-    omdb_api_key: Arc<str>,
-}
-
-fn start_emby_metadata_refresh_worker(
-    service: MetadataRefreshService,
-) -> tokio::sync::mpsc::Sender<QueuedEmbyMetadataRefresh> {
-    let (sender, mut receiver) = tokio::sync::mpsc::channel::<QueuedEmbyMetadataRefresh>(
-        EMBY_METADATA_REFRESH_QUEUE_CAPACITY,
-    );
-    tokio::spawn(async move {
-        // `recv` continues yielding already-buffered chunks after the final
-        // AppState sender is dropped, so normal server teardown drains all
-        // accepted work before this worker exits. An externally forced Tokio
-        // runtime stop, like process termination, cannot provide that grace.
-        while let Some(batch) = receiver.recv().await {
-            debug_assert!(batch.item_ids.len() <= EMBY_METADATA_REFRESH_CHUNK_SIZE);
-            stream::iter(batch.item_ids)
-                .for_each_concurrent(EMBY_METADATA_REFRESH_CONCURRENCY, |item_id| {
-                    let service = service.clone();
-                    let tmdb_api_key = Arc::clone(&batch.tmdb_api_key);
-                    let omdb_api_key = Arc::clone(&batch.omdb_api_key);
-                    async move {
-                        if let Err(error) = service
-                            .refresh(
-                                item_id,
-                                &tmdb_api_key,
-                                &omdb_api_key,
-                                MetadataRefreshOptions {
-                                    metadata_refresh_mode: MetadataRefreshMode::FullRefresh,
-                                    image_refresh_mode: MetadataRefreshMode::None,
-                                    replace_all_metadata: true,
-                                    replace_all_images: false,
-                                },
-                            )
-                            .await
-                        {
-                            tracing::warn!(%error, %item_id, "queued Emby metadata reset refresh failed");
-                        }
-                    }
-                })
-                .await;
-        }
-    });
-    sender
-}
-
-/// Applies the shared route authorization policy to another protocol's route
-/// tree. Protocol crates can own their wire contracts without duplicating
-/// token, API-key, and user-policy checks.
-pub async fn protocol_route_auth(
-    State(state): State<Arc<AppState>>,
-    request: axum::extract::Request,
-    next: axum::middleware::Next,
-) -> Response {
-    match authorization::require_route_auth(State(state), request, next).await {
-        Ok(response) => response,
-        Err(error) => error.into_response(),
-    }
 }
 
 #[derive(Clone)]
@@ -258,7 +141,6 @@ pub struct AppState {
     pub(crate) api_keys: ApiKeyRepository,
     pub(crate) devices: DeviceRepository,
     pub(crate) device_options: DeviceOptionsRepository,
-    pub(crate) emby_camera_uploads: EmbyCameraUploadRepository,
     pub(crate) display_preferences: DisplayPreferenceRepository,
     pub(crate) session_commands: SessionCommandRepository,
     pub(crate) sync_play: SyncPlayManager,
@@ -272,13 +154,11 @@ pub struct AppState {
     pub(crate) user_data: UserDataService,
     pub(crate) artists: ArtistService,
     pub(crate) genres: GenreService,
-    pub(crate) game_genres: GameGenreService,
     pub(crate) studios: StudioService,
     pub(crate) music_genres: MusicGenreService,
     pub(crate) persons: PersonService,
     pub(crate) item_images: Arc<ItemImageService>,
     pub(crate) metadata_refresh: MetadataRefreshService,
-    emby_metadata_refresh_sender: tokio::sync::mpsc::Sender<QueuedEmbyMetadataRefresh>,
     pub(crate) base_items: Arc<BaseItemRepository>,
     pub(crate) chapters: ChapterRepository,
     pub(crate) item_values: ItemValueRepository,
@@ -324,7 +204,6 @@ pub struct AppState {
     pub(crate) transcode_directory: Arc<std::path::Path>,
     pub(crate) ffmpeg_path: Arc<PathBuf>,
     pub(crate) encoder_capabilities: EncoderCapabilities,
-    pub(crate) live_streams: LiveStreamRegistry,
     pub(crate) transcode_jobs: Arc<TranscodeJobRegistry>,
     pub(crate) authentication: DefaultAuthenticationProvider,
     pub(crate) session_manager: SessionManager<PostgresSessionStore>,
@@ -339,131 +218,7 @@ pub struct AppState {
     pub(crate) metrics_enabled: Arc<std::sync::atomic::AtomicBool>,
 }
 
-/// Protocol adapter selection for Emby's independently copyable user state.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct EmbyUserCopyOptions {
-    pub policy: bool,
-    pub configuration: bool,
-    pub user_data: bool,
-}
-
-/// Parsed fields for Emby's protocol-private item-access mutation.
-#[derive(Debug)]
-pub struct EmbyItemAccessMutation {
-    pub item_ids: Option<Vec<String>>,
-    pub user_ids: Option<Vec<String>>,
-    /// `None` represents both an omitted/null field and Emby's numeric `None`
-    /// value; all three remove an explicit assignment.
-    pub access_level: Option<i16>,
-}
-
-/// Protocol-neutral values used by Emby's legacy Person credits adapter.
-///
-/// The generated Emby response is owned by `jellyfin-emby-api`; this record
-/// only carries policy-filtered PostgreSQL values across the crate boundary.
-#[derive(Debug, Clone, PartialEq)]
-pub struct EmbyPersonCreditRecord {
-    pub name: Option<String>,
-    pub original_title: Option<String>,
-    pub provider_ids: HashMap<String, String>,
-    pub production_year: Option<i32>,
-    pub index_number: Option<i32>,
-    pub index_number_end: Option<i32>,
-    pub parent_index_number: Option<i32>,
-    pub premiere_date: Option<String>,
-    pub person_type: String,
-    pub role: Option<String>,
-    pub item_type: String,
-    pub overview: Option<String>,
-}
-
-/// Parsed fields for Emby's protocol-private shared-item leave mutation.
-#[derive(Debug)]
-pub struct EmbyLeaveSharedItemsMutation {
-    pub item_ids: Option<Vec<String>>,
-    pub user_id: Option<String>,
-}
-
-/// Authenticated request-session snapshot used by Emby's process-local party
-/// service. API keys authenticate successfully but have no associated user,
-/// matching Emby's synthetic user-less session context.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct EmbyPartySessionContext {
-    pub session_id: String,
-    pub user: Option<EmbyPartyUser>,
-    pub has_now_playing_item: bool,
-}
-
-/// Minimal user shape serialized inside Emby's legacy `PartySessionInfo` and
-/// `PartyMessageDto` objects.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
-#[serde(rename_all = "PascalCase")]
-pub struct EmbyPartyUser {
-    pub id: String,
-    pub name: String,
-}
-
-impl From<EmbyUserCopyOptions> for UserCopyOptions {
-    fn from(value: EmbyUserCopyOptions) -> Self {
-        Self {
-            policy: value.policy,
-            configuration: value.configuration,
-            user_data: value.user_data,
-        }
-    }
-}
-
 impl AppState {
-    /// Returns the encoder snapshot captured during server startup.
-    ///
-    /// Protocol adapters use this rather than inventing a static codec list.
-    #[must_use]
-    pub fn encoder_codec_names(&self) -> (Vec<String>, Vec<String>) {
-        (
-            self.encoder_capabilities.encoders.clone(),
-            self.encoder_capabilities.decoders.clone(),
-        )
-    }
-
-    /// Executes a protocol adapter's directory request through the shared
-    /// Jellyfin environment service.
-    pub fn environment_directory_contents(
-        &self,
-        path: &str,
-        include_files: bool,
-        include_directories: bool,
-    ) -> Result<Vec<FileSystemEntryInfo>, Response> {
-        self.environment
-            .directory_contents(path, include_files, include_directories)
-            .map_err(ApiError::from)
-            .map_err(IntoResponse::into_response)
-    }
-
-    /// Returns the server's current filesystem roots for protocol adapters.
-    #[must_use]
-    pub fn environment_drives(&self) -> Vec<FileSystemEntryInfo> {
-        self.environment.drives()
-    }
-
-    /// Resolves a path through the shared platform-aware parent-path logic.
-    #[must_use]
-    pub fn environment_parent_path(&self, path: &str) -> Option<String> {
-        self.environment.parent_path(path)
-    }
-
-    /// Validates a protocol adapter's filesystem path request.
-    pub fn environment_validate_path(
-        &self,
-        path: Option<&str>,
-        is_file: Option<bool>,
-        validate_writable: bool,
-    ) -> Result<(), Response> {
-        self.environment
-            .validate_path(path, is_file, validate_writable)
-            .map_err(ApiError::from)
-            .map_err(IntoResponse::into_response)
-    }
-
     #[allow(clippy::too_many_lines)]
     pub fn new(
         database: impl Into<jellyfin_data::SharedDatabase>,
@@ -486,8 +241,6 @@ impl AppState {
         let item_images = Arc::new(ItemImageService::new(Arc::clone(&database)));
         let metadata_refresh =
             MetadataRefreshService::new(Arc::clone(&database), Some(Arc::clone(&item_images)));
-        let emby_metadata_refresh_sender =
-            start_emby_metadata_refresh_worker(metadata_refresh.clone());
         let base_items = Arc::new(BaseItemRepository::new(Arc::clone(&database)));
         let item_values = ItemValueRepository::new(Arc::clone(&database));
         let people = PersonRepository::new(Arc::clone(&database));
@@ -508,7 +261,6 @@ impl AppState {
             api_keys: ApiKeyRepository::new(Arc::clone(&database)),
             devices: DeviceRepository::new(Arc::clone(&database)),
             device_options: DeviceOptionsRepository::new(Arc::clone(&database)),
-            emby_camera_uploads: EmbyCameraUploadRepository::new(Arc::clone(&database)),
             display_preferences: DisplayPreferenceRepository::new(Arc::clone(&database)),
             session_commands: SessionCommandRepository::new(Arc::clone(&database)),
             sync_play: SyncPlayManager::new(),
@@ -524,10 +276,6 @@ impl AppState {
             user_data: UserDataService::new(Arc::clone(&database)),
             artists: ArtistService::new(Arc::clone(&database)),
             genres: GenreService::with_item_by_name_service(
-                Arc::clone(&database),
-                item_by_name.clone(),
-            ),
-            game_genres: GameGenreService::with_item_by_name_service(
                 Arc::clone(&database),
                 item_by_name.clone(),
             ),
@@ -550,7 +298,6 @@ impl AppState {
             ),
             item_images,
             metadata_refresh,
-            emby_metadata_refresh_sender,
             base_items,
             chapters: ChapterRepository::new(Arc::clone(&database)),
             item_values,
@@ -611,7 +358,6 @@ impl AppState {
             ),
             ffmpeg_path: Arc::new(PathBuf::from("ffmpeg")),
             encoder_capabilities: EncoderCapabilities::default(),
-            live_streams: LiveStreamRegistry::new(),
             transcode_jobs: Arc::new(TranscodeJobRegistry::new()),
             authentication: DefaultAuthenticationProvider::new(),
             session_manager: SessionManager::new(session_store),
@@ -735,16 +481,6 @@ impl AppState {
             .try_write()
             .expect("TMDB API key is not being read during state construction") =
             Arc::from(api_key.into());
-        self
-    }
-
-    /// Replaces the TMDB base URL used by interactive item-lookup routes.
-    ///
-    /// A compatible proxy may be supplied by deployments; route integration
-    /// tests use this to avoid contacting the public provider.
-    #[must_use]
-    pub fn with_item_lookup_tmdb_base_url(mut self, base_url: impl Into<String>) -> Self {
-        self.item_lookup = self.item_lookup.with_tmdb_base_url(base_url);
         self
     }
 
@@ -919,10 +655,6 @@ impl AppState {
             self.program_data_directory.as_path(),
             self.internal_metadata_directory.as_path(),
         );
-        self.game_genres.set_item_by_name_directories(
-            self.program_data_directory.as_path(),
-            self.internal_metadata_directory.as_path(),
-        );
         self.artists.set_item_by_name_directories(
             self.program_data_directory.as_path(),
             self.internal_metadata_directory.as_path(),
@@ -1041,22 +773,6 @@ impl AppState {
         self
     }
 
-    /// Seeds an active transcode job while constructing application state.
-    #[must_use]
-    pub fn with_transcode_job(
-        self,
-        job_id: impl Into<String>,
-        device_id: &str,
-        play_session_id: &str,
-        reasons: TranscodeReason,
-    ) -> Self {
-        let job_id = job_id.into();
-        self.transcode_jobs
-            .register_for_session(job_id.clone(), device_id, play_session_id);
-        self.transcode_jobs.set_transcode_reasons(&job_id, reasons);
-        self
-    }
-
     /// Starts the filesystem watcher over all configured library locations.
     ///
     /// The watcher is intentionally best-effort: an empty or unreadable folder
@@ -1115,1051 +831,19 @@ impl AppState {
     pub(crate) fn server_id(&self) -> &str {
         self.system_info.id.as_deref().unwrap_or_default()
     }
-
-    /// Loads public server state for protocol-specific API projections.
-    pub async fn public_system_info(&self) -> Result<PublicSystemInfo, StatusCode> {
-        system::public_system_info(self)
-            .await
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
-    }
-
-    /// Loads authorized server state for protocol-specific API projections.
-    pub async fn system_info(
-        &self,
-        headers: &HeaderMap,
-        uri: &Uri,
-    ) -> Result<SystemInfo, Response> {
-        system::system_info(self, headers, uri)
-            .await
-            .map_err(IntoResponse::into_response)
-    }
-
-    /// Loads branding state for protocol-specific API projections.
-    pub async fn branding_options(&self) -> Result<BrandingOptions, StatusCode> {
-        branding::branding_options(self)
-            .await
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
-    }
-
-    /// Loads display preferences for a protocol-specific wire projection.
-    pub async fn display_preferences_for_request(
-        &self,
-        headers: &HeaderMap,
-        uri: &Uri,
-        display_preferences_id: &str,
-        user_id: Option<&str>,
-        item_id: Option<&str>,
-        client: Option<String>,
-    ) -> Result<DisplayPreferencesDto, Response> {
-        let user_id = parse_optional_uuid(user_id)?;
-        let item_id = parse_optional_uuid(item_id)?;
-        display_preferences::get_for_request(
-            self,
-            headers,
-            uri,
-            display_preferences_id,
-            user_id,
-            item_id,
-            client,
-        )
-        .await
-        .map_err(IntoResponse::into_response)
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    /// Saves display preferences submitted through a protocol-specific DTO.
-    pub async fn update_display_preferences_for_request(
-        &self,
-        headers: &HeaderMap,
-        uri: &Uri,
-        display_preferences_id: &str,
-        user_id: Option<&str>,
-        item_id: Option<&str>,
-        client: Option<String>,
-        preferences: DisplayPreferencesDto,
-    ) -> Result<StatusCode, Response> {
-        let user_id = parse_optional_uuid(user_id)?;
-        let item_id = parse_optional_uuid(item_id)?;
-        display_preferences::update_for_request(
-            self,
-            headers,
-            uri,
-            display_preferences_id,
-            user_id,
-            item_id,
-            client,
-            preferences,
-        )
-        .await
-        .map_err(IntoResponse::into_response)
-    }
-
-    /// Returns user DTOs for protocol adapters that expose Emby's paged user
-    /// queries.  Keep the database lookup and image-tag projection batched.
-    pub async fn emby_users(
-        &self,
-        is_hidden: Option<bool>,
-        is_disabled: Option<bool>,
-    ) -> Result<Vec<UserDto>, Response> {
-        let users = self
-            .users
-            .list_filtered(is_hidden, is_disabled)
-            .await
-            .map_err(ApiError::from)
-            .map_err(IntoResponse::into_response)?;
-        for user in &users {
-            authentication::stored_user_policy(user)
-                .map_err(ApiError::from)
-                .map_err(IntoResponse::into_response)?;
-        }
-        users_to_dtos_with_server_id(self, users)
-            .await
-            .map_err(IntoResponse::into_response)
-    }
-
-    /// Enforces Emby's administrator-only user query boundary after the
-    /// shared protocol middleware has authenticated the request.
-    pub async fn require_emby_administrator(
-        &self,
-        headers: &HeaderMap,
-        uri: &Uri,
-    ) -> Result<(), Response> {
-        authentication::authenticated_identity(self, headers, Some(uri))
-            .await
-            .map_err(ApiError::from)
-            .map_err(IntoResponse::into_response)?
-            .require_administrator()
-            .map_err(ApiError::from)
-            .map_err(IntoResponse::into_response)
-    }
-
-    /// Downloads an Emby remote image into the requested public image slot.
-    ///
-    /// Emby's generated body carries a nullable signed image index while its
-    /// query carries the source URL and image type. The historical service
-    /// passes that index to `ProviderManager.SaveImage`; it is a destination
-    /// ordinal, not an index into provider search results. Authentication and
-    /// wire binding remain in the protocol adapter so Jellyfin's root routes
-    /// keep their current query-only contract.
-    #[allow(clippy::result_large_err)]
-    pub async fn download_emby_remote_image(
-        &self,
-        item_id: Uuid,
-        image_type: &str,
-        image_url: Option<&str>,
-        image_index: Option<i32>,
-    ) -> Result<StatusCode, Response> {
-        let image_type =
-            item_images::parse_image_type(image_type).map_err(IntoResponse::into_response)?;
-        let image_url = image_url
-            .filter(|value| !value.is_empty())
-            .ok_or_else(|| ApiError::NotFound.into_response())?;
-        self.base_items
-            .get(item_id)
-            .await
-            .map_err(ApiError::from)
-            .map_err(IntoResponse::into_response)?
-            .ok_or_else(|| ApiError::NotFound.into_response())?;
-        self.item_images
-            .download_remote_image_at_index(item_id, image_type, image_url, image_index)
-            .await
-            .map_err(ApiError::from)
-            .map_err(IntoResponse::into_response)?;
-        Ok(StatusCode::NO_CONTENT)
-    }
-
-    /// Enforces Emby's administrator boundary before resolving a target user.
-    ///
-    /// Protocol handlers use this ordering so malformed or unknown targets do
-    /// not leak ahead of the generated client's elevated authorization rule.
-    pub async fn require_emby_administrator_user(
-        &self,
-        headers: &HeaderMap,
-        uri: &Uri,
-        user_id: Uuid,
-    ) -> Result<(), Response> {
-        self.require_emby_administrator(headers, uri).await?;
-        self.users
-            .get(user_id)
-            .await
-            .map(|_| ())
-            .map_err(ApiError::from)
-            .map_err(IntoResponse::into_response)
-    }
-
-    /// Persists Emby's explicit user/item share levels without exposing the
-    /// protocol-private table through Jellyfin's root API.
-    ///
-    /// The checked-in generated contract requires ordinary authenticated-user
-    /// access rather than elevation. Authentication deliberately precedes
-    /// body and UUID validation, and the repository validates every referenced
-    /// row before applying the Cartesian-product mutation atomically.
-    #[allow(clippy::result_large_err)]
-    pub async fn update_emby_item_access_for_request(
-        &self,
-        headers: &HeaderMap,
-        uri: &Uri,
-        mutation: Option<EmbyItemAccessMutation>,
-    ) -> Result<StatusCode, Response> {
-        authorization::require_default(self, headers, uri)
-            .await
-            .map_err(IntoResponse::into_response)?;
-        let mutation = mutation.ok_or_else(|| ApiError::InvalidRequest.into_response())?;
-        let user_ids = parse_emby_item_access_ids(mutation.user_ids)?;
-        let item_ids = parse_emby_item_access_ids(mutation.item_ids)?;
-        let access = match mutation.access_level {
-            None => None,
-            Some(1) => Some(EmbyItemAccessLevel::Read),
-            Some(2) => Some(EmbyItemAccessLevel::Write),
-            Some(3) => Some(EmbyItemAccessLevel::Manage),
-            Some(4) => Some(EmbyItemAccessLevel::ManageDelete),
-            Some(_) => return Err(ApiError::InvalidRequest.into_response()),
-        };
-        EmbyItemAccessRepository::new(Arc::clone(&self.database))
-            .replace(&user_ids, &item_ids, access)
-            .await
-            .map_err(|error| match error {
-                EmbyItemAccessStoreError::UserNotFound | EmbyItemAccessStoreError::ItemNotFound => {
-                    ApiError::NotFound.into_response()
-                }
-                EmbyItemAccessStoreError::Database(_) => ApiError::Internal.into_response(),
-            })?;
-        Ok(StatusCode::OK)
-    }
-
-    /// Removes the target user's explicit Emby shares without changing the
-    /// Jellyfin library-policy model.
-    ///
-    /// Emby's generated contract permits the user id to be omitted, in which
-    /// case a device session targets itself. Explicit targets retain the
-    /// normal self/administrator/API-key boundary. Target authorization and
-    /// lookup intentionally precede item-id binding so an ordinary user
-    /// cannot probe another user's shared items with a malformed item id.
-    #[allow(clippy::result_large_err)]
-    pub async fn leave_emby_shared_items_for_request(
-        &self,
-        headers: &HeaderMap,
-        uri: &Uri,
-        mutation: Option<EmbyLeaveSharedItemsMutation>,
-    ) -> Result<StatusCode, Response> {
-        let identity = authorization::require_default(self, headers, uri)
-            .await
-            .map_err(IntoResponse::into_response)?;
-        let mutation = mutation.ok_or_else(|| ApiError::InvalidRequest.into_response())?;
-        let requested_user_id = mutation
-            .user_id
-            .as_deref()
-            .map(Uuid::parse_str)
-            .transpose()
-            .map_err(|_| ApiError::InvalidRequest.into_response())?;
-        let target_user_id = identity
-            .target_user_id(requested_user_id)
-            .map_err(IntoResponse::into_response)?;
-        self.users
-            .get(target_user_id)
-            .await
-            .map_err(ApiError::from)
-            .map_err(IntoResponse::into_response)?;
-
-        let item_ids = parse_emby_item_access_ids(mutation.item_ids)?;
-        EmbyItemAccessRepository::new(Arc::clone(&self.database))
-            .replace(&[target_user_id], &item_ids, None)
-            .await
-            .map_err(|error| match error {
-                EmbyItemAccessStoreError::UserNotFound | EmbyItemAccessStoreError::ItemNotFound => {
-                    ApiError::NotFound.into_response()
-                }
-                EmbyItemAccessStoreError::Database(_) => ApiError::Internal.into_response(),
-            })?;
-        Ok(StatusCode::OK)
-    }
-
-    /// Resolves the session identity for Emby's legacy party service while
-    /// retaining the shared authentication, enabled-user, remote-access, and
-    /// parental-schedule checks.
-    pub async fn emby_party_session_context_for_request(
-        &self,
-        headers: &HeaderMap,
-        uri: &Uri,
-    ) -> Result<EmbyPartySessionContext, Response> {
-        let identity = authorization::require_default(self, headers, uri)
-            .await
-            .map_err(IntoResponse::into_response)?;
-        Ok(match identity {
-            authentication::AuthenticatedIdentity::Device(session) => EmbyPartySessionContext {
-                session_id: session::jellyfin_session_id(
-                    &session.device.app_name,
-                    &session.device.device_id,
-                ),
-                user: Some(EmbyPartyUser {
-                    id: session.user.id.simple().to_string(),
-                    name: session.user.username,
-                }),
-                has_now_playing_item: session.device.now_playing_item.is_some(),
-            },
-            authentication::AuthenticatedIdentity::ApiKey(api_key) => EmbyPartySessionContext {
-                // An API key cannot join a party because Emby requires a
-                // session with a user. Keep a stable internal key so its
-                // user-less Info/Messages/Leave requests remain isolated.
-                session_id: format!("api-key:{}", api_key.id),
-                user: None,
-                has_now_playing_item: false,
-            },
-        })
-    }
-
-    /// Looks up the target user used by Emby's notification-default service.
-    ///
-    /// The legacy endpoint is authenticated but intentionally does not apply
-    /// the ordinary self/administrator target-user boundary. Its service
-    /// reads the target only to decide whether a future provider default is a
-    /// self-notification, so keep this narrow lookup protocol-owned.
-    pub async fn emby_notification_target_is_administrator(
-        &self,
-        user_id: Uuid,
-    ) -> Result<Option<bool>, Response> {
-        match self.users.get(user_id).await {
-            Ok(user) => Ok(Some(user.is_administrator)),
-            Err(UserError::NotFound) => Ok(None),
-            Err(error) => Err(ApiError::from(error).into_response()),
-        }
-    }
-
-    /// Resets Emby's administrator-owned metadata settings and performs a
-    /// real full metadata replacement for every requested item.
-    ///
-    /// Authentication intentionally precedes query validation. The generated
-    /// Emby clients send one comma-separated `ItemIds` string, and malformed
-    /// inputs from unauthenticated or ordinary users must not leak binder
-    /// behavior ahead of the administrator policy.
-    #[allow(clippy::result_large_err)]
-    pub async fn reset_emby_metadata_for_request(
-        &self,
-        headers: &HeaderMap,
-        uri: &Uri,
-        item_ids: Option<&str>,
-    ) -> Result<StatusCode, Response> {
-        self.require_emby_administrator(headers, uri).await?;
-        let item_ids = parse_emby_metadata_reset_ids(item_ids)?;
-        self.enqueue_emby_metadata_reset(item_ids).await
-    }
-
-    #[allow(clippy::result_large_err)]
-    async fn enqueue_emby_metadata_reset(
-        &self,
-        item_ids: Vec<Uuid>,
-    ) -> Result<StatusCode, Response> {
-        let chunk_count = item_ids.len().div_ceil(EMBY_METADATA_REFRESH_CHUNK_SIZE);
-        if chunk_count > EMBY_METADATA_REFRESH_QUEUE_CAPACITY {
-            return Err((
-                StatusCode::BAD_REQUEST,
-                "Too many item ids for one metadata reset request",
-            )
-                .into_response());
-        }
-        // Reserve every chunk slot before changing persistent state, so queue
-        // saturation cannot leave an accepted reset only partly enqueued.
-        let refresh_sender = self.emby_metadata_refresh_sender.clone();
-        let refresh_permits = refresh_sender.try_reserve_many(chunk_count).map_err(|_| {
-            (
-                StatusCode::SERVICE_UNAVAILABLE,
-                "Metadata refresh queue is full",
-            )
-                .into_response()
-        })?;
-        ItemUpdateRepository::new(Arc::clone(&self.database))
-            .reset_metadata_settings(&item_ids)
-            .await
-            .map_err(|error| match error {
-                ItemUpdateStoreError::NotFound => ApiError::NotFound.into_response(),
-                ItemUpdateStoreError::InvalidValue => ApiError::InvalidRequest.into_response(),
-                ItemUpdateStoreError::InvalidMetadata | ItemUpdateStoreError::Database(_) => {
-                    ApiError::Internal.into_response()
-                }
-            })?;
-
-        let tmdb_api_key = Arc::clone(&*self.tmdb_api_key.read().await);
-        let omdb_api_key = Arc::clone(&*self.omdb_api_key.read().await);
-        for (permit, item_ids) in
-            refresh_permits.zip(item_ids.chunks(EMBY_METADATA_REFRESH_CHUNK_SIZE))
-        {
-            permit.send(QueuedEmbyMetadataRefresh {
-                item_ids: item_ids.to_vec(),
-                tmdb_api_key: Arc::clone(&tmdb_api_key),
-                omdb_api_key: Arc::clone(&omdb_api_key),
-            });
-        }
-        Ok(StatusCode::OK)
-    }
-
-    /// Resolves the source of an Emby administrator-only user-data copy before
-    /// the adapter binds its body, preserving authorization and source 404
-    /// precedence over malformed copy options.
-    pub async fn resolve_emby_copy_data_source(
-        &self,
-        headers: &HeaderMap,
-        uri: &Uri,
-        source_user_id: &str,
-    ) -> Result<(Uuid, String), Response> {
-        let identity = authentication::authenticated_identity(self, headers, Some(uri))
-            .await
-            .map_err(ApiError::from)
-            .map_err(IntoResponse::into_response)?;
-        identity
-            .require_administrator()
-            .map_err(ApiError::from)
-            .map_err(IntoResponse::into_response)?;
-        let current_token = identity.access_token().to_owned();
-        let source_user_id = Uuid::parse_str(source_user_id)
-            .map_err(|_| ApiError::InvalidRequest.into_response())?;
-        self.users
-            .get(source_user_id)
-            .await
-            .map_err(ApiError::from)
-            .map_err(IntoResponse::into_response)?;
-        Ok((source_user_id, current_token))
-    }
-
-    /// Copies selected Emby user state to all requested users in one
-    /// transaction while preserving the shared user invariants.
-    pub async fn copy_emby_user_state(
-        &self,
-        source_user_id: Uuid,
-        target_user_ids: &[Uuid],
-        options: EmbyUserCopyOptions,
-        current_token: &str,
-    ) -> Result<(), Response> {
-        if target_user_ids.is_empty() {
-            return Err(ApiError::InvalidRequest.into_response());
-        }
-        let has_changes = options.policy || options.configuration || options.user_data;
-        let became_disabled = self
-            .users
-            .copy_to_users(source_user_id, target_user_ids, options.into())
-            .await
-            .map_err(ApiError::from)
-            .map_err(IntoResponse::into_response)?;
-        self.devices
-            .revoke_users_tokens(&became_disabled, Some(current_token))
-            .await
-            .map_err(ApiError::from)
-            .map_err(IntoResponse::into_response)?;
-        if !has_changes {
-            return Ok(());
-        }
-        let mut ids = target_user_ids.to_vec();
-        ids.sort_unstable();
-        ids.dedup();
-        let users = self
-            .users
-            .get_many(&ids)
-            .await
-            .map_err(ApiError::from)
-            .map_err(IntoResponse::into_response)?;
-        let dtos = users_to_dtos_with_server_id(self, users)
-            .await
-            .map_err(IntoResponse::into_response)?;
-        for dto in dtos {
-            crate::websocket::broadcast_user_updated(
-                self,
-                &serde_json::to_value(dto).unwrap_or_default(),
-            )
-            .await;
-        }
-        Ok(())
-    }
-
-    /// Creates an Emby user and applies the selected copy categories in the
-    /// same PostgreSQL transaction.
-    pub async fn create_emby_user_with_copy(
-        &self,
-        name: &str,
-        source_user_id: Option<Uuid>,
-        options: EmbyUserCopyOptions,
-    ) -> Result<UserDto, Response> {
-        let user = match source_user_id {
-            Some(source_user_id) => {
-                self.users
-                    .create_with_copy(name, source_user_id, options.into())
-                    .await
-            }
-            None => self.users.create(name).await,
-        }
-        .map_err(ApiError::from)
-        .map_err(IntoResponse::into_response)?;
-        let dto = user_to_dto_with_server_id(self, user)
-            .await
-            .map_err(IntoResponse::into_response)?;
-        crate::websocket::broadcast_user_updated(
-            self,
-            &serde_json::to_value(&dto).unwrap_or_default(),
-        )
-        .await;
-        Ok(dto)
-    }
-
-    /// Loads one protocol-owned Emby encoding editor object without exposing
-    /// it through Jellyfin's `/System/Configuration/{key}` namespace.
-    pub async fn emby_encoding_configuration(
-        &self,
-        key: &str,
-    ) -> Result<Option<serde_json::Value>, Response> {
-        let repository = self
-            .named_configurations
-            .as_ref()
-            .ok_or_else(|| ApiError::Internal.into_response())?;
-        match repository.load(&format!("emby-encoding-{key}")).await {
-            Ok(configuration) => Ok(Some(configuration.configuration)),
-            Err(NamedConfigurationStoreError::NotFound(_)) => Ok(None),
-            Err(error) => Err(ApiError::from(error).into_response()),
-        }
-    }
-
-    /// Atomically persists one protocol-owned Emby encoding editor object.
-    pub async fn save_emby_encoding_configuration(
-        &self,
-        key: &str,
-        configuration: serde_json::Value,
-    ) -> Result<(), Response> {
-        if !configuration.is_object() {
-            return Err(ApiError::InvalidRequest.into_response());
-        }
-        self.named_configurations
-            .as_ref()
-            .ok_or_else(|| ApiError::Internal.into_response())?
-            .save(&format!("emby-encoding-{key}"), configuration)
-            .await
-            .map(|_| ())
-            .map_err(ApiError::from)
-            .map_err(IntoResponse::into_response)
-    }
-
-    /// Lists the protocol-private DLNA user profiles persisted by the Emby
-    /// compatibility adapter. These documents deliberately do not share
-    /// Jellyfin's runtime playback-profile namespace.
-    pub async fn emby_dlna_profiles(&self) -> Result<Vec<serde_json::Value>, Response> {
-        let repository = self
-            .named_configurations
-            .as_ref()
-            .ok_or_else(|| ApiError::Internal.into_response())?;
-        repository
-            .list_prefix("emby-dlna-profile-")
-            .await
-            .map(|rows| {
-                rows.into_iter()
-                    .map(|configuration| configuration.configuration)
-                    .collect()
-            })
-            .map_err(ApiError::from)
-            .map_err(IntoResponse::into_response)
-    }
-
-    /// Loads one Emby DLNA user profile using the official
-    /// case-insensitive profile-id comparison.
-    pub async fn emby_dlna_profile(&self, id: &str) -> Result<Option<serde_json::Value>, Response> {
-        let repository = self
-            .named_configurations
-            .as_ref()
-            .ok_or_else(|| ApiError::Internal.into_response())?;
-        match repository.load(&format!("emby-dlna-profile-{id}")).await {
-            Ok(configuration) => Ok(Some(configuration.configuration)),
-            Err(NamedConfigurationStoreError::NotFound(_)) => Ok(None),
-            Err(error) => Err(ApiError::from(error).into_response()),
-        }
-    }
-
-    /// Atomically creates or replaces one protocol-private Emby DLNA user
-    /// profile.
-    pub async fn save_emby_dlna_profile(
-        &self,
-        id: &str,
-        profile: serde_json::Value,
-    ) -> Result<(), Response> {
-        if !profile.is_object() {
-            return Err(ApiError::InvalidRequest.into_response());
-        }
-        self.named_configurations
-            .as_ref()
-            .ok_or_else(|| ApiError::Internal.into_response())?
-            .save(&format!("emby-dlna-profile-{id}"), profile)
-            .await
-            .map(|_| ())
-            .map_err(ApiError::from)
-            .map_err(IntoResponse::into_response)
-    }
-
-    /// Deletes one protocol-private Emby DLNA user profile.
-    pub async fn delete_emby_dlna_profile(&self, id: &str) -> Result<bool, Response> {
-        self.named_configurations
-            .as_ref()
-            .ok_or_else(|| ApiError::Internal.into_response())?
-            .delete(&format!("emby-dlna-profile-{id}"))
-            .await
-            .map_err(ApiError::from)
-            .map_err(IntoResponse::into_response)
-    }
-
-    /// Clears a video's real alternate-source relationships for an Emby
-    /// protocol adapter while retaining the shared elevated authorization and
-    /// typed-video not-found semantics.
-    #[allow(clippy::result_large_err)]
-    pub async fn delete_emby_alternate_sources_for_request(
-        &self,
-        headers: &HeaderMap,
-        uri: &Uri,
-        item_id: &str,
-    ) -> Result<(), Response> {
-        authentication::authenticated_identity(self, headers, Some(uri))
-            .await
-            .map_err(ApiError::from)
-            .map_err(IntoResponse::into_response)?
-            .require_administrator()
-            .map_err(IntoResponse::into_response)?;
-        let item_id =
-            Uuid::parse_str(item_id).map_err(|_| ApiError::InvalidRequest.into_response())?;
-        self.videos
-            .clear_alternate_sources(true, item_id)
-            .await
-            .map_err(ApiError::from)
-            .map_err(IntoResponse::into_response)
-    }
-
-    /// Applies Emby's reversible continue-watching suppression flag while
-    /// retaining the shared authentication, target-user, visibility, and
-    /// user-data projection behavior.
-    #[allow(clippy::result_large_err)]
-    pub async fn set_emby_hidden_from_resume_for_request(
-        &self,
-        headers: &HeaderMap,
-        uri: &Uri,
-        requested_user_id: &str,
-        item_id: &str,
-        is_hidden: Option<bool>,
-    ) -> Result<UserItemDataDto, Response> {
-        let identity = authorization::require_default(self, headers, uri)
-            .await
-            .map_err(IntoResponse::into_response)?;
-        let requested_user_id = Uuid::parse_str(requested_user_id)
-            .map_err(|_| ApiError::InvalidRequest.into_response())?;
-        // Resolve the target before surfacing malformed item/query values so
-        // an ordinary user cannot probe another user's request validation.
-        let target_user_id = identity
-            .target_user_id(Some(requested_user_id))
-            .map_err(IntoResponse::into_response)?;
-        let item_id =
-            Uuid::parse_str(item_id).map_err(|_| ApiError::InvalidRequest.into_response())?;
-        let is_hidden = is_hidden.ok_or_else(|| ApiError::InvalidRequest.into_response())?;
-        let update = self
-            .user_data
-            .set_hidden_from_resume_for_authorized_user(target_user_id, item_id, is_hidden)
-            .await
-            .map_err(ApiError::from)
-            .map_err(IntoResponse::into_response)?;
-        let dto: UserItemDataDto = update.into();
-        websocket::broadcast_user_data_changed(self, target_user_id, &dto).await;
-        Ok(dto)
-    }
-
-    /// Clears one class of remembered Emby stream selections for an
-    /// authorized target user using one set-based PostgreSQL update.
-    #[allow(clippy::result_large_err)]
-    pub async fn clear_emby_track_selections_for_request(
-        &self,
-        headers: &HeaderMap,
-        uri: &Uri,
-        requested_user_id: &str,
-        track_type: &str,
-    ) -> Result<StatusCode, Response> {
-        let identity = authorization::require_default(self, headers, uri)
-            .await
-            .map_err(IntoResponse::into_response)?;
-        let requested_user_id = Uuid::parse_str(requested_user_id)
-            .map_err(|_| ApiError::InvalidRequest.into_response())?;
-        // Authorize and resolve the target before inspecting TrackType. This
-        // preserves 403/404 precedence for another or missing user.
-        let target_user_id = identity
-            .target_user_id(Some(requested_user_id))
-            .map_err(IntoResponse::into_response)?;
-        self.users
-            .get(target_user_id)
-            .await
-            .map_err(ApiError::from)
-            .map_err(IntoResponse::into_response)?;
-        let selection = if track_type.eq_ignore_ascii_case("Audio") {
-            RememberedTrackSelection::Audio
-        } else if track_type.eq_ignore_ascii_case("Subtitle") {
-            RememberedTrackSelection::Subtitle
-        } else {
-            return Err(ApiError::InvalidRequest.into_response());
-        };
-        self.user_data
-            .clear_remembered_track_selection_for_authorized_user(target_user_id, selection)
-            .await
-            .map_err(ApiError::from)
-            .map_err(IntoResponse::into_response)?;
-        Ok(StatusCode::OK)
-    }
-
-    /// Persists Emby's per-user item-search report using the generated
-    /// contract's sole nullable `WasSearched` field.
-    ///
-    /// `reported` distinguishes a valid body whose field was omitted/null
-    /// from a body extraction failure. Authentication and target-user
-    /// authorization deliberately precede body validation so malformed input
-    /// cannot reveal details about another user's route.
-    #[allow(clippy::result_large_err)]
-    pub async fn report_emby_items_searched_for_request(
-        &self,
-        headers: &HeaderMap,
-        uri: &Uri,
-        requested_user_id: &str,
-        reported: Option<Option<bool>>,
-    ) -> Result<StatusCode, Response> {
-        let target_user_id = self
-            .resolve_emby_search_state_user(headers, uri, requested_user_id)
-            .await?;
-        let Some(was_searched) = reported else {
-            return Err(ApiError::InvalidRequest.into_response());
-        };
-        UserSearchStateRepository::new(Arc::clone(&self.database))
-            .set(target_user_id, was_searched.unwrap_or(false))
-            .await
-            .map_err(|_| ApiError::Internal.into_response())?;
-        Ok(StatusCode::OK)
-    }
-
-    /// Clears Emby's per-user recently-searched state. Repeated clears are
-    /// idempotent, but the target user must exist.
-    #[allow(clippy::result_large_err)]
-    pub async fn clear_emby_recently_searched_for_request(
-        &self,
-        headers: &HeaderMap,
-        uri: &Uri,
-        requested_user_id: &str,
-    ) -> Result<StatusCode, Response> {
-        let target_user_id = self
-            .resolve_emby_search_state_user(headers, uri, requested_user_id)
-            .await?;
-        UserSearchStateRepository::new(Arc::clone(&self.database))
-            .clear(target_user_id)
-            .await
-            .map_err(|_| ApiError::Internal.into_response())?;
-        Ok(StatusCode::OK)
-    }
-
-    /// Validates and touches an opened stream for Emby's legacy MediaInfo
-    /// operation while preserving its empty-response wire contract.
-    ///
-    /// The removed official implementation performed an authenticated,
-    /// case-insensitive lookup in the global open-stream dictionary. Its
-    /// request has no user, item, device, or play-session field, so a stream
-    /// known to another authenticated session remains addressable by id.
-    #[allow(clippy::result_large_err)]
-    pub async fn emby_live_stream_media_info_for_request(
-        &self,
-        headers: &HeaderMap,
-        uri: &Uri,
-        live_stream_id: Option<&str>,
-    ) -> Result<StatusCode, Response> {
-        authorization::require_default(self, headers, uri)
-            .await
-            .map_err(IntoResponse::into_response)?;
-        let live_stream_id = live_stream_id
-            .filter(|value| !value.is_empty())
-            .ok_or_else(|| ApiError::InvalidRequest.into_response())?;
-        if !self.live_streams.touch_media_info(live_stream_id) {
-            return Err(ApiError::NotFound.into_response());
-        }
-        Ok(StatusCode::OK)
-    }
-
-    /// Closes an opened stream through Emby's generated mobile contract.
-    ///
-    /// The legacy Android and Swift clients require both query values even
-    /// though the removed server implementation only used `LiveStreamId`.
-    /// Validate `PlaySessionId` at the protocol boundary without inventing a
-    /// session-to-stream association that the official operation did not use.
-    #[allow(clippy::result_large_err)]
-    pub async fn close_emby_live_stream_for_request(
-        &self,
-        headers: &HeaderMap,
-        uri: &Uri,
-        live_stream_id: Option<&str>,
-        play_session_id: Option<&str>,
-    ) -> Result<StatusCode, Response> {
-        authorization::require_default(self, headers, uri)
-            .await
-            .map_err(IntoResponse::into_response)?;
-        let live_stream_id = live_stream_id
-            .filter(|value| !value.is_empty())
-            .ok_or_else(|| ApiError::InvalidRequest.into_response())?;
-        play_session_id
-            .filter(|value| !value.is_empty())
-            .ok_or_else(|| ApiError::InvalidRequest.into_response())?;
-        self.live_streams.close(live_stream_id);
-        Ok(StatusCode::OK)
-    }
-
-    #[allow(clippy::result_large_err)]
-    async fn resolve_emby_search_state_user(
-        &self,
-        headers: &HeaderMap,
-        uri: &Uri,
-        requested_user_id: &str,
-    ) -> Result<Uuid, Response> {
-        let identity = authorization::require_default(self, headers, uri)
-            .await
-            .map_err(IntoResponse::into_response)?;
-        let requested_user_id = Uuid::parse_str(requested_user_id)
-            .map_err(|_| ApiError::InvalidRequest.into_response())?;
-        let target_user_id = identity
-            .target_user_id(Some(requested_user_id))
-            .map_err(IntoResponse::into_response)?;
-        self.users
-            .get(target_user_id)
-            .await
-            .map_err(ApiError::from)
-            .map_err(IntoResponse::into_response)?;
-        Ok(target_user_id)
-    }
-
-    /// Resolves an Emby legacy user-view target before the protocol adapter
-    /// validates its required query value. This keeps another or missing user
-    /// from being disclosed through query-binding error precedence.
-    ///
-    /// # Errors
-    ///
-    /// Returns the protocol response for authentication, target authorization,
-    /// malformed identifiers, and missing users.
-    #[allow(clippy::result_large_err)]
-    pub async fn resolve_emby_user_views_target(
-        &self,
-        headers: &HeaderMap,
-        uri: &Uri,
-        requested_user_id: &str,
-    ) -> Result<Uuid, Response> {
-        let identity = authentication::authenticated_identity(self, headers, Some(uri))
-            .await
-            .map_err(IntoResponse::into_response)?;
-        let requested_user_id = Uuid::parse_str(requested_user_id)
-            .map_err(|_| ApiError::InvalidRequest.into_response())?;
-        let target_user_id = identity
-            .target_user_id(Some(requested_user_id))
-            .map_err(IntoResponse::into_response)?;
-        self.users
-            .get(target_user_id)
-            .await
-            .map_err(ApiError::from)
-            .map_err(IntoResponse::into_response)?;
-        Ok(target_user_id)
-    }
-
-    /// Projects the already-authorized target user's legacy Emby views while
-    /// preserving the shared Jellyfin view and DTO implementation.
-    #[allow(clippy::result_large_err)]
-    pub async fn emby_user_views_for_resolved_target(
-        &self,
-        uri: &Uri,
-        target_user_id: Uuid,
-        include_external_content: bool,
-    ) -> Response {
-        match user_views::user_views_for_emby(self, target_user_id, include_external_content).await
-        {
-            Ok(mut result) => {
-                user_library::omit_incompatible_emby_relations(uri, &mut result.0.items);
-                result.into_response()
-            }
-            Err(error) => error.into_response(),
-        }
-    }
-
-    /// Snapshot plugin/package data for the Emby protocol adapter.
-    pub fn emby_plugins(&self) -> Vec<jellyfin_model::PluginInfo> {
-        self.plugins.plugins()
-    }
-
-    pub fn emby_plugin_image(
-        &self,
-        plugin_id: uuid::Uuid,
-    ) -> Option<jellyfin_controller::PluginImage> {
-        self.plugins.image_for_plugin(plugin_id)
-    }
-
-    pub fn emby_plugin_configuration(
-        &self,
-        plugin_id: uuid::Uuid,
-    ) -> Result<Option<serde_json::Value>, jellyfin_controller::PluginRegistryError> {
-        self.plugins.configuration(plugin_id)
-    }
-
-    pub fn emby_packages(&self) -> std::sync::Arc<[std::sync::Arc<jellyfin_model::PackageInfo>]> {
-        self.packages.list()
-    }
-
-    pub fn emby_package(
-        &self,
-        name: &str,
-        assembly_guid: Option<uuid::Uuid>,
-    ) -> Result<std::sync::Arc<jellyfin_model::PackageInfo>, jellyfin_controller::PackageError>
-    {
-        self.packages.get(name, assembly_guid)
-    }
-
-    pub async fn require_emby_user(&self, headers: &HeaderMap, uri: &Uri) -> Result<(), Response> {
-        authentication::authenticated_identity(self, headers, Some(uri))
-            .await
-            .map(|_| ())
-            .map_err(ApiError::from)
-            .map_err(IntoResponse::into_response)
-    }
-}
-
-fn parse_optional_uuid(value: Option<&str>) -> Result<Option<Uuid>, Response> {
-    value
-        .filter(|value| !value.is_empty())
-        .map(Uuid::parse_str)
-        .transpose()
-        .map_err(|_| StatusCode::BAD_REQUEST.into_response())
-}
-
-fn parse_emby_metadata_reset_ids(value: Option<&str>) -> Result<Vec<Uuid>, Response> {
-    let value = value
-        .filter(|value| !value.trim().is_empty())
-        .ok_or_else(|| ApiError::InvalidRequest.into_response())?;
-    let mut seen = HashSet::new();
-    let mut item_ids = Vec::new();
-    for value in value.split(',') {
-        let value = value.trim();
-        if value.is_empty() {
-            return Err(ApiError::InvalidRequest.into_response());
-        }
-        let item_id =
-            Uuid::parse_str(value).map_err(|_| ApiError::InvalidRequest.into_response())?;
-        if seen.insert(item_id) {
-            item_ids.push(item_id);
-        }
-    }
-    Ok(item_ids)
-}
-
-fn parse_emby_item_access_ids(values: Option<Vec<String>>) -> Result<Vec<Uuid>, Response> {
-    values
-        .unwrap_or_default()
-        .into_iter()
-        .map(|value| Uuid::parse_str(&value).map_err(|_| ApiError::InvalidRequest.into_response()))
-        .collect()
-}
-
-#[cfg(test)]
-mod emby_metadata_refresh_queue_tests {
-    use jellyfin_data::{DatabaseConfig, NewBaseItem};
-    use serde_json::json;
-
-    use super::*;
-
-    #[tokio::test]
-    async fn saturated_queue_rejects_before_persistent_reset() {
-        let database = jellyfin_data::connect(&DatabaseConfig::default())
-            .await
-            .expect("local PostgreSQL must be available");
-        jellyfin_data::migrate(&database)
-            .await
-            .expect("PostgreSQL migrations must succeed");
-        let repository = BaseItemRepository::new(database.clone());
-        let item_id = Uuid::new_v4();
-        let mut item = NewBaseItem::new(item_id, "Movie");
-        item.data = Some(json!({
-            "IsLocked": true,
-            "LockedFields": ["Name"],
-            "ProviderIds": { "Custom": "opaque" }
-        }));
-        let original = repository.create(item).await.expect("locked item fixture");
-        let state = AppState::new(
-            database.clone(),
-            "Metadata queue saturation test".to_owned(),
-            "http://127.0.0.1:8096".to_owned(),
-        )
-        .with_omdb_api_key("");
-
-        let held_permits = state
-            .emby_metadata_refresh_sender
-            .try_reserve_many(EMBY_METADATA_REFRESH_QUEUE_CAPACITY)
-            .expect("empty queue capacity")
-            .collect::<Vec<_>>();
-        let response = match state.enqueue_emby_metadata_reset(vec![item_id]).await {
-            Ok(status) => panic!("saturated queue unexpectedly accepted reset: {status}"),
-            Err(response) => response,
-        };
-        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
-        let unchanged = repository
-            .get(item_id)
-            .await
-            .expect("post-rejection item lookup")
-            .expect("post-rejection item");
-        assert_eq!(unchanged.row_version, original.row_version);
-        assert_eq!(unchanged.data, original.data);
-
-        drop(held_permits);
-        drop(state);
-        repository.delete(item_id).await.expect("fixture cleanup");
-        database.close().await.expect("database pool cleanup");
-    }
 }
 
 #[allow(clippy::too_many_lines)]
 #[allow(clippy::needless_pass_by_value)]
 pub fn router(state: AppState) -> Router {
-    let base = unprefixed_router(state);
-
-    Router::new().nest("/api", base.clone()).merge(base)
-}
-
-/// Builds only Jellyfin's unprefixed routes so another protocol crate can
-/// reuse the business handlers without inheriting Jellyfin's route prefixes.
-#[allow(clippy::too_many_lines)]
-#[allow(clippy::needless_pass_by_value)]
-pub fn unprefixed_router(state: AppState) -> Router {
     let state = Arc::new(state);
     let base = base_router(Arc::clone(&state));
 
-    base.with_state(state)
-}
-
-/// Builds the legacy Emby audio HLS route without adding it to Jellyfin's
-/// unprefixed API. Emby's generated clients still call this endpoint, while
-/// current Jellyfin exposes audio HLS through master/main playlists.
-pub fn emby_legacy_audio_hls_routes() -> Router<Arc<AppState>> {
     Router::new()
-        .route(
-            "/Audio/{item_id}/live.m3u8",
-            get(hls_segment::emby_audio_live_playlist),
-        )
-        .route(
-            "/audio/{item_id}/live.m3u8",
-            get(hls_segment::emby_audio_live_playlist),
-        )
-}
-
-/// Builds Emby's legacy top-level HLS subtitle playlist routes without
-/// exposing them from Jellyfin's unprefixed API.
-pub fn emby_legacy_subtitle_hls_routes() -> Router<Arc<AppState>> {
-    Router::new()
-        .route(
-            "/Videos/{item_id}/subtitles.m3u8",
-            get(subtitles::emby_legacy_subtitle_playlist),
-        )
-        .route(
-            "/Videos/{item_id}/live_subtitles.m3u8",
-            get(subtitles::emby_legacy_subtitle_playlist),
-        )
-        .route(
-            "/videos/{item_id}/subtitles.m3u8",
-            get(subtitles::emby_legacy_subtitle_playlist),
-        )
-        .route(
-            "/videos/{item_id}/live_subtitles.m3u8",
-            get(subtitles::emby_legacy_subtitle_playlist),
-        )
+        .nest("/api", base.clone())
+        .nest("/emby", base.clone())
+        .merge(base)
+        .with_state(state)
 }
 
 #[allow(clippy::too_many_lines)]
@@ -2175,8 +859,6 @@ fn base_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
         .route("/branding/configuration", get(branding::get_configuration))
         .route("/Branding/Css", get(branding::get_css))
         .route("/Branding/Css.css", get(branding::get_css))
-        .route("/branding/css", get(branding::get_css))
-        .route("/branding/css.css", get(branding::get_css))
         .route(
             "/Branding/Splashscreen",
             get(branding::get_splashscreen)
@@ -2222,27 +904,15 @@ fn base_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
             get(artists::get_image),
         )
         .route(
-            "/Artists/{name}/Images/{image_type}",
-            get(artists::get_image_default),
-        )
-        .route(
             "/artists/{name}/images/{image_type}/{image_index}",
             get(artists::get_image),
-        )
-        .route(
-            "/artists/{name}/images/{image_type}",
-            get(artists::get_image_default),
         )
         .route("/Search/Hints", get(search::hints))
         .route("/search/hints", get(search::hints))
         .route("/Backup", get(backup::list))
-        .route("/backup", get(backup::list))
         .route("/Backup/Create", post(backup::create))
-        .route("/backup/create", post(backup::create))
         .route("/Backup/Manifest", get(backup::manifest))
-        .route("/backup/manifest", get(backup::manifest))
         .route("/Backup/Restore", post(backup::restore))
-        .route("/backup/restore", post(backup::restore))
         .route("/Items/{item_id}/Images", get(item_images::list))
         .route("/items/{item_id}/images", get(item_images::list))
         .route(
@@ -2258,14 +928,6 @@ fn base_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
                 .delete(item_images::delete),
         )
         .route(
-            "/Items/{item_id}/Images/{image_type}/Delete",
-            post(item_images::delete),
-        )
-        .route(
-            "/items/{item_id}/images/{image_type}/delete",
-            post(item_images::delete),
-        )
-        .route(
             "/Items/{item_id}/Images/{image_type}/{image_index}",
             get(item_images::get_by_index)
                 .post(item_images::upload_by_index)
@@ -2276,22 +938,6 @@ fn base_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
             get(item_images::get_by_index)
                 .post(item_images::upload_by_index)
                 .delete(item_images::delete_by_index),
-        )
-        .route(
-            "/Items/{item_id}/Images/{image_type}/{image_index}/Delete",
-            post(item_images::delete_by_index),
-        )
-        .route(
-            "/items/{item_id}/images/{image_type}/{image_index}/delete",
-            post(item_images::delete_by_index),
-        )
-        .route(
-            "/Items/{item_id}/Images/{image_type}/{image_index}/Url",
-            post(item_images::upload_url),
-        )
-        .route(
-            "/items/{item_id}/images/{image_type}/{image_index}/url",
-            post(item_images::upload_url),
         )
         .route(
             "/Items/{item_id}/Images/{image_type}/{image_index}/Index",
@@ -2309,42 +955,8 @@ fn base_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
             "/items/{item_id}/images/{image_type}/{image_index}/{tag}/{format}/{max_width}/{max_height}/{percent_played}/{unplayed_count}",
             get(item_images::get_legacy_path),
         )
-        .route(
-            "/Items/{item_id}/Subtitles/{index}",
-            axum::routing::delete(subtitles::delete_subtitle),
-        )
-        .route(
-            "/items/{item_id}/subtitles/{index}",
-            axum::routing::delete(subtitles::delete_subtitle),
-        )
-        .route(
-            "/Items/{item_id}/Subtitles/{index}/Delete",
-            post(subtitles::delete_subtitle),
-        )
-        .route(
-            "/items/{item_id}/subtitles/{index}/delete",
-            post(subtitles::delete_subtitle),
-        )
-        .route(
-            "/Items/{item_id}/{media_source_id}/Subtitles/{index}/Stream.{format}",
-            get(subtitles::get_subtitle),
-        )
-        .route(
-            "/items/{item_id}/{media_source_id}/subtitles/{index}/stream.{format}",
-            get(subtitles::get_subtitle),
-        )
-        .route(
-            "/Items/{item_id}/{media_source_id}/Subtitles/{index}/{start_position_ticks}/Stream.{format}",
-            get(subtitles::get_subtitle_with_ticks),
-        )
-        .route(
-            "/items/{item_id}/{media_source_id}/subtitles/{index}/{start_position_ticks}/stream.{format}",
-            get(subtitles::get_subtitle_with_ticks),
-        )
         .route("/Items/{item_id}/RemoteImages", get(remote_images::images))
         .route("/items/{item_id}/remoteimages", get(remote_images::images))
-        .route("/Images/Remote", get(remote_images::fetch))
-        .route("/images/remote", get(remote_images::fetch))
         .route(
             "/Items/{item_id}/RemoteImages/Providers",
             get(remote_images::providers),
@@ -2366,47 +978,23 @@ fn base_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
             get(configuration::get).post(configuration::update),
         )
         .route(
-            "/system/configuration",
-            get(configuration::get).post(configuration::update),
-        )
-        .route("/System/Configuration/Partial", post(configuration::partial))
-        .route("/system/configuration/partial", post(configuration::partial))
-        .route(
             "/System/Configuration/MetadataOptions/Default",
             get(configuration::default_metadata_options),
         )
         .route(
-            "/system/configuration/metadataoptions/default",
-            get(configuration::default_metadata_options),
-        )
-        .route(
             "/System/Configuration/Branding",
-            get(configuration::get_branding_named).post(branding::update_configuration),
-        )
-        .route(
-            "/system/configuration/branding",
-            get(configuration::get_branding_named).post(branding::update_configuration),
+            post(branding::update_configuration),
         )
         .route(
             "/System/Configuration/{key}",
             get(configuration::get_named).post(configuration::update_named),
         )
-        .route(
-            "/system/configuration/{key}",
-            get(configuration::get_named).post(configuration::update_named),
-        )
         .route("/web/ConfigurationPage", get(dashboard::configuration_page))
-        .route("/web/configurationpage", get(dashboard::configuration_page))
         .route(
             "/web/ConfigurationPages",
             get(dashboard::configuration_pages),
         )
-        .route(
-            "/web/configurationpages",
-            get(dashboard::configuration_pages),
-        )
         .route("/Playback/BitrateTest", get(media_info::bitrate_test))
-        .route("/playback/bitratetest", get(media_info::bitrate_test))
         .route(
             "/Items/{item_id}/PlaybackInfo",
             get(media_info::get_playback_info).post(media_info::post_playback_info),
@@ -2417,8 +1005,6 @@ fn base_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
         )
         .route("/LiveStreams/Open", post(media_info::open_live_stream))
         .route("/LiveStreams/Close", post(media_info::close_live_stream))
-        .route("/livestreams/open", post(media_info::open_live_stream))
-        .route("/livestreams/close", post(media_info::close_live_stream))
         .route(
             "/MediaSegments/{item_id}",
             get(media_segments::get_item_segments),
@@ -2429,11 +1015,6 @@ fn base_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
         )
         .route("/FallbackFont/Fonts", get(subtitles::fallback_fonts))
         .route("/FallbackFont/Fonts/{name}", get(subtitles::fallback_font))
-        .route("/fallbackfont/fonts", get(subtitles::fallback_fonts))
-        .route(
-            "/fallbackfont/fonts/{name}",
-            get(subtitles::fallback_font),
-        )
         .route(
             "/Audio/{item_id}/hls/{*legacy_path}",
             get(hls_segment::audio),
@@ -2459,16 +1040,8 @@ fn base_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
             get(audio::stream_with_container).head(audio::stream_with_container),
         )
         .route(
-            "/Audio/{item_id}/{stream_file_name}",
-            get(audio::stream_with_file_name).head(audio::stream_with_file_name),
-        )
-        .route(
             "/Audio/{item_id}/universal",
             get(audio::universal).head(audio::universal),
-        )
-        .route(
-            "/Audio/{item_id}/universal.{container}",
-            get(audio::universal_with_container).head(audio::universal_with_container),
         )
         // ASP.NET routing is case-insensitive and Jellyfin-generated playback
         // URLs use lowercase collection segments. Keep lowercase aliases for
@@ -2498,16 +1071,8 @@ fn base_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
             get(audio::stream_with_container).head(audio::stream_with_container),
         )
         .route(
-            "/audio/{item_id}/{stream_file_name}",
-            get(audio::stream_with_file_name).head(audio::stream_with_file_name),
-        )
-        .route(
             "/audio/{item_id}/universal",
             get(audio::universal).head(audio::universal),
-        )
-        .route(
-            "/audio/{item_id}/universal.{container}",
-            get(audio::universal_with_container).head(audio::universal_with_container),
         )
         .route(
             "/Videos/{item_id}/hls/{*legacy_path}",
@@ -2534,10 +1099,6 @@ fn base_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
             axum::routing::delete(hls_segment::stop_active_encoding),
         )
         .route(
-            "/Videos/ActiveEncodings/Delete",
-            post(hls_segment::stop_active_encoding),
-        )
-        .route(
             "/videos/ActiveEncodings",
             axum::routing::delete(hls_segment::stop_active_encoding),
         )
@@ -2546,20 +1107,12 @@ fn base_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
             axum::routing::delete(hls_segment::stop_active_encoding),
         )
         .route(
-            "/videos/activeencodings/delete",
-            post(hls_segment::stop_active_encoding),
-        )
-        .route(
             "/Videos/{item_id}/stream",
             get(videos::stream).head(videos::stream),
         )
         .route(
             "/Videos/{item_id}/stream.{container}",
             get(videos::stream_with_container).head(videos::stream_with_container),
-        )
-        .route(
-            "/Videos/{item_id}/{stream_file_name}",
-            get(videos::stream_with_file_name).head(videos::stream_with_file_name),
         )
         .route(
             "/videos/{item_id}/hls/{*legacy_path}",
@@ -2589,18 +1142,9 @@ fn base_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
             "/videos/{item_id}/stream.{container}",
             get(videos::stream_with_container).head(videos::stream_with_container),
         )
-        .route(
-            "/videos/{item_id}/{stream_file_name}",
-            get(videos::stream_with_file_name).head(videos::stream_with_file_name),
-        )
         .route("/Plugins", get(plugins::list))
-        .route("/plugins", get(plugins::list))
         .route(
             "/Plugins/{plugin_id}/{version}/Enable",
-            post(plugins::enable),
-        )
-        .route(
-            "/plugins/{plugin_id}/{version}/enable",
             post(plugins::enable),
         )
         .route(
@@ -2608,35 +1152,17 @@ fn base_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
             post(plugins::disable),
         )
         .route(
-            "/plugins/{plugin_id}/{version}/disable",
-            post(plugins::disable),
-        )
-        .route(
             "/Plugins/{plugin_id}/{version}",
             delete(plugins::uninstall_version),
         )
-        .route(
-            "/plugins/{plugin_id}/{version}",
-            delete(plugins::uninstall_version),
-        )
         .route("/Plugins/{plugin_id}", delete(plugins::uninstall))
-        .route("/plugins/{plugin_id}", delete(plugins::uninstall))
-        .route("/Plugins/{plugin_id}/Delete", post(plugins::uninstall))
-        .route("/plugins/{plugin_id}/delete", post(plugins::uninstall))
         .route(
             "/Plugins/{plugin_id}/Configuration",
             get(plugins::get_configuration).post(plugins::update_configuration),
         )
-        .route(
-            "/plugins/{plugin_id}/configuration",
-            get(plugins::get_configuration).post(plugins::update_configuration),
-        )
         .route("/Plugins/{plugin_id}/Manifest", post(plugins::manifest))
-        .route("/plugins/{plugin_id}/manifest", post(plugins::manifest))
         .route("/Plugins/{plugin_id}/{version}/Image", get(plugins::image))
         .route("/plugins/{plugin_id}/{version}/image", get(plugins::image))
-        .route("/Plugins/{plugin_id}/Thumb", get(plugins::thumb))
-        .route("/plugins/{plugin_id}/thumb", get(plugins::thumb))
         .merge(package_routes())
         .merge(environment_routes())
         .merge(localization_routes())
@@ -2657,10 +1183,6 @@ fn base_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
             get(user_library::get_root_legacy),
         )
         .route(
-            "/users/{user_id}/items/root",
-            get(user_library::get_root_legacy),
-        )
-        .route(
             "/Users/{user_id}/Items/{item_id}",
             get(user_library::get_item_legacy),
         )
@@ -2673,15 +1195,7 @@ fn base_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
             get(user_library::get_intros_legacy),
         )
         .route(
-            "/users/{user_id}/items/{item_id}/intros",
-            get(user_library::get_intros_legacy),
-        )
-        .route(
             "/Users/{user_id}/Items/{item_id}/LocalTrailers",
-            get(user_library::get_local_trailers_legacy),
-        )
-        .route(
-            "/users/{user_id}/items/{item_id}/localtrailers",
             get(user_library::get_local_trailers_legacy),
         )
         .route(
@@ -2689,15 +1203,7 @@ fn base_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
             get(user_library::get_special_features_legacy),
         )
         .route(
-            "/users/{user_id}/items/{item_id}/specialfeatures",
-            get(user_library::get_special_features_legacy),
-        )
-        .route(
             "/Users/{user_id}/Items/{item_id}/Lyrics",
-            get(user_library::get_lyrics_legacy),
-        )
-        .route(
-            "/users/{user_id}/items/{item_id}/lyrics",
             get(user_library::get_lyrics_legacy),
         )
         .merge(item_query_routes())
@@ -2808,17 +1314,7 @@ fn base_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
                 .delete(virtual_folders::delete),
         )
         .route(
-            "/library/virtualfolders",
-            get(virtual_folders::list)
-                .post(virtual_folders::create)
-                .delete(virtual_folders::delete),
-        )
-        .route(
             "/Library/VirtualFolders/Name",
-            post(virtual_folders::rename),
-        )
-        .route(
-            "/library/virtualfolders/name",
             post(virtual_folders::rename),
         )
         .route(
@@ -2826,47 +1322,11 @@ fn base_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
             post(virtual_folders::add_path).delete(virtual_folders::remove_path),
         )
         .route(
-            "/library/virtualfolders/paths",
-            post(virtual_folders::add_path).delete(virtual_folders::remove_path),
-        )
-        .route(
             "/Library/VirtualFolders/Paths/Update",
             post(virtual_folders::update_path),
         )
         .route(
-            "/library/virtualfolders/paths/update",
-            post(virtual_folders::update_path),
-        )
-        .route(
-            "/Library/VirtualFolders/Query",
-            get(virtual_folders::query),
-        )
-        .route(
-            "/library/virtualfolders/query",
-            get(virtual_folders::query),
-        )
-        .route(
-            "/Library/VirtualFolders/Delete",
-            post(virtual_folders::delete_legacy),
-        )
-        .route(
-            "/library/virtualfolders/delete",
-            post(virtual_folders::delete_legacy),
-        )
-        .route(
-            "/Library/VirtualFolders/Paths/Delete",
-            post(virtual_folders::remove_path_legacy),
-        )
-        .route(
-            "/library/virtualfolders/paths/delete",
-            post(virtual_folders::remove_path_legacy),
-        )
-        .route(
             "/Library/VirtualFolders/LibraryOptions",
-            post(virtual_folders::update_options),
-        )
-        .route(
-            "/library/virtualfolders/libraryoptions",
             post(virtual_folders::update_options),
         )
         .nest_service(
@@ -2885,63 +1345,31 @@ fn base_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
 
 fn system_routes() -> Router<Arc<AppState>> {
     Router::new()
-        .route("/system/ping", get(ping).post(ping))
         .route("/System/ActivityLog/Entries", get(activity_log::entries))
-        .route("/system/activitylog/entries", get(activity_log::entries))
         .route("/System/Logs", get(system::get_logs))
-        .route("/system/logs", get(system::get_logs))
-        .route("/System/Logs/Query", get(system::query_logs))
-        .route("/system/logs/query", get(system::query_logs))
         .route("/System/Logs/Log", get(system::get_log_file))
-        .route("/system/logs/log", get(system::get_log_file))
-        .route("/System/Logs/{name}", get(system::get_log_file_by_name))
-        .route("/system/logs/{name}", get(system::get_log_file_by_name))
         .route("/System/Info", get(system::info))
         .route("/system/info", get(system::info))
         .route("/System/Info/Storage", get(system::storage))
         .route("/system/info/storage", get(system::storage))
         .route("/System/Endpoint", get(system::endpoint_info))
-        .route("/system/endpoint", get(system::endpoint_info))
         .route("/System/Ext/ServerDomains", get(system::server_domains))
-        .route("/system/ext/serverdomains", get(system::server_domains))
         .route("/System/Restart", post(system::restart))
-        .route("/system/restart", post(system::restart))
         .route("/System/Shutdown", post(system::shutdown))
-        .route("/system/shutdown", post(system::shutdown))
         .route("/Document", post(client_log::document))
         .route("/ClientLog/Document", post(client_log::document))
-        .route("/clientlog/document", post(client_log::document))
         .route("/GetUtcTime", get(time_sync::get_utc_time))
-        .route("/getutctime", get(time_sync::get_utc_time))
         .route("/metrics", get(metrics))
         .route("/ScheduledTasks", get(scheduled_tasks::list))
-        .route("/scheduledtasks", get(scheduled_tasks::list))
         .route(
             "/ScheduledTasks/Running/{task_id}",
             post(scheduled_tasks::start).delete(scheduled_tasks::stop),
         )
         .route(
-            "/scheduledtasks/running/{task_id}",
-            post(scheduled_tasks::start).delete(scheduled_tasks::stop),
-        )
-        .route(
-            "/ScheduledTasks/Running/{task_id}/Delete",
-            post(scheduled_tasks::stop),
-        )
-        .route(
-            "/scheduledtasks/running/{task_id}/delete",
-            post(scheduled_tasks::stop),
-        )
-        .route(
             "/ScheduledTasks/{task_id}/Triggers",
             post(scheduled_tasks::update_triggers),
         )
-        .route(
-            "/scheduledtasks/{task_id}/triggers",
-            post(scheduled_tasks::update_triggers),
-        )
         .route("/ScheduledTasks/{task_id}", get(scheduled_tasks::get))
-        .route("/scheduledtasks/{task_id}", get(scheduled_tasks::get))
 }
 
 async fn metrics(State(state): State<Arc<AppState>>) -> Response {
@@ -2963,21 +1391,12 @@ async fn metrics(State(state): State<Arc<AppState>>) -> Response {
 fn sync_play_routes() -> Router<Arc<AppState>> {
     Router::new()
         .route("/SyncPlay/New", post(sync_play::create_group))
-        .route("/syncplay/new", post(sync_play::create_group))
         .route("/SyncPlay/Join", post(sync_play::join_group))
-        .route("/syncplay/join", post(sync_play::join_group))
         .route("/SyncPlay/Leave", post(sync_play::leave_group))
-        .route("/syncplay/leave", post(sync_play::leave_group))
         .route("/SyncPlay/List", get(sync_play::list_groups))
-        .route("/syncplay/list", get(sync_play::list_groups))
         .route("/SyncPlay/SetNewQueue", post(sync_play::set_new_queue))
-        .route("/syncplay/setnewqueue", post(sync_play::set_new_queue))
         .route(
             "/SyncPlay/SetPlaylistItem",
-            post(sync_play::set_playlist_item),
-        )
-        .route(
-            "/syncplay/setplaylistitem",
             post(sync_play::set_playlist_item),
         )
         .route(
@@ -2985,51 +1404,26 @@ fn sync_play_routes() -> Router<Arc<AppState>> {
             post(sync_play::remove_from_playlist),
         )
         .route(
-            "/syncplay/removefromplaylist",
-            post(sync_play::remove_from_playlist),
-        )
-        .route(
             "/SyncPlay/MovePlaylistItem",
             post(sync_play::move_playlist_item),
         )
-        .route(
-            "/syncplay/moveplaylistitem",
-            post(sync_play::move_playlist_item),
-        )
         .route("/SyncPlay/Queue", post(sync_play::queue_items))
-        .route("/syncplay/queue", post(sync_play::queue_items))
         .route("/SyncPlay/Unpause", post(sync_play::unpause))
-        .route("/syncplay/unpause", post(sync_play::unpause))
         .route("/SyncPlay/Pause", post(sync_play::pause))
-        .route("/syncplay/pause", post(sync_play::pause))
         .route("/SyncPlay/Stop", post(sync_play::stop))
-        .route("/syncplay/stop", post(sync_play::stop))
         .route("/SyncPlay/Seek", post(sync_play::seek))
-        .route("/syncplay/seek", post(sync_play::seek))
         .route("/SyncPlay/Buffering", post(sync_play::buffering))
-        .route("/syncplay/buffering", post(sync_play::buffering))
         .route("/SyncPlay/Ready", post(sync_play::ready))
-        .route("/syncplay/ready", post(sync_play::ready))
         .route("/SyncPlay/SetIgnoreWait", post(sync_play::set_ignore_wait))
-        .route("/syncplay/setignorewait", post(sync_play::set_ignore_wait))
         .route("/SyncPlay/NextItem", post(sync_play::next_item))
-        .route("/syncplay/nextitem", post(sync_play::next_item))
         .route("/SyncPlay/PreviousItem", post(sync_play::previous_item))
-        .route("/syncplay/previousitem", post(sync_play::previous_item))
         .route("/SyncPlay/SetRepeatMode", post(sync_play::set_repeat_mode))
-        .route("/syncplay/setrepeatmode", post(sync_play::set_repeat_mode))
         .route(
             "/SyncPlay/SetShuffleMode",
             post(sync_play::set_shuffle_mode),
         )
-        .route(
-            "/syncplay/setshufflemode",
-            post(sync_play::set_shuffle_mode),
-        )
         .route("/SyncPlay/Ping", post(sync_play::ping))
-        .route("/syncplay/ping", post(sync_play::ping))
         .route("/SyncPlay/{id}", get(sync_play::get_group))
-        .route("/syncplay/{id}", get(sync_play::get_group))
 }
 
 fn environment_routes() -> Router<Arc<AppState>> {
@@ -3046,20 +1440,6 @@ fn environment_routes() -> Router<Arc<AppState>> {
         .route("/Environment/ParentPath", get(environment::parent_path))
         .route(
             "/Environment/DefaultDirectoryBrowser",
-            get(environment::default_directory_browser),
-        )
-        .route(
-            "/environment/directorycontents",
-            get(environment::directory_contents),
-        )
-        .route(
-            "/environment/validatepath",
-            post(environment::validate_path),
-        )
-        .route("/environment/drives", get(environment::drives))
-        .route("/environment/parentpath", get(environment::parent_path))
-        .route(
-            "/environment/defaultdirectorybrowser",
             get(environment::default_directory_browser),
         )
 }
@@ -3087,49 +1467,20 @@ fn localization_routes() -> Router<Arc<AppState>> {
 fn api_key_routes() -> Router<Arc<AppState>> {
     Router::new()
         .route("/Auth/Keys", get(api_keys::list).post(api_keys::create))
-        .route("/auth/keys", get(api_keys::list).post(api_keys::create))
         .route("/Auth/Keys/{key}", axum::routing::delete(api_keys::revoke))
-        .route(
-            "/Auth/Keys/{key}/Delete",
-            post(api_keys::revoke).delete(api_keys::revoke),
-        )
-        .route("/auth/keys/{key}", axum::routing::delete(api_keys::revoke))
-        .route(
-            "/auth/keys/{key}/delete",
-            post(api_keys::revoke).delete(api_keys::revoke),
-        )
 }
 
 fn package_routes() -> Router<Arc<AppState>> {
     Router::new()
         .route("/Packages", get(packages::list))
-        .route("/packages", get(packages::list))
         .route("/Packages/Installed/{name}", post(packages::install))
-        .route("/packages/installed/{name}", post(packages::install))
         .route(
             "/Packages/Installing/{package_id}",
             axum::routing::delete(packages::cancel_installation),
         )
-        .route(
-            "/packages/installing/{package_id}",
-            axum::routing::delete(packages::cancel_installation),
-        )
-        .route(
-            "/Packages/Installing/{package_id}/Delete",
-            post(packages::cancel_installation),
-        )
-        .route(
-            "/packages/installing/{package_id}/delete",
-            post(packages::cancel_installation),
-        )
         .route("/Packages/{name}", get(packages::get))
-        .route("/packages/{name}", get(packages::get))
         .route(
             "/Repositories",
-            get(packages::repositories).post(packages::set_repositories),
-        )
-        .route(
-            "/repositories",
             get(packages::repositories).post(packages::set_repositories),
         )
 }
@@ -3140,24 +1491,13 @@ fn startup_routes() -> Router<Arc<AppState>> {
             "/Startup/Configuration",
             get(startup::get_configuration).post(startup::update_configuration),
         )
-        .route(
-            "/startup/configuration",
-            get(startup::get_configuration).post(startup::update_configuration),
-        )
         .route("/Startup/RemoteAccess", post(startup::update_remote_access))
-        .route("/startup/remoteaccess", post(startup::update_remote_access))
         .route(
             "/Startup/User",
             get(startup::get_user).post(startup::update_user),
         )
-        .route(
-            "/startup/user",
-            get(startup::get_user).post(startup::update_user),
-        )
         .route("/Startup/FirstUser", get(startup::get_user))
-        .route("/startup/firstuser", get(startup::get_user))
         .route("/Startup/Complete", post(startup::complete))
-        .route("/startup/complete", post(startup::complete))
 }
 
 fn authentication_routes() -> Router<Arc<AppState>> {
@@ -3179,15 +1519,7 @@ fn authentication_routes() -> Router<Arc<AppState>> {
             post(authentication::authenticate_with_quick_connect),
         )
         .route(
-            "/users/authenticatewithquickconnect",
-            post(authentication::authenticate_with_quick_connect),
-        )
-        .route(
             "/Users/{user_id}/Authenticate",
-            post(authentication::authenticate),
-        )
-        .route(
-            "/users/{user_id}/authenticate",
             post(authentication::authenticate),
         )
         .route("/Users/Me", get(authentication::current_user))
@@ -3197,21 +1529,15 @@ fn authentication_routes() -> Router<Arc<AppState>> {
 fn quick_connect_routes() -> Router<Arc<AppState>> {
     Router::new()
         .route("/QuickConnect/Enabled", get(quick_connect::enabled))
-        .route("/quickconnect/enabled", get(quick_connect::enabled))
         .route("/QuickConnect/Initiate", post(quick_connect::initiate))
-        .route("/quickconnect/initiate", post(quick_connect::initiate))
         .route("/QuickConnect/Connect", get(quick_connect::connect))
-        .route("/quickconnect/connect", get(quick_connect::connect))
         .route("/QuickConnect/Authorize", post(quick_connect::authorize))
-        .route("/quickconnect/authorize", post(quick_connect::authorize))
 }
 
 fn device_routes() -> Router<Arc<AppState>> {
     Router::new()
         .route("/Devices", get(devices::list).delete(devices::delete))
         .route("/devices", get(devices::list).delete(devices::delete))
-        .route("/Devices/Delete", post(devices::delete))
-        .route("/devices/delete", post(devices::delete))
         .route("/Devices/Info", get(devices::info))
         .route("/devices/info", get(devices::info))
         .route(
@@ -3257,13 +1583,8 @@ fn user_routes() -> Router<Arc<AppState>> {
         .route("/Users/New", post(users::create))
         .route("/users/new", post(users::create))
         .route("/Users/ForgotPassword", post(users::forgot_password))
-        .route("/users/forgotpassword", post(users::forgot_password))
         .route(
             "/Users/ForgotPassword/Pin",
-            post(users::forgot_password_pin),
-        )
-        .route(
-            "/users/forgotpassword/pin",
             post(users::forgot_password_pin),
         )
         .route("/Users/Configuration", post(users::update_configuration))
@@ -3280,8 +1601,6 @@ fn user_routes() -> Router<Arc<AppState>> {
                 .post(users::update_legacy)
                 .delete(users::delete),
         )
-        .route("/Users/{id}/Delete", post(users::delete))
-        .route("/users/{id}/delete", post(users::delete))
         .route("/User/{id}", axum::routing::delete(users::delete))
         .route("/Users/Password", post(users::update_password_query))
         .route("/users/password", post(users::update_password_query))
@@ -3294,22 +1613,10 @@ fn user_routes() -> Router<Arc<AppState>> {
             post(users::update_configuration_legacy),
         )
         .route(
-            "/Users/{id}/Configuration/Partial",
-            post(users::update_configuration_partial),
-        )
-        .route(
-            "/users/{id}/configuration/partial",
-            post(users::update_configuration_partial),
-        )
-        .route(
             "/Users/{id}/Images/{image_type}",
             get(users::get_user_image_legacy)
                 .post(users::post_user_image_legacy)
                 .delete(users::delete_user_image_legacy),
-        )
-        .route(
-            "/Users/{id}/Images/{image_type}/Delete",
-            post(users::delete_user_image_legacy),
         )
         .route(
             "/users/{id}/images/{image_type}",
@@ -3318,28 +1625,16 @@ fn user_routes() -> Router<Arc<AppState>> {
                 .delete(users::delete_user_image_legacy),
         )
         .route(
-            "/users/{id}/images/{image_type}/delete",
-            post(users::delete_user_image_legacy),
-        )
-        .route(
             "/Users/{id}/Images/{image_type}/{index}",
             get(users::get_user_image_index_legacy)
                 .post(users::post_user_image_index_legacy)
                 .delete(users::delete_user_image_index_legacy),
         )
         .route(
-            "/Users/{id}/Images/{image_type}/{index}/Delete",
-            post(users::delete_user_image_index_legacy),
-        )
-        .route(
             "/users/{id}/images/{image_type}/{index}",
             get(users::get_user_image_index_legacy)
                 .post(users::post_user_image_index_legacy)
                 .delete(users::delete_user_image_index_legacy),
-        )
-        .route(
-            "/users/{id}/images/{image_type}/{index}/delete",
-            post(users::delete_user_image_index_legacy),
         )
         .route("/Users/{id}/Password", post(users::update_password))
         .route("/users/{id}/password", post(users::update_password))
@@ -3355,18 +1650,10 @@ fn user_view_routes() -> Router<Arc<AppState>> {
             "/UserViews/GroupingOptions",
             get(user_views::grouping_options),
         )
-        .route(
-            "/userviews/groupingoptions",
-            get(user_views::grouping_options),
-        )
         .route("/Users/{user_id}/Views", get(user_views::get_legacy))
         .route("/users/{user_id}/views", get(user_views::get_legacy))
         .route(
             "/Users/{user_id}/GroupingOptions",
-            get(user_views::grouping_options_legacy),
-        )
-        .route(
-            "/users/{user_id}/groupingoptions",
             get(user_views::grouping_options_legacy),
         )
 }
@@ -3375,14 +1662,8 @@ fn session_routes() -> Router<Arc<AppState>> {
     Router::new()
         .route("/Sessions", get(session::list))
         .route("/sessions", get(session::list))
-        .route("/Sessions/PlayQueue", get(session::play_queue))
-        .route("/sessions/playqueue", get(session::play_queue))
         .route(
             "/Sessions/{session_id}/System/{command}",
-            post(session::send_system_command),
-        )
-        .route(
-            "/sessions/{session_id}/system/{command}",
             post(session::send_system_command),
         )
         .route(
@@ -3390,15 +1671,7 @@ fn session_routes() -> Router<Arc<AppState>> {
             post(session::display_content),
         )
         .route(
-            "/sessions/{session_id}/viewing",
-            post(session::display_content),
-        )
-        .route(
             "/Sessions/{session_id}/Playing",
-            post(session::send_play_command),
-        )
-        .route(
-            "/sessions/{session_id}/playing",
             post(session::send_play_command),
         )
         .route(
@@ -3406,15 +1679,7 @@ fn session_routes() -> Router<Arc<AppState>> {
             post(session::send_playstate_command),
         )
         .route(
-            "/sessions/{session_id}/playing/{command}",
-            post(session::send_playstate_command),
-        )
-        .route(
             "/Sessions/{session_id}/Command/{command}",
-            post(session::send_general_command),
-        )
-        .route(
-            "/sessions/{session_id}/command/{command}",
             post(session::send_general_command),
         )
         .route(
@@ -3422,63 +1687,24 @@ fn session_routes() -> Router<Arc<AppState>> {
             post(session::send_full_general_command),
         )
         .route(
-            "/sessions/{session_id}/command",
-            post(session::send_full_general_command),
-        )
-        .route(
             "/Sessions/{session_id}/Message",
-            post(session::send_message_command),
-        )
-        .route(
-            "/sessions/{session_id}/message",
             post(session::send_message_command),
         )
         .route(
             "/Sessions/{session_id}/User/{user_id}",
             post(session::add_user_to_session).delete(session::remove_user_from_session),
         )
-        .route(
-            "/Sessions/{session_id}/Users/{user_id}",
-            post(session::add_user_to_session).delete(session::remove_user_from_session),
-        )
-        .route(
-            "/sessions/{session_id}/user/{user_id}",
-            post(session::add_user_to_session).delete(session::remove_user_from_session),
-        )
-        .route(
-            "/sessions/{session_id}/users/{user_id}",
-            post(session::add_user_to_session).delete(session::remove_user_from_session),
-        )
-        .route(
-            "/Sessions/{session_id}/Users/{user_id}/Delete",
-            post(session::remove_user_from_session),
-        )
-        .route(
-            "/sessions/{session_id}/users/{user_id}/delete",
-            post(session::remove_user_from_session),
-        )
         .route("/Sessions/Viewing", post(session::report_viewing))
-        .route("/sessions/viewing", post(session::report_viewing))
         .route("/Sessions/Capabilities", post(session::post_capabilities))
         .route("/sessions/capabilities", post(session::post_capabilities))
         .route(
             "/Sessions/Capabilities/Full",
             post(session::post_full_capabilities),
         )
-        .route(
-            "/sessions/capabilities/full",
-            post(session::post_full_capabilities),
-        )
         .route("/Sessions/Logout", post(session::logout))
-        .route("/sessions/logout", post(session::logout))
         .route("/Auth/Providers", get(session::authentication_providers))
-        .route("/auth/providers", get(session::authentication_providers))
         .route(
             "/Auth/PasswordResetProviders",
-            get(session::password_reset_providers),
-        )
-        .route(
-            "/auth/passwordresetproviders",
             get(session::password_reset_providers),
         )
 }
@@ -3561,26 +1787,6 @@ fn playstate_routes() -> Router<Arc<AppState>> {
             "/Users/{user_id}/PlayedItems/{item_id}",
             post(playstate::mark_played).delete(playstate::mark_unplayed),
         )
-        .route(
-            "/Users/{user_id}/PlayedItems/{item_id}/Delete",
-            post(playstate::mark_unplayed),
-        )
-        .route(
-            "/users/{user_id}/playeditems/{item_id}",
-            post(playstate::mark_played).delete(playstate::mark_unplayed),
-        )
-        .route(
-            "/users/{user_id}/playeditems/{item_id}/delete",
-            post(playstate::mark_unplayed),
-        )
-        .route(
-            "/Users/{user_id}/PlayingItems/{item_id}/Delete",
-            post(playstate::report_playback_stopped_legacy_for_user),
-        )
-        .route(
-            "/users/{user_id}/playingitems/{item_id}/delete",
-            post(playstate::report_playback_stopped_legacy_for_user),
-        )
 }
 
 fn user_data_routes() -> Router<Arc<AppState>> {
@@ -3614,18 +1820,6 @@ fn user_data_routes() -> Router<Arc<AppState>> {
             post(user_data::mark_favorite_legacy).delete(user_data::unmark_favorite_legacy),
         )
         .route(
-            "/users/{user_id}/favoriteitems/{item_id}",
-            post(user_data::mark_favorite_legacy).delete(user_data::unmark_favorite_legacy),
-        )
-        .route(
-            "/Users/{user_id}/FavoriteItems/{item_id}/Delete",
-            post(user_data::unmark_favorite_legacy),
-        )
-        .route(
-            "/users/{user_id}/favoriteitems/{item_id}/delete",
-            post(user_data::unmark_favorite_legacy),
-        )
-        .route(
             "/UserItems/{item_id}/Rating",
             post(user_data::set_rating_modern).delete(user_data::delete_rating_modern),
         )
@@ -3637,26 +1831,12 @@ fn user_data_routes() -> Router<Arc<AppState>> {
             "/Users/{user_id}/Items/{item_id}/Rating",
             post(user_data::set_rating_legacy).delete(user_data::delete_rating_legacy),
         )
-        .route(
-            "/users/{user_id}/items/{item_id}/rating",
-            post(user_data::set_rating_legacy).delete(user_data::delete_rating_legacy),
-        )
-        .route(
-            "/Users/{user_id}/Items/{item_id}/Rating/Delete",
-            post(user_data::delete_rating_legacy),
-        )
-        .route(
-            "/users/{user_id}/items/{item_id}/rating/delete",
-            post(user_data::delete_rating_legacy),
-        )
 }
 
 fn item_query_routes() -> Router<Arc<AppState>> {
     Router::new()
         .route("/Items", get(items::get).delete(library::delete_items))
         .route("/items", get(items::get).delete(library::delete_items))
-        .route("/Items/Delete", post(library::delete_items))
-        .route("/items/delete", post(library::delete_items))
         .route("/Items/Suggestions", get(items::suggestions))
         .route("/items/suggestions", get(items::suggestions))
         .route("/Items/Latest", get(items::latest))
@@ -3686,43 +1866,18 @@ fn item_query_routes() -> Router<Arc<AppState>> {
 fn collection_routes() -> Router<Arc<AppState>> {
     Router::new()
         .route("/Collections", post(collections::create))
-        .route("/collections", post(collections::create))
         .route(
             "/Collections/{collection_id}/Items",
             post(collections::add_items).delete(collections::remove_items),
         )
-        .route(
-            "/Collections/{collection_id}/Items/Delete",
-            post(collections::remove_items),
-        )
-        .route(
-            "/collections/{collection_id}/items",
-            post(collections::add_items).delete(collections::remove_items),
-        )
-        .route(
-            "/collections/{collection_id}/items/delete",
-            post(collections::remove_items),
-        )
         .route("/Playlists", post(playlists::create))
-        .route("/playlists", post(playlists::create))
         .route(
             "/Playlists/{playlist_id}",
             get(playlists::get).post(playlists::update),
         )
-        .route(
-            "/playlists/{playlist_id}",
-            get(playlists::get).post(playlists::update),
-        )
         .route("/Playlists/{playlist_id}/Users", get(playlists::get_users))
-        .route("/playlists/{playlist_id}/users", get(playlists::get_users))
         .route(
             "/Playlists/{playlist_id}/Users/{user_id}",
-            get(playlists::get_user)
-                .post(playlists::set_user)
-                .delete(playlists::remove_user),
-        )
-        .route(
-            "/playlists/{playlist_id}/users/{user_id}",
             get(playlists::get_user)
                 .post(playlists::set_user)
                 .delete(playlists::remove_user),
@@ -3734,33 +1889,7 @@ fn collection_routes() -> Router<Arc<AppState>> {
                 .delete(playlists::remove_items),
         )
         .route(
-            "/Playlists/{playlist_id}/Items/Delete",
-            post(playlists::remove_items),
-        )
-        .route(
-            "/playlists/{playlist_id}/items",
-            get(playlists::get_items)
-                .post(playlists::add_items)
-                .delete(playlists::remove_items),
-        )
-        .route(
-            "/playlists/{playlist_id}/items/delete",
-            post(playlists::remove_items),
-        )
-        .route(
-            "/Playlists/{playlist_id}/AddToPlaylistInfo",
-            get(playlists::add_to_playlist_info),
-        )
-        .route(
-            "/playlists/{playlist_id}/addtoplaylistinfo",
-            get(playlists::add_to_playlist_info),
-        )
-        .route(
             "/Playlists/{playlist_id}/Items/{item_id}/Move/{new_index}",
-            post(playlists::move_item),
-        )
-        .route(
-            "/playlists/{playlist_id}/items/{item_id}/move/{new_index}",
             post(playlists::move_item),
         )
 }
@@ -3805,8 +1934,6 @@ fn library_controller_routes() -> Router<Arc<AppState>> {
         .route("/items/counts", get(library::item_counts))
         .route("/Items/{item_id}/File", get(library::file))
         .route("/items/{item_id}/file", get(library::file))
-        .route("/Items/{item_id}/DeleteInfo", get(library::delete_info))
-        .route("/items/{item_id}/deleteinfo", get(library::delete_info))
         .route("/Items/{item_id}/ThemeSongs", get(library::theme_songs))
         .route("/items/{item_id}/themesongs", get(library::theme_songs))
         .route("/Items/{item_id}/ThemeVideos", get(library::theme_videos))
@@ -3820,29 +1947,14 @@ fn library_controller_routes() -> Router<Arc<AppState>> {
         .route("/Items/{item_id}/Collections", get(library::collections))
         .route("/items/{item_id}/collections", get(library::collections))
         .route("/Library/Refresh", post(library::refresh))
-        .route("/library/refresh", post(library::refresh))
         .route("/Library/PhysicalPaths", get(library::physical_paths))
-        .route("/library/physicalpaths", get(library::physical_paths))
         .route("/Library/MediaFolders", get(library::media_folders))
         .route("/library/mediafolders", get(library::media_folders))
-        .route(
-            "/Library/SelectableMediaFolders",
-            get(library::media_folders),
-        )
-        .route(
-            "/library/selectablemediafolders",
-            get(library::media_folders),
-        )
         .route("/Library/Series/Added", post(library::updated_series))
-        .route("/library/series/added", post(library::updated_series))
         .route("/Library/Series/Updated", post(library::updated_series))
-        .route("/library/series/updated", post(library::updated_series))
         .route("/Library/Movies/Added", post(library::updated_movies))
-        .route("/library/movies/added", post(library::updated_movies))
         .route("/Library/Movies/Updated", post(library::updated_movies))
-        .route("/library/movies/updated", post(library::updated_movies))
         .route("/Library/Media/Updated", post(library::updated_media))
-        .route("/library/media/updated", post(library::updated_media))
         .route(
             "/Libraries/AvailableOptions",
             get(library::available_options),
@@ -3860,7 +1972,6 @@ fn library_controller_routes() -> Router<Arc<AppState>> {
         .route("/Shows/{item_id}/Similar", get(library::similar))
         .route("/shows/{item_id}/similar", get(library::similar))
         .route("/Movies/Recommendations", get(movies::recommendations))
-        .route("/movies/recommendations", get(movies::recommendations))
         .route("/Movies/{item_id}/Similar", get(library::similar))
         .route("/movies/{item_id}/similar", get(library::similar))
         .route("/Shows/NextUp", get(tv_shows::next_up))
@@ -3885,24 +1996,12 @@ fn user_library_routes() -> Router<Arc<AppState>> {
                 .post(item_update::update)
                 .delete(library::delete_item),
         )
-        .route("/Items/{item_id}/Tags/Add", post(item_update::add_tags))
-        .route(
-            "/Items/{item_id}/Tags/Delete",
-            post(item_update::delete_tags),
-        )
-        .route("/Items/{item_id}/Delete", post(library::delete_item))
         .route(
             "/items/{item_id}",
             get(user_library::get_item)
                 .post(item_update::update)
                 .delete(library::delete_item),
         )
-        .route("/items/{item_id}/tags/add", post(item_update::add_tags))
-        .route(
-            "/items/{item_id}/tags/delete",
-            post(item_update::delete_tags),
-        )
-        .route("/items/{item_id}/delete", post(library::delete_item))
         .route(
             "/Items/{item_id}/ContentType",
             post(item_update::update_content_type),
@@ -3918,33 +2017,11 @@ fn user_library_routes() -> Router<Arc<AppState>> {
             get(item_update::metadata_editor),
         )
         .route(
-            "/items/{item_id}/metadataeditor",
-            get(item_update::metadata_editor),
-        )
-        .route(
             "/Items/{item_id}/ExternalIdInfos",
             get(item_lookup::external_id_infos),
         )
         .route(
-            "/items/{item_id}/externalidinfos",
-            get(item_lookup::external_id_infos),
-        )
-        .route("/Items/{item_id}/MakePublic", post(playlists::make_public))
-        .route("/items/{item_id}/makepublic", post(playlists::make_public))
-        .route(
-            "/Items/{item_id}/MakePrivate",
-            post(playlists::make_private),
-        )
-        .route(
-            "/items/{item_id}/makeprivate",
-            post(playlists::make_private),
-        )
-        .route(
             "/Items/RemoteSearch/Movie",
-            post(item_lookup::remote_search),
-        )
-        .route(
-            "/items/remotesearch/movie",
             post(item_lookup::remote_search),
         )
         .route(
@@ -3952,15 +2029,7 @@ fn user_library_routes() -> Router<Arc<AppState>> {
             post(item_lookup::remote_search),
         )
         .route(
-            "/items/remotesearch/trailer",
-            post(item_lookup::remote_search),
-        )
-        .route(
             "/Items/RemoteSearch/MusicVideo",
-            post(item_lookup::remote_search),
-        )
-        .route(
-            "/items/remotesearch/musicvideo",
             post(item_lookup::remote_search),
         )
         .route(
@@ -3968,15 +2037,7 @@ fn user_library_routes() -> Router<Arc<AppState>> {
             post(item_lookup::remote_search),
         )
         .route(
-            "/items/remotesearch/series",
-            post(item_lookup::remote_search),
-        )
-        .route(
             "/Items/RemoteSearch/BoxSet",
-            post(item_lookup::remote_search),
-        )
-        .route(
-            "/items/remotesearch/boxset",
             post(item_lookup::remote_search),
         )
         .route(
@@ -3984,35 +2045,16 @@ fn user_library_routes() -> Router<Arc<AppState>> {
             post(item_lookup::remote_search),
         )
         .route(
-            "/items/remotesearch/musicartist",
-            post(item_lookup::remote_search),
-        )
-        .route(
             "/Items/RemoteSearch/MusicAlbum",
-            post(item_lookup::remote_search),
-        )
-        .route(
-            "/items/remotesearch/musicalbum",
             post(item_lookup::remote_search),
         )
         .route(
             "/Items/RemoteSearch/Person",
             post(item_lookup::remote_search_elevated),
         )
-        .route(
-            "/items/remotesearch/person",
-            post(item_lookup::remote_search_elevated),
-        )
         .route("/Items/RemoteSearch/Book", post(item_lookup::remote_search))
-        .route("/items/remotesearch/book", post(item_lookup::remote_search))
-        .route("/Items/RemoteSearch/Image", get(remote_images::fetch))
-        .route("/items/remotesearch/image", get(remote_images::fetch))
         .route(
             "/Items/RemoteSearch/Apply/{item_id}",
-            post(item_lookup::apply_remote_search),
-        )
-        .route(
-            "/items/remotesearch/apply/{item_id}",
             post(item_lookup::apply_remote_search),
         )
         .route("/Items/{item_id}/Intros", get(user_library::get_intros))
@@ -4043,10 +2085,6 @@ fn user_library_routes() -> Router<Arc<AppState>> {
         )
         .route(
             "/Items/{item_id}/RemoteSearch/Subtitles/{id}",
-            get(subtitles::search_remote_subtitles).post(subtitles::download_remote_subtitles),
-        )
-        .route(
-            "/items/{item_id}/remotesearch/subtitles/{id}",
             get(subtitles::search_remote_subtitles).post(subtitles::download_remote_subtitles),
         )
         .route(
@@ -4081,22 +2119,13 @@ fn user_library_routes() -> Router<Arc<AppState>> {
             "/Providers/Subtitles/Subtitles/{subtitle_id}",
             get(subtitles::get_remote_subtitles),
         )
-        .route(
-            "/providers/subtitles/subtitles/{subtitle_id}",
-            get(subtitles::get_remote_subtitles),
-        )
 }
 
 fn video_routes() -> Router<Arc<AppState>> {
     Router::new()
         .route("/Videos/MergeVersions", post(videos::merge_versions))
-        .route("/videos/mergeversions", post(videos::merge_versions))
         .route(
             "/Videos/{item_id}/AlternateSources",
-            axum::routing::delete(videos::delete_alternate_sources),
-        )
-        .route(
-            "/videos/{item_id}/alternatesources",
             axum::routing::delete(videos::delete_alternate_sources),
         )
         .route(
@@ -4112,15 +2141,7 @@ fn video_routes() -> Router<Arc<AppState>> {
             axum::routing::delete(subtitles::delete_subtitle),
         )
         .route(
-            "/videos/{item_id}/subtitles/{index}",
-            axum::routing::delete(subtitles::delete_subtitle),
-        )
-        .route(
             "/Videos/{item_id}/Subtitles",
-            post(subtitles::upload_subtitle),
-        )
-        .route(
-            "/videos/{item_id}/subtitles",
             post(subtitles::upload_subtitle),
         )
         .route(
@@ -4152,15 +2173,7 @@ fn video_routes() -> Router<Arc<AppState>> {
             get(video_attachments::get),
         )
         .route(
-            "/Videos/{item_id}/{media_source_id}/Attachments/{index}/Stream",
-            get(video_attachments::get),
-        )
-        .route(
             "/videos/{item_id}/{media_source_id}/attachments/{index}",
-            get(video_attachments::get),
-        )
-        .route(
-            "/videos/{item_id}/{media_source_id}/attachments/{index}/stream",
             get(video_attachments::get),
         )
         .route(
@@ -4354,7 +2367,6 @@ fn user_profile_image_tag(image: &user_profile_image::Model) -> String {
 }
 
 pub(crate) fn user_to_dto(user: user::Model) -> UserDto {
-    let user_id = user.id;
     let mut policy: UserPolicy = serde_json::from_value(user.policy).unwrap_or_default();
     policy.is_administrator = user.is_administrator;
     policy.is_hidden = user.is_hidden;
@@ -4363,21 +2375,12 @@ pub(crate) fn user_to_dto(user: user::Model) -> UserDto {
     policy.password_reset_provider_id = Some(user.password_reset_provider_id);
     policy.invalid_login_attempt_count = user.invalid_login_attempt_count;
     policy.login_attempts_before_lockout = user.login_attempts_before_lockout;
-    for schedule in &mut policy.access_schedules {
-        // The Rust persistence layer currently embeds schedules in the policy
-        // JSON rather than in a separate entity table. Preserve a submitted
-        // identity, but populate legacy rows with their owning user so the
-        // official required mobile DTO remains decodable.
-        if schedule.user_id.is_nil() {
-            schedule.user_id = user_id;
-        }
-    }
     let mut configuration: UserConfiguration =
         serde_json::from_value(user.preferences).unwrap_or_default();
     configuration.enable_local_password = user.enable_local_password;
 
     UserDto {
-        id: user_id,
+        id: user.id,
         name: Some(user.username),
         // Jellyfin retains these deprecated fields for wire compatibility and
         // always reports true. Password state is no longer exposed here.
@@ -4403,7 +2406,6 @@ pub(crate) enum ApiError {
     Playstate(PlaystateError),
     UserData(UserDataServiceError),
     Artist(ArtistError),
-    GameGenre(GameGenreError),
     Genre(GenreError),
     Studio(StudioError),
     MusicGenre(MusicGenreError),
@@ -4507,12 +2509,6 @@ impl From<ArtistError> for ApiError {
 impl From<GenreError> for ApiError {
     fn from(error: GenreError) -> Self {
         Self::Genre(error)
-    }
-}
-
-impl From<GameGenreError> for ApiError {
-    fn from(error: GameGenreError) -> Self {
-        Self::GameGenre(error)
     }
 }
 
@@ -4796,7 +2792,6 @@ impl IntoResponse for ApiError {
             ) => (StatusCode::NOT_FOUND, "User, item, or lyrics not found"),
             Self::UserLibrary(UserLibraryError::Forbidden)
             | Self::Artist(ArtistError::Forbidden)
-            | Self::GameGenre(GameGenreError::Forbidden)
             | Self::Genre(GenreError::Forbidden)
             | Self::Studio(StudioError::Forbidden)
             | Self::MusicGenre(MusicGenreError::Forbidden)
@@ -4814,12 +2809,6 @@ impl IntoResponse for ApiError {
                 | GenreError::User(UserError::NotFound)
                 | GenreError::BaseItem(BaseItemError::NotFound),
             ) => (StatusCode::NOT_FOUND, "Genre or user not found"),
-            Self::GameGenre(
-                GameGenreError::NotFound
-                | GameGenreError::UserNotFound
-                | GameGenreError::User(UserError::NotFound)
-                | GameGenreError::BaseItem(BaseItemError::NotFound),
-            ) => (StatusCode::NOT_FOUND, "Game genre or user not found"),
             Self::Artist(
                 ArtistError::NotFound
                 | ArtistError::UserNotFound
@@ -4856,10 +2845,6 @@ impl IntoResponse for ApiError {
             Self::Genre(_) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "Genre persistence failed",
-            ),
-            Self::GameGenre(_) => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Game genre persistence failed",
             ),
             Self::Artist(_) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -5049,9 +3034,7 @@ fn collection_error_response(error: &CollectionError) -> (StatusCode, &'static s
         }
         CollectionError::CollectionStore(CollectionStoreError::Database(_))
         | CollectionError::LinkedChildStore(
-            LinkedChildStoreError::MoveIndexOutOfBounds { .. }
-            | LinkedChildStoreError::Database(_)
-            | LinkedChildStoreError::CorruptChildType(_),
+            LinkedChildStoreError::Database(_) | LinkedChildStoreError::CorruptChildType(_),
         )
         | CollectionError::BaseItem(_) => (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -5085,9 +3068,7 @@ fn playlist_error_response(error: &PlaylistError) -> (StatusCode, &'static str) 
             PlaylistStoreError::CorruptShares(_) | PlaylistStoreError::Database(_),
         )
         | PlaylistError::Links(
-            LinkedChildStoreError::MoveIndexOutOfBounds { .. }
-            | LinkedChildStoreError::CorruptChildType(_)
-            | LinkedChildStoreError::Database(_),
+            LinkedChildStoreError::CorruptChildType(_) | LinkedChildStoreError::Database(_),
         )
         | PlaylistError::Items(_) => (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -5195,14 +3176,6 @@ fn item_lookup_error_response(error: &ItemLookupError) -> (StatusCode, &'static 
         ItemLookupError::BaseItem(_) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             "Item lookup data could not be loaded",
-        ),
-        ItemLookupError::VirtualFolder(_) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "Library options could not be loaded",
-        ),
-        ItemLookupError::LinkedChild(_) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "Collection members could not be loaded",
         ),
         ItemLookupError::Metadata(_) => (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -5389,6 +3362,7 @@ fn video_error_response(error: &VideoError) -> (StatusCode, &'static str) {
         }
         VideoError::Forbidden => (StatusCode::FORBIDDEN, "Forbidden"),
         VideoError::NotEnoughVideos => (StatusCode::BAD_REQUEST, "Not enough videos to merge"),
+        VideoError::InvalidItemType => (StatusCode::BAD_REQUEST, "Item is not a video"),
         VideoError::BaseItem(_) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             "Video persistence failed",

@@ -1,12 +1,10 @@
-use std::collections::{BTreeMap, HashSet};
+use std::collections::BTreeMap;
 
 use jellyfin_extensions::StringExtensions;
 use sea_orm::{
-    ActiveEnum, ActiveModelTrait,
-    ActiveValue::{NotSet, Set},
-    ColumnTrait, ConnectionTrait, DatabaseTransaction, DbBackend, DbErr, EntityTrait,
-    IntoActiveModel, QueryFilter, QueryOrder, QuerySelect, Statement, TransactionTrait,
-    sea_query::{Expr, OnConflict},
+    ActiveEnum, ActiveModelTrait, ActiveValue::Set, ConnectionTrait, DatabaseTransaction,
+    DbBackend, DbErr, EntityTrait, IntoActiveModel, QuerySelect, Statement, TransactionTrait,
+    sea_query::OnConflict,
 };
 use serde_json::{Map, Value};
 use thiserror::Error;
@@ -98,89 +96,6 @@ impl ItemUpdateRepository {
         Ok(updated)
     }
 
-    /// Adds and/or removes tags while holding the item row lock.
-    ///
-    /// The JSON metadata and normalized tag mappings are committed together so
-    /// concurrent tag operations cannot lose one another.
-    pub async fn modify_tags(
-        &self,
-        item_id: Uuid,
-        additions: &[String],
-        removals: &[String],
-    ) -> Result<base_item::Model, ItemUpdateStoreError> {
-        let additions = additions
-            .iter()
-            .map(|tag| {
-                let tag = tag.trim();
-                if tag.is_empty() {
-                    Err(ItemUpdateStoreError::InvalidValue)
-                } else {
-                    Ok(tag.to_owned())
-                }
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        let removals = removals
-            .iter()
-            .map(|tag| tag.trim().to_owned())
-            .filter(|tag| !tag.is_empty())
-            .collect::<Vec<_>>();
-
-        let transaction = self.database.begin().await?;
-        let item = base_item::Entity::find_by_id(item_id)
-            .lock_exclusive()
-            .one(&transaction)
-            .await?
-            .ok_or(ItemUpdateStoreError::NotFound)?;
-        let mut item = item;
-        let mut object = match std::mem::take(&mut item.data) {
-            None => Map::new(),
-            Some(Value::Object(object)) => object,
-            Some(_) => return Err(ItemUpdateStoreError::InvalidMetadata),
-        };
-        let mut tags = object
-            .iter()
-            .find(|(key, _)| key.eq_ignore_ascii_case("Tags"))
-            .map(|(_, value)| value)
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-            .filter_map(Value::as_str)
-            .map(str::to_owned)
-            .collect::<Vec<_>>();
-
-        tags.retain(|tag| {
-            !removals
-                .iter()
-                .any(|removed| tag_eq_ignore_case(tag, removed))
-        });
-        for addition in additions {
-            if !tags
-                .iter()
-                .any(|existing| tag_eq_ignore_case(existing, &addition))
-            {
-                tags.push(addition);
-            }
-        }
-
-        replace_values(
-            &transaction,
-            item_id,
-            item_value::ItemValueType::Tags,
-            &tags,
-        )
-        .await?;
-        object.retain(|key, _| !key.eq_ignore_ascii_case("Tags"));
-        object.insert(
-            "Tags".to_owned(),
-            Value::Array(tags.into_iter().map(Value::String).collect()),
-        );
-        let mut active = item.into_active_model();
-        active.data = Set(Some(Value::Object(object)));
-        let updated = active.update(&transaction).await?;
-        transaction.commit().await?;
-        Ok(updated)
-    }
-
     /// Adds one provider identifier only when no casing variant of its key is
     /// already present.
     ///
@@ -229,179 +144,6 @@ impl ItemUpdateRepository {
         let updated = active.update(&transaction).await?;
         transaction.commit().await?;
         Ok(updated)
-    }
-
-    /// Merges provider identifiers into one item's current identifier map.
-    ///
-    /// Existing values win case-insensitively, allowing a refresh provider to
-    /// replace its own identifier while restoring unrelated identifiers that
-    /// another provider patch omitted. Historical outer `ProviderIds` casing
-    /// variants are folded into the canonical property in the same row-locked
-    /// transaction.
-    ///
-    /// # Errors
-    ///
-    /// Returns not-found, invalid-metadata, or database errors.
-    pub async fn merge_provider_ids_if_missing(
-        &self,
-        item_id: Uuid,
-        provider_ids: &BTreeMap<String, String>,
-    ) -> Result<base_item::Model, ItemUpdateStoreError> {
-        let transaction = self.database.begin().await?;
-        let item = base_item::Entity::find_by_id(item_id)
-            .lock_exclusive()
-            .one(&transaction)
-            .await?
-            .ok_or(ItemUpdateStoreError::NotFound)?;
-        let mut object = match item.data.clone() {
-            None => Map::new(),
-            Some(Value::Object(object)) => object,
-            Some(_) => return Err(ItemUpdateStoreError::InvalidMetadata),
-        };
-
-        let mut merged = BTreeMap::new();
-        if let Some(Value::Object(current)) = object.get("ProviderIds") {
-            merge_provider_id_object(&mut merged, current);
-        }
-        for (key, value) in &object {
-            if key != "ProviderIds"
-                && key.eq_ignore_ascii_case("ProviderIds")
-                && let Value::Object(current) = value
-            {
-                merge_provider_id_object(&mut merged, current);
-            }
-        }
-        for (key, value) in provider_ids {
-            insert_provider_id_if_missing(&mut merged, key, value);
-        }
-
-        object.retain(|key, _| !key.eq_ignore_ascii_case("ProviderIds"));
-        object.insert(
-            "ProviderIds".to_owned(),
-            Value::Object(
-                merged
-                    .into_iter()
-                    .map(|(key, value)| (key, Value::String(value)))
-                    .collect(),
-            ),
-        );
-        let merged_data = Value::Object(object);
-        if item.data.as_ref() == Some(&merged_data) {
-            transaction.commit().await?;
-            return Ok(item);
-        }
-        let mut active = item.into_active_model();
-        active.data = Set(Some(merged_data));
-        let updated = active.update(&transaction).await?;
-        transaction.commit().await?;
-        Ok(updated)
-    }
-
-    /// Resets user-controlled metadata lock settings for a bounded item set.
-    ///
-    /// Every requested item is resolved and locked before any row is changed,
-    /// so a missing id cannot leave an earlier item partially reset. JSON keys
-    /// are matched case-insensitively because historical editors persisted
-    /// both PascalCase and camelCase spellings. The remaining metadata,
-    /// including provider ids used by the subsequent full refresh, is kept
-    /// byte-for-byte at the JSON value level.
-    ///
-    /// # Errors
-    ///
-    /// Returns not-found if any requested item does not exist, invalid
-    /// metadata for a non-object JSON value, or the underlying database error.
-    pub async fn reset_metadata_settings(
-        &self,
-        item_ids: &[Uuid],
-    ) -> Result<u64, ItemUpdateStoreError> {
-        if item_ids.is_empty() {
-            return Ok(0);
-        }
-
-        let mut seen = HashSet::with_capacity(item_ids.len());
-        let mut item_ids = item_ids
-            .iter()
-            .copied()
-            .filter(|item_id| seen.insert(*item_id))
-            .collect::<Vec<_>>();
-        // Every transaction acquires overlapping row locks in one canonical
-        // order, including across the fixed-size query boundary.
-        item_ids.sort_unstable();
-        let transaction = self.database.begin().await?;
-        let mut items = Vec::with_capacity(item_ids.len());
-        for batch in item_ids.chunks(128) {
-            let mut batch_items = base_item::Entity::find()
-                .filter(base_item::Column::Id.is_in(batch.iter().copied()))
-                .order_by_asc(base_item::Column::Id)
-                .lock_exclusive()
-                .all(&transaction)
-                .await?;
-            if batch_items.len() != batch.len() {
-                return Err(ItemUpdateStoreError::NotFound);
-            }
-            items.append(&mut batch_items);
-        }
-        if items
-            .iter()
-            .any(|item| item.data.as_ref().is_some_and(|data| !data.is_object()))
-        {
-            return Err(ItemUpdateStoreError::InvalidMetadata);
-        }
-
-        // The generated request carries ids in one query string, but still
-        // keep each SQL statement bounded. This matches the repository's
-        // fixed-size metadata relation writes without issuing one UPDATE per
-        // item.
-        let mut rows_affected = 0_u64;
-        for batch in item_ids.chunks(128) {
-            let result = base_item::Entity::update_many()
-                .col_expr(
-                    base_item::Column::Data,
-                    Expr::cust(
-                        r#"COALESCE(
-                            (
-                                SELECT jsonb_object_agg(entry.key, entry.value)
-                                FROM jsonb_each(COALESCE("data", '{}'::jsonb)) AS entry
-                                WHERE lower(entry.key) NOT IN ('islocked', 'lockedfields')
-                            ),
-                            '{}'::jsonb
-                        ) || '{"IsLocked":false,"LockedFields":[]}'::jsonb"#,
-                    ),
-                )
-                .filter(base_item::Column::Id.is_in(batch.iter().copied()))
-                .exec(&transaction)
-                .await?;
-            rows_affected += result.rows_affected;
-        }
-        if rows_affected != u64::try_from(item_ids.len()).unwrap_or(u64::MAX) {
-            return Err(ItemUpdateStoreError::NotFound);
-        }
-        transaction.commit().await?;
-        Ok(rows_affected)
-    }
-}
-
-fn merge_provider_id_object(
-    target: &mut BTreeMap<String, String>,
-    source: &serde_json::Map<String, Value>,
-) {
-    for (key, value) in source {
-        if let Some(value) = value.as_str() {
-            insert_provider_id_if_missing(target, key, value);
-        }
-    }
-}
-
-fn insert_provider_id_if_missing(
-    provider_ids: &mut BTreeMap<String, String>,
-    key: &str,
-    value: &str,
-) {
-    if !provider_ids
-        .keys()
-        .any(|existing| existing.eq_ignore_ascii_case(key))
-    {
-        provider_ids.insert(key.to_owned(), value.to_owned());
     }
 }
 
@@ -467,23 +209,11 @@ async fn replace_values(
     delete_value_mappings(transaction, item_id, value_type).await?;
 
     for value in values {
-        let Some((value, clean_value)) = (match normalized_mapping_value(value) {
-            Ok(value) => value,
-            // Tags are valid metadata even when their searchable key contains
-            // no alphanumeric characters; retain JSON while skipping only the
-            // normalized relation that PostgreSQL cannot index meaningfully.
-            Err(ItemUpdateStoreError::InvalidValue)
-                if value_type == item_value::ItemValueType::Tags =>
-            {
-                continue;
-            }
-            Err(error) => return Err(error),
-        }) else {
+        let Some((value, clean_value)) = normalized_mapping_value(value)? else {
             continue;
         };
         let stored = item_value::Entity::insert(item_value::ActiveModel {
             item_value_id: Set(Uuid::new_v4()),
-            emby_id: NotSet,
             value_type: Set(value_type),
             value: Set(value),
             clean_value: Set(clean_value),
@@ -545,7 +275,6 @@ async fn replace_studios(
             .take(128)
             .map(|(clean_name, name)| item_value::ActiveModel {
                 item_value_id: Set(Uuid::new_v4()),
-                emby_id: NotSet,
                 value_type: Set(item_value::ItemValueType::Studios),
                 value: Set(name),
                 clean_value: Set(clean_name),
@@ -614,10 +343,4 @@ fn normalized_mapping_value(value: &str) -> Result<Option<(String, String)>, Ite
         return Err(ItemUpdateStoreError::InvalidValue);
     }
     Ok(Some((value.to_owned(), clean_value)))
-}
-
-fn tag_eq_ignore_case(left: &str, right: &str) -> bool {
-    left.chars()
-        .flat_map(char::to_lowercase)
-        .eq(right.chars().flat_map(char::to_lowercase))
 }

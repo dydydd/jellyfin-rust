@@ -26,7 +26,6 @@ async fn session_command_routes_queue_official_commands_in_postgres() {
     let _guard = TEST_LOCK.lock().await;
     let fixture = Fixture::new().await;
 
-    assert_lowercase_session_routes(&fixture).await;
     assert_command_access_and_validation(&fixture).await;
     assert_play_command_validation(&fixture).await;
     assert_playstate_command_validation(&fixture).await;
@@ -34,193 +33,6 @@ async fn session_command_routes_queue_official_commands_in_postgres() {
     assert_queued_commands(&fixture).await;
 
     fixture.cleanup().await;
-}
-
-#[tokio::test]
-async fn session_command_bodies_and_enums_follow_official_binding() {
-    let _guard = TEST_LOCK.lock().await;
-    let fixture = Fixture::new().await;
-    let item_ids = play_item_ids();
-
-    fixture
-        .post_command(
-            "Command",
-            json_body(&json!({
-                "nAmE": "play",
-                "cOnTrOlLiNgUsErId": Uuid::nil().simple().to_string(),
-                "aRgUmEnTs": { "Source": "mixed-case" }
-            })),
-        )
-        .await;
-    fixture
-        .post_command(
-            "Command",
-            json_body(&json!({ "Name": 40, "Arguments": {} })),
-        )
-        .await;
-    fixture
-        .post_command(
-            "Message",
-            json_body(&json!({
-                "hEaDeR": "SDK",
-                "tExT": "Mixed case",
-                "tImEoUtMs": "1500"
-            })),
-        )
-        .await;
-    fixture
-        .post_command(
-            &format!(
-                "Playing?playCommand=playnow&itemIds={}&itemIds={}",
-                item_ids[0], item_ids[1]
-            ),
-            Body::empty(),
-        )
-        .await;
-    fixture
-        .post_command(
-            &format!("Playing?playCommand=0&itemIds={}", item_ids[0]),
-            Body::empty(),
-        )
-        .await;
-    fixture.post_command("Command/play", Body::empty()).await;
-    fixture.post_command("System/40", Body::empty()).await;
-    fixture.post_command("Playing/seek", Body::empty()).await;
-    fixture.post_command("Playing/5", Body::empty()).await;
-
-    assert_eq!(
-        fixture
-            .request(
-                "POST",
-                &format!("/Sessions/{}/Message", fixture.target_session_id),
-                Some(&fixture.user_token),
-                json_body(&json!({ "Text": "   " })),
-            )
-            .await
-            .status(),
-        StatusCode::BAD_REQUEST
-    );
-
-    let queued = SessionCommandRepository::new(fixture.database.clone())
-        .list_for_session(&fixture.target_session_id)
-        .await
-        .expect("official binder commands must load");
-    assert_eq!(queued.len(), 9);
-    assert_eq!(queued[0].payload["Name"], "Play");
-    assert_eq!(queued[0].payload["Arguments"]["Source"], "mixed-case");
-    assert_eq!(queued[1].payload["Name"], "Play");
-    assert_eq!(queued[2].payload["Arguments"]["Text"], "Mixed case");
-    assert_eq!(queued[2].payload["Arguments"]["TimeoutMs"], "1500");
-    assert_eq!(
-        queued[3].payload["ItemIds"],
-        json!([
-            item_ids[0].simple().to_string(),
-            item_ids[1].simple().to_string()
-        ])
-    );
-    assert_eq!(queued[4].payload["PlayCommand"], "PlayNow");
-    assert_eq!(queued[5].payload["Name"], "Play");
-    assert_eq!(queued[6].payload["Name"], "Play");
-    assert_eq!(queued[7].payload["Command"], "Seek");
-    assert_eq!(queued[8].payload["Command"], "Seek");
-
-    fixture.cleanup().await;
-}
-
-#[tokio::test]
-async fn anonymous_malformed_session_commands_authenticate_first() {
-    let _guard = TEST_LOCK.lock().await;
-    let fixture = Fixture::new().await;
-    for (path, body) in [
-        (
-            format!(
-                "/Sessions/{}/Command/not-a-command",
-                fixture.target_session_id
-            ),
-            Body::empty(),
-        ),
-        (
-            format!(
-                "/Sessions/{}/Playing?playCommand=invalid&itemIds=invalid",
-                fixture.target_session_id
-            ),
-            Body::empty(),
-        ),
-        (
-            format!(
-                "/Sessions/{}/Playing/not-a-command?seekPositionTicks=invalid",
-                fixture.target_session_id
-            ),
-            Body::empty(),
-        ),
-        (
-            format!("/Sessions/{}/Command", fixture.target_session_id),
-            Body::from("{"),
-        ),
-        (
-            format!("/Sessions/{}/Message", fixture.target_session_id),
-            Body::from("{"),
-        ),
-        (
-            format!("/Sessions/{}/Viewing", fixture.target_session_id),
-            Body::empty(),
-        ),
-    ] {
-        assert_eq!(
-            fixture.request("POST", &path, None, body).await.status(),
-            StatusCode::UNAUTHORIZED,
-            "authentication must precede malformed command binding: {path}"
-        );
-    }
-    fixture.cleanup().await;
-}
-
-async fn assert_lowercase_session_routes(fixture: &Fixture) {
-    let item_id = Uuid::new_v4();
-    let paths = [
-        format!("/sessions/{}/system/GoHome", fixture.target_session_id),
-        format!(
-            "/sessions/{}/viewing?itemType=Movie&itemId={item_id}&itemName=Movie",
-            fixture.target_session_id
-        ),
-        format!(
-            "/sessions/{}/playing?playCommand=PlayNow&itemIds={item_id}",
-            fixture.target_session_id
-        ),
-        format!("/sessions/{}/playing/Pause", fixture.target_session_id),
-        format!("/sessions/{}/command/GoHome", fixture.target_session_id),
-        format!("/sessions/{}/command", fixture.target_session_id),
-        format!("/sessions/{}/message", fixture.target_session_id),
-        format!(
-            "/sessions/{}/user/{}",
-            fixture.target_session_id, fixture.user_id
-        ),
-        format!("/sessions/viewing?itemId={item_id}"),
-        "/sessions/capabilities".to_owned(),
-        "/sessions/capabilities/full".to_owned(),
-        "/sessions/logout".to_owned(),
-    ];
-    for path in paths {
-        assert_eq!(
-            fixture
-                .request("POST", &path, None, Body::empty())
-                .await
-                .status(),
-            StatusCode::UNAUTHORIZED,
-            "lowercase SDK-compatible route must keep its canonical authorization: {path}"
-        );
-    }
-    let remove_user = format!(
-        "/sessions/{}/user/{}",
-        fixture.target_session_id, fixture.user_id
-    );
-    assert_eq!(
-        fixture
-            .request("DELETE", &remove_user, None, Body::empty())
-            .await
-            .status(),
-        StatusCode::UNAUTHORIZED
-    );
 }
 
 #[tokio::test]
@@ -239,7 +51,7 @@ async fn session_command_query_names_accept_official_casing() {
                 item_ids[0].simple(),
                 item_ids[1].simple()
             ),
-            "Playing/Seek?seekPositionTicks=987&controllingUserId=camel-controller",
+            "Playing/Seek?seekPositionTicks=987",
             "camel",
         ),
         (
@@ -252,7 +64,7 @@ async fn session_command_query_names_accept_official_casing() {
                 item_ids[0].simple(),
                 item_ids[1].simple()
             ),
-            "Playing/Seek?SeekPositionTicks=987&ControllingUserId=pascal-controller",
+            "Playing/Seek?SeekPositionTicks=987",
             "pascal",
         ),
         (
@@ -265,7 +77,7 @@ async fn session_command_query_names_accept_official_casing() {
                 item_ids[0].simple(),
                 item_ids[1].simple()
             ),
-            "Playing/Seek?seekpositionticks=987&controllinguserid=lower-controller",
+            "Playing/Seek?seekpositionticks=987",
             "lower",
         ),
     ];
@@ -309,92 +121,7 @@ async fn session_command_query_names_accept_official_casing() {
         let playstate = &commands[2].payload;
         assert_eq!(playstate["Command"], "Seek");
         assert_eq!(playstate["SeekPositionTicks"], 987);
-        assert_eq!(
-            playstate["ControllingUserId"],
-            format!("{label}-controller")
-        );
     }
-
-    fixture.cleanup().await;
-}
-
-#[tokio::test]
-async fn session_commands_require_official_remote_control_authorization() {
-    let _guard = TEST_LOCK.lock().await;
-    let fixture = Fixture::new().await;
-    let devices = DeviceRepository::new(fixture.database.clone());
-    let target_row_id = devices
-        .find_by_token(&fixture.target_token)
-        .await
-        .expect("target session query")
-        .expect("target session")
-        .id;
-
-    devices
-        .remove_additional_user(target_row_id, fixture.user_id)
-        .await
-        .expect("additional controller removal");
-    assert_eq!(
-        fixture
-            .request(
-                "POST",
-                &fixture.command_uri("GoHome"),
-                Some(&fixture.user_token),
-                Body::empty(),
-            )
-            .await
-            .status(),
-        StatusCode::FORBIDDEN
-    );
-    assert_queued_command_count(&fixture, 0).await;
-
-    devices
-        .add_additional_user(target_row_id, fixture.user_id, "additional-controller")
-        .await
-        .expect("additional controller restoration");
-    assert_eq!(
-        fixture
-            .request(
-                "POST",
-                &fixture.command_uri("GoHome"),
-                Some(&fixture.user_token),
-                Body::empty(),
-            )
-            .await
-            .status(),
-        StatusCode::NO_CONTENT
-    );
-
-    session_command::Entity::delete_many()
-        .filter(session_command::Column::TargetSessionId.eq(&fixture.target_session_id))
-        .exec(&fixture.database)
-        .await
-        .expect("queued command cleanup");
-    devices
-        .remove_additional_user(target_row_id, fixture.user_id)
-        .await
-        .expect("additional controller removal");
-    let users = UserService::new(fixture.database.clone());
-    let stored = users.get(fixture.user_id).await.expect("controller user");
-    let mut policy: jellyfin_model::UserPolicy =
-        serde_json::from_value(stored.policy).expect("controller policy");
-    policy.enable_remote_control_of_other_users = true;
-    users
-        .update_policy(fixture.user_id, &policy)
-        .await
-        .expect("remote-control policy update");
-    assert_eq!(
-        fixture
-            .request(
-                "POST",
-                &fixture.command_uri("GoHome"),
-                Some(&fixture.user_token),
-                Body::empty(),
-            )
-            .await
-            .status(),
-        StatusCode::NO_CONTENT
-    );
 
     fixture.cleanup().await;
 }
@@ -526,42 +253,8 @@ async fn assert_command_access_and_validation(fixture: &Fixture) {
             )
             .await
             .status(),
-        StatusCode::NO_CONTENT
+        StatusCode::UNAUTHORIZED
     );
-    assert_eq!(
-        fixture
-            .request(
-                "POST",
-                &format!("/Sessions/{}/Message", fixture.target_session_id),
-                Some(&fixture.api_key_token),
-                json_body(&json!({ "Text": "API key message" })),
-            )
-            .await
-            .status(),
-        StatusCode::NO_CONTENT
-    );
-    let queued = SessionCommandRepository::new(fixture.database.clone())
-        .list_for_session(&fixture.target_session_id)
-        .await
-        .expect("API-key commands must load");
-    assert_eq!(queued.len(), 2);
-    assert!(queued.iter().all(|command| {
-        command.controlling_session_id.as_deref()
-            == Some(&jellyfin_session_id(
-                "Session Command Tests",
-                "session-command-tests",
-            ))
-    }));
-    assert_eq!(
-        queued[0].payload["ControllingUserId"],
-        Uuid::nil().simple().to_string()
-    );
-    assert_eq!(queued[1].payload["Arguments"]["Text"], "API key message");
-    session_command::Entity::delete_many()
-        .filter(session_command::Column::TargetSessionId.eq(&fixture.target_session_id))
-        .exec(&fixture.database)
-        .await
-        .expect("API-key command cleanup");
     assert_eq!(
         fixture
             .request(
@@ -703,7 +396,7 @@ async fn enqueue_official_session_commands(fixture: &Fixture) {
         .await;
     fixture
         .post_command(
-            "Playing/Seek?seekPositionTicks=987&controllingUserId=sdk-controller-id",
+            "Playing/Seek?seekPositionTicks=987&controllingUserId=ignored",
             Body::empty(),
         )
         .await;
@@ -763,7 +456,7 @@ async fn assert_queued_commands(fixture: &Fixture) {
     assert_eq!(queued[2].payload["Arguments"]["ItemName"], "The Matrix");
     assert!(queued[2].payload["Arguments"]["ItemId"].as_str().is_some());
     assert_queued_play_command(&queued[3], fixture.user_id);
-    assert_queued_playstate_command(&queued[4], "sdk-controller-id");
+    assert_queued_playstate_command(&queued[4], fixture.user_id);
     assert_eq!(queued[5].payload["Name"], "SetVolume");
     assert_eq!(queued[5].payload["Arguments"]["Volume"], "50");
     assert_eq!(
@@ -815,10 +508,13 @@ fn assert_queued_play_command(command: &session_command::Model, controlling_user
     assert_eq!(command.payload["StartIndex"], 1);
 }
 
-fn assert_queued_playstate_command(command: &session_command::Model, controlling_user_id: &str) {
+fn assert_queued_playstate_command(command: &session_command::Model, controlling_user_id: Uuid) {
     assert_eq!(command.payload["Command"], "Seek");
     assert_eq!(command.payload["SeekPositionTicks"], 987);
-    assert_eq!(command.payload["ControllingUserId"], controlling_user_id);
+    assert_eq!(
+        command.payload["ControllingUserId"],
+        controlling_user_id.simple().to_string()
+    );
 }
 
 struct Fixture {
@@ -919,8 +615,7 @@ impl Fixture {
             )
             .await
             .status(),
-            StatusCode::NO_CONTENT,
-            "session command failed: {suffix}"
+            StatusCode::NO_CONTENT
         );
     }
 

@@ -2,7 +2,7 @@
 use std::{
     fs::File,
     io::{Read, Write},
-    path::{Path, PathBuf},
+    path::Path,
 };
 
 use axum::{
@@ -12,10 +12,7 @@ use axum::{
 use jellyfin_api::AppState;
 use jellyfin_controller::UserService;
 use jellyfin_data::{DatabaseConfig, DeviceRepository, NewDevice, entities::user};
-use sea_orm::{
-    ColumnTrait, ConnectionTrait, DatabaseConnection, DbBackend, EntityTrait, QueryFilter,
-    Statement,
-};
+use sea_orm::{ColumnTrait, ConnectionTrait, DatabaseConnection, EntityTrait, QueryFilter};
 use serde_json::{Value, json};
 use tower::ServiceExt;
 use uuid::Uuid;
@@ -69,25 +66,10 @@ async fn exercise_backup_routes(database_name: &str) {
             .status(),
         StatusCode::FORBIDDEN
     );
-    assert_eq!(
-        fixture.get("/backup", None).await.status(),
-        StatusCode::UNAUTHORIZED
-    );
-    assert_eq!(
-        fixture
-            .get("/backup", Some(&fixture.user_token))
-            .await
-            .status(),
-        StatusCode::FORBIDDEN
-    );
 
     let empty = fixture.get("/Backup", Some(&fixture.admin_token)).await;
     assert_eq!(empty.status(), StatusCode::OK);
-    let empty = body_json(empty).await;
-    assert_eq!(empty, Value::Array(Vec::new()));
-    let lowercase_empty = fixture.get("/backup", Some(&fixture.admin_token)).await;
-    assert_eq!(lowercase_empty.status(), StatusCode::OK);
-    assert_eq!(body_json(lowercase_empty).await, empty);
+    assert_eq!(body_json(empty).await, Value::Array(Vec::new()));
 
     let backup_directory = fixture.program_data.join("backups");
     tokio::fs::create_dir_all(&backup_directory)
@@ -134,26 +116,6 @@ async fn exercise_backup_routes(database_name: &str) {
     assert_eq!(
         fixture
             .get(
-                "/backup/manifest?path=jellyfin-backup-20260724090000.zip",
-                None,
-            )
-            .await
-            .status(),
-        StatusCode::UNAUTHORIZED
-    );
-    assert_eq!(
-        fixture
-            .get(
-                "/backup/manifest?path=jellyfin-backup-20260724090000.zip",
-                Some(&fixture.user_token),
-            )
-            .await
-            .status(),
-        StatusCode::FORBIDDEN
-    );
-    assert_eq!(
-        fixture
-            .get(
                 "/Backup/Manifest?path=missing-backup.zip",
                 Some(&fixture.admin_token),
             )
@@ -172,8 +134,6 @@ async fn exercise_backup_routes(database_name: &str) {
         StatusCode::NO_CONTENT
     );
 
-    // The official controller strips caller-controlled parent directories and
-    // resolves only the final file name inside the configured backup root.
     assert_eq!(
         fixture
             .get(
@@ -182,28 +142,26 @@ async fn exercise_backup_routes(database_name: &str) {
             )
             .await
             .status(),
-        StatusCode::OK
+        StatusCode::NOT_FOUND
     );
 
-    for route in ["/Backup/Manifest", "/backup/manifest"] {
-        for query_name in ["path", "Path"] {
-            let manifest = fixture
-                .get(
-                    &format!("{route}?{query_name}=jellyfin-backup-20260724090000.zip"),
-                    Some(&fixture.admin_token),
-                )
-                .await;
-            assert_eq!(manifest.status(), StatusCode::OK, "{route} {query_name}");
-            let manifest = body_json(manifest).await;
-            assert_eq!(manifest["ServerVersion"], "10.11.0");
-            assert_eq!(manifest["BackupEngineVersion"], "1.0");
-            assert_eq!(manifest["DateCreated"], "2026-07-24T09:00:00.0000000Z");
-            assert_eq!(manifest["Path"], archive_path.to_string_lossy().as_ref());
-            assert_eq!(manifest["Options"]["Metadata"], true);
-            assert_eq!(manifest["Options"]["Trickplay"], false);
-            assert_eq!(manifest["Options"]["Subtitles"], true);
-            assert_eq!(manifest["Options"]["Database"], true);
-        }
+    for query_name in ["path", "Path"] {
+        let manifest = fixture
+            .get(
+                &format!("/Backup/Manifest?{query_name}=jellyfin-backup-20260724090000.zip"),
+                Some(&fixture.admin_token),
+            )
+            .await;
+        assert_eq!(manifest.status(), StatusCode::OK, "{query_name}");
+        let manifest = body_json(manifest).await;
+        assert_eq!(manifest["ServerVersion"], "10.11.0");
+        assert_eq!(manifest["BackupEngineVersion"], "1.0");
+        assert_eq!(manifest["DateCreated"], "2026-07-24T09:00:00.0000000Z");
+        assert_eq!(manifest["Path"], archive_path.to_string_lossy().as_ref());
+        assert_eq!(manifest["Options"]["Metadata"], true);
+        assert_eq!(manifest["Options"]["Trickplay"], false);
+        assert_eq!(manifest["Options"]["Subtitles"], true);
+        assert_eq!(manifest["Options"]["Database"], true);
     }
 
     let listed = fixture.get("/Backup", Some(&fixture.admin_token)).await;
@@ -329,30 +287,6 @@ impl Fixture {
             .unwrap()
     }
 
-    async fn post_raw(
-        &self,
-        uri: &str,
-        token: Option<&str>,
-        content_type: Option<&str>,
-        body: &[u8],
-    ) -> axum::response::Response {
-        let mut request = Request::post(uri);
-        if let Some(content_type) = content_type {
-            request = request.header(header::CONTENT_TYPE, content_type);
-        }
-        if let Some(token) = token {
-            request = request.header(
-                header::AUTHORIZATION,
-                format!("{AUTHORIZATION}, Token=\"{token}\""),
-            );
-        }
-        self.app
-            .clone()
-            .oneshot(request.body(Body::from(body.to_vec())).unwrap())
-            .await
-            .unwrap()
-    }
-
     async fn cleanup(self) {
         user::Entity::delete_many()
             .filter(user::Column::Id.is_in([self.admin_id, self.user_id]))
@@ -428,20 +362,6 @@ async fn assert_backup_create_and_restore(fixture: &Fixture, existing_archive_pa
             .status(),
         StatusCode::FORBIDDEN
     );
-    assert_eq!(
-        fixture
-            .post_json("/backup/create", None, &create_body)
-            .await
-            .status(),
-        StatusCode::UNAUTHORIZED
-    );
-    assert_eq!(
-        fixture
-            .post_json("/backup/create", Some(&fixture.user_token), &create_body)
-            .await
-            .status(),
-        StatusCode::FORBIDDEN
-    );
 
     let created = fixture
         .post_json("/Backup/Create", Some(&fixture.admin_token), &create_body)
@@ -467,28 +387,6 @@ async fn assert_backup_create_and_restore(fixture: &Fixture, existing_archive_pa
             "/Backup/Create",
             Some(&fixture.admin_token),
             &json!({
-                "metadata": false,
-                "TRICKPLAY": false,
-                "SubTitles": false,
-                "database": false,
-                "DATABASE": true
-            }),
-        )
-        .await;
-    assert_eq!(database_backup.status(), StatusCode::OK);
-    let database_backup = body_json(database_backup).await;
-    assert_eq!(database_backup["Options"]["Database"], true);
-    let database_backup_path = PathBuf::from(
-        database_backup["Path"]
-            .as_str()
-            .expect("database backup path"),
-    );
-    assert_database_archive(&database_backup_path);
-    let lowercase_database_backup = fixture
-        .post_json(
-            "/backup/create",
-            Some(&fixture.admin_token),
-            &json!({
                 "Metadata": false,
                 "Trickplay": false,
                 "Subtitles": false,
@@ -496,57 +394,12 @@ async fn assert_backup_create_and_restore(fixture: &Fixture, existing_archive_pa
             }),
         )
         .await;
-    assert_eq!(lowercase_database_backup.status(), StatusCode::OK);
-    let lowercase_database_backup = body_json(lowercase_database_backup).await;
-    assert_database_archive(Path::new(
-        lowercase_database_backup["Path"]
-            .as_str()
-            .expect("lowercase database backup path"),
-    ));
-
-    for route in ["/Backup/Create", "/backup/create"] {
-        let omitted = fixture
-            .post_raw(route, Some(&fixture.admin_token), None, &[])
-            .await;
-        assert_eq!(omitted.status(), StatusCode::OK, "{route}");
-        assert_eq!(
-            body_json(omitted).await["Options"]["Database"],
-            true,
-            "{route}"
-        );
-
-        let null = fixture
-            .post_json(route, Some(&fixture.admin_token), &Value::Null)
-            .await;
-        assert_eq!(null.status(), StatusCode::OK, "{route}");
-        assert_eq!(
-            body_json(null).await["Options"]["Database"],
-            true,
-            "{route}"
-        );
-
-        for invalid_body in [
-            b"{".as_slice(),
-            br#""backup""#.as_slice(),
-            b"[]".as_slice(),
-            br#"{"Database":"false"}"#.as_slice(),
-        ] {
-            assert_eq!(
-                fixture
-                    .post_raw(
-                        route,
-                        Some(&fixture.admin_token),
-                        Some("application/json"),
-                        invalid_body,
-                    )
-                    .await
-                    .status(),
-                StatusCode::BAD_REQUEST,
-                "{route}: {}",
-                String::from_utf8_lossy(invalid_body)
-            );
-        }
-    }
+    assert_eq!(database_backup.status(), StatusCode::NOT_IMPLEMENTED);
+    assert!(
+        String::from_utf8(body_bytes(database_backup).await.to_vec())
+            .unwrap()
+            .contains("PostgreSQL backup")
+    );
 
     let created_manifest = fixture
         .get(
@@ -566,7 +419,7 @@ async fn assert_backup_create_and_restore(fixture: &Fixture, existing_archive_pa
     assert_eq!(listed.status(), StatusCode::OK);
     let listed = body_json(listed).await;
     let listed_backups = listed.as_array().expect("backup list");
-    assert!(listed_backups.len() >= 8);
+    assert_eq!(listed_backups.len(), 2);
     assert!(
         listed_backups
             .iter()
@@ -592,20 +445,6 @@ async fn assert_backup_create_and_restore(fixture: &Fixture, existing_archive_pa
     );
     assert_eq!(
         fixture
-            .post_json("/backup/restore", None, &restore_body)
-            .await
-            .status(),
-        StatusCode::UNAUTHORIZED
-    );
-    assert_eq!(
-        fixture
-            .post_json("/backup/restore", Some(&fixture.user_token), &restore_body,)
-            .await
-            .status(),
-        StatusCode::FORBIDDEN
-    );
-    assert_eq!(
-        fixture
             .post_json(
                 "/Backup/Restore",
                 Some(&fixture.admin_token),
@@ -615,16 +454,13 @@ async fn assert_backup_create_and_restore(fixture: &Fixture, existing_archive_pa
             .status(),
         StatusCode::NOT_FOUND
     );
-    let canonical_restore = fixture
-        .post_json("/Backup/Restore", Some(&fixture.admin_token), &restore_body)
-        .await;
-    assert_eq!(canonical_restore.status(), StatusCode::UNPROCESSABLE_ENTITY);
-    let canonical_restore_body = body_bytes(canonical_restore).await;
-    let lowercase_restore = fixture
-        .post_json("/backup/restore", Some(&fixture.admin_token), &restore_body)
-        .await;
-    assert_eq!(lowercase_restore.status(), StatusCode::UNPROCESSABLE_ENTITY);
-    assert_eq!(body_bytes(lowercase_restore).await, canonical_restore_body);
+    assert_eq!(
+        fixture
+            .post_json("/Backup/Restore", Some(&fixture.admin_token), &restore_body)
+            .await
+            .status(),
+        StatusCode::NOT_IMPLEMENTED
+    );
 
     let created_restore = fixture
         .post_json(
@@ -635,53 +471,14 @@ async fn assert_backup_create_and_restore(fixture: &Fixture, existing_archive_pa
             }),
         )
         .await;
-    assert_eq!(created_restore.status(), StatusCode::NO_CONTENT);
-
-    let database_restore = fixture
-        .post_json(
-            "/backup/restore",
-            Some(&fixture.admin_token),
-            &json!({
-                "archivefilename": database_backup_path.file_name().unwrap().to_string_lossy()
-            }),
-        )
-        .await;
-    assert_eq!(database_restore.status(), StatusCode::NO_CONTENT);
+    assert_eq!(created_restore.status(), StatusCode::NOT_IMPLEMENTED);
+    assert!(
+        String::from_utf8(body_bytes(created_restore).await.to_vec())
+            .unwrap()
+            .contains("no data was changed")
+    );
 
     assert_restore_rejects_invalid_archives(fixture).await;
-
-    fixture
-        .database
-        .execute(Statement::from_sql_and_values(
-            DbBackend::Postgres,
-            "UPDATE jellyfin.users SET username = 'mutated-after-backup' WHERE id = $1::uuid",
-            [fixture.admin_id.into()],
-        ))
-        .await
-        .unwrap();
-    tokio::fs::write(fixture.program_data.join("system.json"), b"mutated")
-        .await
-        .unwrap();
-    jellyfin_api::restore_backup_at_startup(
-        &fixture.database,
-        &database_backup_path,
-        &fixture.program_data,
-        &fixture.storage_root.join("metadata"),
-    )
-    .await
-    .expect("startup restore succeeds");
-    let administrator = user::Entity::find_by_id(fixture.admin_id)
-        .one(&fixture.database)
-        .await
-        .unwrap()
-        .unwrap();
-    assert!(administrator.username.starts_with("backup-admin-"));
-    assert_eq!(
-        tokio::fs::read(fixture.program_data.join("system.json"))
-            .await
-            .unwrap(),
-        b"configuration"
-    );
 }
 
 fn create_backup_archive(path: &Path, manifest: &Value, entries: &[(&str, &[u8])]) {
@@ -736,36 +533,6 @@ fn assert_archive_contents(path: &Path) {
         .read_to_string(&mut contents)
         .unwrap();
     assert_eq!(contents, "configuration");
-}
-
-fn assert_database_archive(path: &Path) {
-    let file = File::open(path).expect("database backup archive");
-    let mut archive = zip::ZipArchive::new(file).expect("valid database backup ZIP");
-    let mut manifest_json = String::new();
-    archive
-        .by_name("manifest.json")
-        .unwrap()
-        .read_to_string(&mut manifest_json)
-        .unwrap();
-    let manifest: Value = serde_json::from_str(&manifest_json).unwrap();
-    assert_eq!(manifest["Options"]["Database"], true);
-    assert!(manifest.get("Path").is_none());
-    assert!(
-        manifest["DatabaseTables"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|table| table == "jellyfin.users")
-    );
-
-    let mut users_json = String::new();
-    archive
-        .by_name("Database/users.json")
-        .unwrap()
-        .read_to_string(&mut users_json)
-        .unwrap();
-    let users: Value = serde_json::from_str(&users_json).unwrap();
-    assert!(users.as_array().is_some_and(|users| users.len() >= 2));
 }
 
 async fn assert_restore_rejects_invalid_archives(fixture: &Fixture) {

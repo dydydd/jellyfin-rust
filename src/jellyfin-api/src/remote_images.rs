@@ -2,10 +2,8 @@ use std::sync::Arc;
 
 use axum::{
     Json,
-    body::Body,
     extract::{OriginalUri, Path, State},
-    http::{HeaderMap, HeaderValue, StatusCode, header},
-    response::Response,
+    http::{HeaderMap, StatusCode},
 };
 use axum_extra::extract::Query;
 use jellyfin_data::BaseItemError;
@@ -52,69 +50,6 @@ pub(crate) struct DownloadRemoteImageQuery {
     image_url: Option<String>,
 }
 
-#[derive(Debug, Default, Deserialize)]
-#[serde(default)]
-pub(crate) struct FetchRemoteImageQuery {
-    #[serde(rename = "imageUrl", alias = "ImageUrl", alias = "imageurl")]
-    image_url: Option<String>,
-    #[serde(
-        rename = "providerName",
-        alias = "ProviderName",
-        alias = "providername"
-    )]
-    provider_name: Option<String>,
-}
-
-/// Streams an administrator-authorized remote image without decoding or
-/// caching it. This is the wire contract used by Emby's remote-image lookup.
-pub(crate) async fn fetch(
-    State(state): State<Arc<AppState>>,
-    OriginalUri(uri): OriginalUri,
-    headers: HeaderMap,
-    Query(query): Query<FetchRemoteImageQuery>,
-) -> Result<Response, ApiError> {
-    authorization::require_default(&state, &headers, &uri)
-        .await?
-        .require_administrator()?;
-    let image_url = query
-        .image_url
-        .filter(|value| !value.is_empty())
-        .ok_or(ApiError::InvalidRequest)?;
-    if uri
-        .path()
-        .to_ascii_lowercase()
-        .ends_with("/remotesearch/image")
-        && query.provider_name.as_deref().is_none_or(str::is_empty)
-    {
-        return Err(ApiError::InvalidRequest);
-    }
-    let response = state
-        .remote_stream_client
-        .get(image_url)
-        .send()
-        .await
-        .map_err(|_| ApiError::UpstreamUnavailable)?;
-    if !response.status().is_success() {
-        return Err(if response.status() == StatusCode::NOT_FOUND {
-            ApiError::NotFound
-        } else {
-            ApiError::UpstreamUnavailable
-        });
-    }
-    let content_type = response
-        .headers()
-        .get(header::CONTENT_TYPE)
-        .and_then(|value| value.to_str().ok())
-        .filter(|value| value.to_ascii_lowercase().starts_with("image/"))
-        .ok_or(ApiError::UnsupportedMediaType)?;
-    let content_type = HeaderValue::from_str(content_type).map_err(|_| ApiError::Internal)?;
-    let mut output = Response::new(Body::from_stream(response.bytes_stream()));
-    output
-        .headers_mut()
-        .insert(header::CONTENT_TYPE, content_type);
-    Ok(output)
-}
-
 pub(crate) async fn images(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -138,19 +73,17 @@ pub(crate) async fn images(
             usize::try_from(limit).unwrap_or_default()
         }
     });
-    let item = state
+    state
         .user_library
         .item(&authenticated.user, authenticated.user.id, item_id)
         .await?;
 
     let api_key = Arc::clone(&*state.tmdb_api_key.read().await);
     let configuration = state.server_configuration.load().await?;
-    let metadata_options =
-        crate::configuration::metadata_options_for_item_type(&configuration, &item.item_type)?;
     let result = state
         .item_lookup
         .remote_images(
-            &item,
+            item_id,
             image_type,
             query.provider_name.as_deref(),
             query.include_all_languages,
@@ -159,7 +92,6 @@ pub(crate) async fn images(
             &api_key,
             &configuration.preferred_metadata_language,
             &configuration.metadata_country_code,
-            &metadata_options,
         )
         .await?;
     Ok(Json(result))
@@ -171,19 +103,26 @@ pub(crate) async fn providers(
     Path(item_id): Path<Uuid>,
 ) -> Result<Json<Vec<ImageProviderInfo>>, ApiError> {
     let authenticated = authentication::authenticated_session(&state, &headers).await?;
-    let item = state
+    state
         .user_library
         .item(&authenticated.user, authenticated.user.id, item_id)
         .await?;
     let api_key = Arc::clone(&*state.tmdb_api_key.read().await);
-    let configuration = state.server_configuration.load().await?;
-    let metadata_options =
-        crate::configuration::metadata_options_for_item_type(&configuration, &item.item_type)?;
-    Ok(Json(state.item_lookup.remote_image_providers(
-        &item,
-        &api_key,
-        &metadata_options,
-    )?))
+    let metadata_options = metadata_options_for(&state);
+    Ok(Json(
+        state
+            .item_lookup
+            .remote_image_providers(item_id, &api_key, &metadata_options)
+            .await?,
+    ))
+}
+
+fn metadata_options_for(state: &AppState) -> jellyfin_model::MetadataOptions {
+    let _ = state;
+    jellyfin_model::MetadataOptions::official_defaults()
+        .into_iter()
+        .find(|options| options.item_type == "Movie")
+        .unwrap_or_default()
 }
 
 pub(crate) async fn download(
@@ -204,6 +143,9 @@ pub(crate) async fn download(
     let image_url = query.image_url.ok_or(ApiError::NotFound)?;
     ensure_item_exists(&state, item_id).await?;
 
+    if state.tmdb_api_key.read().await.is_empty() {
+        return Err(BaseItemError::NotFound.into());
+    }
     state
         .item_images
         .download_remote_image(item_id, image_type, &image_url)
@@ -224,7 +166,7 @@ async fn ensure_item_exists(state: &AppState, item_id: Uuid) -> Result<(), ApiEr
 mod query_tests {
     use axum_extra::extract::Query;
 
-    use super::{DownloadRemoteImageQuery, FetchRemoteImageQuery, RemoteImagesQuery};
+    use super::{DownloadRemoteImageQuery, RemoteImagesQuery};
 
     #[test]
     fn remote_image_queries_bind_all_lowercase_compound_names() {
@@ -248,17 +190,5 @@ mod query_tests {
             query.image_url.as_deref(),
             Some("https://example.invalid/poster.jpg")
         );
-
-        let uri = "http://localhost/?ImageUrl=https%3A%2F%2Fexample.invalid%2Fposter.jpg&ProviderName=tmdb"
-            .parse()
-            .unwrap();
-        let query = Query::<FetchRemoteImageQuery>::try_from_uri(&uri)
-            .unwrap()
-            .0;
-        assert_eq!(
-            query.image_url.as_deref(),
-            Some("https://example.invalid/poster.jpg")
-        );
-        assert_eq!(query.provider_name.as_deref(), Some("tmdb"));
     }
 }

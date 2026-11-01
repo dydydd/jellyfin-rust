@@ -410,27 +410,16 @@ impl LibraryControllerService {
         target_user_id: Uuid,
         item_id: Uuid,
     ) -> Result<Vec<base_item::Model>, LibraryControllerError> {
-        self.user_library
-            .item(authenticated_user, target_user_id, item_id)
+        self.item(authenticated_user, target_user_id, item_id)
             .await?;
-        let mut ancestors = self
+        Ok(self
             .items
             .ancestors(item_id)
             .await?
             .into_iter()
             .filter_map(|entry| self.item_types.hydrate(entry.item))
             .map(HydratedBaseItem::into_model)
-            .collect::<Vec<_>>();
-        let ancestor_ids = ancestors
-            .iter()
-            .map(|ancestor| ancestor.id)
-            .collect::<Vec<_>>();
-        let visible_ids = self
-            .user_library
-            .visible_item_ids(target_user_id, &ancestor_ids)
-            .await?;
-        ancestors.retain(|ancestor| visible_ids.contains(&ancestor.id));
-        Ok(ancestors)
+            .collect())
     }
 
     /// Returns visible collections containing one item, ordered like Jellyfin.
@@ -446,36 +435,12 @@ impl LibraryControllerService {
         start_index: u64,
         limit: Option<u64>,
     ) -> Result<BaseItemPage, LibraryControllerError> {
-        self.user_library
-            .item(authenticated_user, target_user_id, item_id)
+        self.item(authenticated_user, target_user_id, item_id)
             .await?;
-        let mut page = self
+        let page = self
             .items
-            .collections_containing_item(item_id, 0, None)
+            .collections_containing_item(item_id, start_index, limit)
             .await?;
-        let collection_ids = page
-            .items
-            .iter()
-            .map(|collection| collection.id)
-            .collect::<Vec<_>>();
-        let visible_ids = self
-            .user_library
-            .visible_item_ids(target_user_id, &collection_ids)
-            .await?;
-        page.items
-            .retain(|collection| visible_ids.contains(&collection.id));
-        page.total_record_count = u64::try_from(page.items.len()).unwrap_or(u64::MAX);
-        page.start_index = start_index;
-        page.items = page
-            .items
-            .into_iter()
-            .skip(usize::try_from(start_index).unwrap_or(usize::MAX))
-            .take(
-                limit
-                    .and_then(|limit| usize::try_from(limit).ok())
-                    .unwrap_or(usize::MAX),
-            )
-            .collect();
         Ok(self.hydrate_page(page))
     }
 
@@ -606,108 +571,6 @@ impl LibraryControllerService {
             .await?;
         let page = self.items.query(&query).await?;
         let mut page = self.hydrate_page(page);
-        page.total_record_count = u64::try_from(page.items.len()).unwrap_or(u64::MAX);
-        Ok(page)
-    }
-
-    /// Finds policy-visible legacy Emby Game candidates without registering
-    /// the removed Game type in Jellyfin's global item registry.
-    ///
-    /// # Errors
-    ///
-    /// Returns not-found, forbidden, or persistence errors.
-    pub async fn similar_legacy_game_items(
-        &self,
-        authenticated_user: &user::Model,
-        target_user_id: Uuid,
-        item_id: Uuid,
-        exclude_artist_ids: &[Uuid],
-        limit: Option<i32>,
-    ) -> Result<BaseItemPage, LibraryControllerError> {
-        let mut seed_query = BaseItemQuery {
-            ids: vec![item_id],
-            include_alternate_versions: true,
-            ..Default::default()
-        };
-        self.user_library
-            .apply_base_item_policy(authenticated_user, target_user_id, &mut seed_query)
-            .await?;
-        let item = self
-            .items
-            .query(&seed_query)
-            .await?
-            .items
-            .into_iter()
-            .next()
-            .filter(|item| is_legacy_game_item_type(&item.item_type))
-            .ok_or(LibraryControllerError::ItemNotFound)?;
-        if limit.is_some_and(|limit| limit <= 0) {
-            return Ok(empty_item_page());
-        }
-
-        let mut query = BaseItemQuery {
-            exclude_ids: vec![item.id],
-            exclude_artist_ids: exclude_artist_ids.to_vec(),
-            include_item_types: vec![
-                "Game".to_owned(),
-                "MediaBrowser.Controller.Entities.Game".to_owned(),
-            ],
-            media_types: item.media_type.into_iter().collect(),
-            is_virtual_item: Some(false),
-            limit: Some(limit.map_or(50, |limit| u64::try_from(limit).unwrap_or_default())),
-            enable_total_record_count: Some(false),
-            ..Default::default()
-        };
-        self.user_library
-            .apply_base_item_policy(authenticated_user, target_user_id, &mut query)
-            .await?;
-        let mut page = self.items.query(&query).await?;
-        page.items
-            .retain(|item| is_legacy_game_item_type(&item.item_type));
-        page.total_record_count = u64::try_from(page.items.len()).unwrap_or(u64::MAX);
-        Ok(page)
-    }
-
-    /// Finds legacy Emby Game candidates without attaching a user or applying
-    /// Jellyfin's item-type registry. This is the official behavior when the
-    /// optional Emby `UserId` is absent or resolves to no user.
-    ///
-    /// # Errors
-    ///
-    /// Returns not-found or persistence errors.
-    pub async fn similar_legacy_game_items_without_user(
-        &self,
-        item_id: Uuid,
-        exclude_artist_ids: &[Uuid],
-        limit: Option<i32>,
-    ) -> Result<BaseItemPage, LibraryControllerError> {
-        let item = self
-            .items
-            .get(item_id)
-            .await?
-            .filter(|item| is_legacy_game_item_type(&item.item_type))
-            .ok_or(LibraryControllerError::ItemNotFound)?;
-        if limit.is_some_and(|limit| limit <= 0) {
-            return Ok(empty_item_page());
-        }
-
-        let query = BaseItemQuery {
-            exclude_ids: vec![item.id],
-            exclude_artist_ids: exclude_artist_ids.to_vec(),
-            include_item_types: vec![
-                "Game".to_owned(),
-                "MediaBrowser.Controller.Entities.Game".to_owned(),
-            ],
-            media_types: item.media_type.into_iter().collect(),
-            is_virtual_item: Some(false),
-            limit: Some(limit.map_or(50, |limit| u64::try_from(limit).unwrap_or_default())),
-            enable_total_record_count: Some(false),
-            enable_all_folders: true,
-            ..Default::default()
-        };
-        let mut page = self.items.query(&query).await?;
-        page.items
-            .retain(|item| is_legacy_game_item_type(&item.item_type));
         page.total_record_count = u64::try_from(page.items.len()).unwrap_or(u64::MAX);
         Ok(page)
     }
@@ -1068,11 +931,6 @@ fn item_has_empty_similar_result(item: &base_item::Model) -> bool {
         item.item_type.as_str(),
         "Episode" | "Genre" | "MusicGenre" | "Person" | "Studio" | "Year"
     )
-}
-
-fn is_legacy_game_item_type(item_type: &str) -> bool {
-    item_type.eq_ignore_ascii_case("Game")
-        || item_type.eq_ignore_ascii_case("MediaBrowser.Controller.Entities.Game")
 }
 
 fn empty_item_page() -> BaseItemPage {

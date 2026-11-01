@@ -10,7 +10,6 @@ use jellyfin_data::{
     UserDataRepository,
     entities::{user, user::Column as UserColumn, virtual_folder},
 };
-use jellyfin_model::UserPolicy;
 use sea_orm::{
     ColumnTrait, ConnectionTrait, DatabaseConnection, EntityTrait, QueryFilter, sea_query::Expr,
 };
@@ -72,12 +71,10 @@ async fn exercise_user_view_routes(database_name: &str) {
     let fixture = Fixture::new(database.clone()).await;
     assert_auth_and_target_user_rules(&fixture).await;
     assert_user_views(&fixture).await;
-    assert_collection_type_query_binding(&fixture).await;
     assert_home_query_key_casing(&fixture).await;
     assert_grouped_views(&fixture).await;
     assert_grouping_options(&fixture).await;
     assert_collection_type_wire_shapes(&fixture).await;
-    assert_external_channel_views(&fixture).await;
     database.close().await.expect("database pool cleanup");
 }
 
@@ -552,84 +549,6 @@ async fn assert_auth_and_target_user_rules(fixture: &Fixture) {
         .status(),
         StatusCode::NOT_FOUND
     );
-    assert_eq!(
-        request(&fixture.app, "/userviews?includehidden=not-a-bool", None,)
-            .await
-            .status(),
-        StatusCode::UNAUTHORIZED
-    );
-}
-
-async fn assert_collection_type_query_binding(fixture: &Fixture) {
-    for uri in ["/UserViews?presetViews=MoViEs", "/userviews?presetviews=1"] {
-        let views = get_json(&fixture.app, uri, &fixture.user_token).await;
-        let movie_views = views["Items"]
-            .as_array()
-            .expect("view items")
-            .iter()
-            .filter(|item| item["CollectionType"] == "movies")
-            .collect::<Vec<_>>();
-        assert!(!movie_views.is_empty(), "{uri}");
-        assert!(
-            movie_views.iter().all(|item| item["Type"] == "UserView"),
-            "{uri}"
-        );
-    }
-
-    let comma_delimited = get_json(
-        &fixture.app,
-        "/UserViews?presetViews=MoViEs,not-a-collection,2",
-        &fixture.user_token,
-    )
-    .await;
-    let comma_items = comma_delimited["Items"].as_array().expect("view items");
-    assert!(
-        comma_items
-            .iter()
-            .any(|item| { item["CollectionType"] == "movies" && item["Type"] == "UserView" })
-    );
-    assert!(
-        comma_items
-            .iter()
-            .any(|item| { item["CollectionType"] == "tvshows" && item["Type"] == "UserView" })
-    );
-
-    let repeated = get_json(
-        &fixture.app,
-        "/userviews?presetviews=movies,tvshows&presetviews=3",
-        &fixture.user_token,
-    )
-    .await;
-    let repeated_items = repeated["Items"].as_array().expect("view items");
-    assert!(
-        repeated_items
-            .iter()
-            .any(|item| { item["CollectionType"] == "music" && item["Type"] == "UserView" })
-    );
-    assert!(
-        repeated_items.iter().any(|item| {
-            item["CollectionType"] == "movies" && item["Type"] == "CollectionFolder"
-        })
-    );
-    assert!(
-        repeated_items.iter().any(|item| {
-            item["CollectionType"] == "tvshows" && item["Type"] == "CollectionFolder"
-        })
-    );
-
-    let invalid = get_json(
-        &fixture.app,
-        "/UserViews?presetViews=999,not-a-collection",
-        &fixture.user_token,
-    )
-    .await;
-    assert!(
-        invalid["Items"]
-            .as_array()
-            .expect("view items")
-            .iter()
-            .all(|item| item["Type"] == "CollectionFolder")
-    );
 }
 
 async fn assert_user_views(fixture: &Fixture) {
@@ -822,7 +741,7 @@ async fn assert_grouped_views(fixture: &Fixture) {
 async fn assert_grouping_options(fixture: &Fixture) {
     let grouping = get_json(
         &fixture.app,
-        &format!("/userviews/groupingoptions?userId={}", fixture.user_id),
+        &format!("/UserViews/GroupingOptions?userId={}", fixture.user_id),
         &fixture.admin_token,
     )
     .await;
@@ -851,72 +770,6 @@ async fn assert_grouping_options(fixture: &Fixture) {
     )
     .await;
     assert_eq!(legacy, grouping);
-}
-
-async fn assert_external_channel_views(fixture: &Fixture) {
-    let repository = BaseItemRepository::new(fixture.database.clone());
-    let channel_id = Uuid::new_v4();
-    let mut channel = NewBaseItem::new(channel_id, "Channel");
-    channel.parent_id = Some(USER_ROOT_FOLDER_ID);
-    channel.name = Some("External mobile channel".to_owned());
-    channel.sort_name = channel.name.clone();
-    channel.is_folder = true;
-    repository.create(channel).await.expect("channel seed");
-
-    for uri in [
-        "/UserViews",
-        "/userviews?includeexternalcontent=true",
-        &format!(
-            "/Users/{}/Views?IncludeExternalContent=true",
-            fixture.user_id
-        ),
-    ] {
-        let response = get_json(&fixture.app, uri, &fixture.user_token).await;
-        let channel = response["Items"]
-            .as_array()
-            .expect("user views")
-            .iter()
-            .find(|item| item["Id"] == channel_id.simple().to_string())
-            .unwrap_or_else(|| panic!("{uri} must include the visible external channel"));
-        assert_eq!(channel["Type"], "Channel");
-        assert_eq!(channel["Name"], "External mobile channel");
-    }
-
-    for uri in [
-        "/UserViews?includeExternalContent=false".to_owned(),
-        "/userviews?includeexternalcontent=false".to_owned(),
-        format!(
-            "/users/{}/views?includeexternalcontent=false",
-            fixture.user_id
-        ),
-    ] {
-        let response = get_json(&fixture.app, &uri, &fixture.user_token).await;
-        assert!(
-            response["Items"]
-                .as_array()
-                .expect("user views")
-                .iter()
-                .all(|item| item["Id"] != channel_id.simple().to_string()),
-            "{uri} must suppress external content"
-        );
-    }
-
-    let users = UserService::new(fixture.database.clone());
-    let user = users.get(fixture.user_id).await.expect("user lookup");
-    let mut policy: UserPolicy = serde_json::from_value(user.policy).expect("stored user policy");
-    policy.blocked_channels = Some(vec![channel_id]);
-    users
-        .update_policy(fixture.user_id, &policy)
-        .await
-        .expect("block channel");
-    let response = get_json(&fixture.app, "/UserViews", &fixture.user_token).await;
-    assert!(
-        response["Items"]
-            .as_array()
-            .expect("user views")
-            .iter()
-            .all(|item| item["Id"] != channel_id.simple().to_string())
-    );
 }
 
 async fn request(app: &axum::Router, uri: &str, token: Option<&str>) -> axum::response::Response {

@@ -1,15 +1,14 @@
-use std::{collections::HashMap, fmt, net::IpAddr, path::PathBuf, sync::Arc};
+use std::{net::IpAddr, path::PathBuf, sync::Arc};
 
 use axum::{
     Json,
-    body::Bytes,
     body::to_bytes,
     extract::{
         ConnectInfo, OriginalUri, Path, Query, State, rejection::JsonRejection,
         rejection::QueryRejection,
     },
     http::{HeaderMap, Request, StatusCode, header},
-    response::{IntoResponse, Response},
+    response::Response,
 };
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
 use chrono::Utc;
@@ -19,8 +18,7 @@ use jellyfin_model::{
     UserConfiguration, UserDto, UserPolicy,
 };
 use jellyfin_server_implementations::AuthenticationError;
-use serde::{Deserialize, Deserializer, de};
-use serde_json::Value;
+use serde::Deserialize;
 use uuid::Uuid;
 
 use crate::item_images::parse_image_type;
@@ -32,9 +30,9 @@ use crate::{
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 pub struct ListUsersQuery {
-    #[serde(rename = "isHidden", alias = "IsHidden", alias = "ishidden")]
+    #[serde(rename = "isHidden", alias = "IsHidden")]
     pub is_hidden: Option<bool>,
-    #[serde(rename = "isDisabled", alias = "IsDisabled", alias = "isdisabled")]
+    #[serde(rename = "isDisabled", alias = "IsDisabled")]
     pub is_disabled: Option<bool>,
 }
 
@@ -116,40 +114,13 @@ fn can_access_device(
         || !supports_persistent_identifier
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, rename_all = "PascalCase")]
 pub struct CreateUserByName {
+    #[serde(alias = "name")]
     pub name: Option<String>,
+    #[serde(alias = "password")]
     pub password: Option<String>,
-}
-
-impl<'de> Deserialize<'de> for CreateUserByName {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        struct Visitor;
-
-        impl<'de> de::Visitor<'de> for Visitor {
-            type Value = CreateUserByName;
-
-            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-                formatter.write_str("a CreateUserByName object")
-            }
-
-            fn visit_map<M: de::MapAccess<'de>>(self, mut map: M) -> Result<Self::Value, M::Error> {
-                let mut request = CreateUserByName::default();
-                while let Some(name) = map.next_key::<String>()? {
-                    if name.eq_ignore_ascii_case("Name") {
-                        request.name = map.next_value()?;
-                    } else if name.eq_ignore_ascii_case("Password") {
-                        request.password = map.next_value()?;
-                    } else {
-                        map.next_value::<de::IgnoredAny>()?;
-                    }
-                }
-                Ok(request)
-            }
-        }
-
-        deserializer.deserialize_map(Visitor)
-    }
 }
 
 pub(crate) async fn create(
@@ -339,10 +310,9 @@ pub(crate) async fn post_user_image(
     Query(query): Query<UpdateUserQuery>,
     request: Request<axum::body::Body>,
 ) -> Result<StatusCode, ApiError> {
-    let identity = authentication::authenticated_identity(&state, &headers, None).await?;
-    let target_id =
-        management_target_id(&identity, query.user_id.filter(|user_id| !user_id.is_nil()));
-    post_user_image_for(&state, &headers, &identity, target_id, request).await
+    let authenticated = authentication::authenticated_session(&state, &headers).await?;
+    let target_id = query.user_id.unwrap_or(authenticated.user.id);
+    post_user_image_for(&state, &headers, authenticated.user, target_id, request).await
 }
 
 pub(crate) async fn post_user_image_legacy(
@@ -351,31 +321,31 @@ pub(crate) async fn post_user_image_legacy(
     Path((target_id, image_type)): Path<(Uuid, String)>,
     request: Request<axum::body::Body>,
 ) -> Result<StatusCode, ApiError> {
-    let identity = authentication::authenticated_identity(&state, &headers, None).await?;
+    let authenticated = authentication::authenticated_session(&state, &headers).await?;
     parse_image_type(&image_type)?;
-    post_user_image_for(&state, &headers, &identity, target_id, request).await
+    post_user_image_for(&state, &headers, authenticated.user, target_id, request).await
 }
 
 pub(crate) async fn post_user_image_index_legacy(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    Path((target_id, image_type, _index)): Path<(Uuid, String, i32)>,
+    Path((target_id, image_type, _index)): Path<(Uuid, String, u32)>,
     request: Request<axum::body::Body>,
 ) -> Result<StatusCode, ApiError> {
-    let identity = authentication::authenticated_identity(&state, &headers, None).await?;
+    let authenticated = authentication::authenticated_session(&state, &headers).await?;
     parse_image_type(&image_type)?;
-    post_user_image_for(&state, &headers, &identity, target_id, request).await
+    post_user_image_for(&state, &headers, authenticated.user, target_id, request).await
 }
 
 async fn post_user_image_for(
     state: &AppState,
     headers: &HeaderMap,
-    identity: &authentication::AuthenticatedIdentity,
+    authenticated_user: user::Model,
     target_id: Uuid,
     request: Request<axum::body::Body>,
 ) -> Result<StatusCode, ApiError> {
     let target = state.users.get(target_id).await?;
-    assert_identity_can_update_user(identity, &target)?;
+    assert_can_update_user(&authenticated_user, &target)?;
     let extension = MimeTypes::try_get_image_extension(
         headers
             .get(header::CONTENT_TYPE)
@@ -432,10 +402,9 @@ pub(crate) async fn delete_user_image(
     headers: HeaderMap,
     Query(query): Query<UpdateUserQuery>,
 ) -> Result<StatusCode, ApiError> {
-    let identity = authentication::authenticated_identity(&state, &headers, None).await?;
-    let target_id =
-        management_target_id(&identity, query.user_id.filter(|user_id| !user_id.is_nil()));
-    delete_user_image_for(&state, &identity, target_id).await
+    let authenticated = authentication::authenticated_session(&state, &headers).await?;
+    let target_id = query.user_id.unwrap_or(authenticated.user.id);
+    delete_user_image_for(&state, authenticated.user, target_id).await
 }
 
 pub(crate) async fn delete_user_image_legacy(
@@ -443,28 +412,28 @@ pub(crate) async fn delete_user_image_legacy(
     headers: HeaderMap,
     Path((target_id, image_type)): Path<(Uuid, String)>,
 ) -> Result<StatusCode, ApiError> {
-    let identity = authentication::authenticated_identity(&state, &headers, None).await?;
+    let authenticated = authentication::authenticated_session(&state, &headers).await?;
     parse_image_type(&image_type)?;
-    delete_user_image_for(&state, &identity, target_id).await
+    delete_user_image_for(&state, authenticated.user, target_id).await
 }
 
 pub(crate) async fn delete_user_image_index_legacy(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    Path((target_id, image_type, _index)): Path<(Uuid, String, i32)>,
+    Path((target_id, image_type, _index)): Path<(Uuid, String, u32)>,
 ) -> Result<StatusCode, ApiError> {
-    let identity = authentication::authenticated_identity(&state, &headers, None).await?;
+    let authenticated = authentication::authenticated_session(&state, &headers).await?;
     parse_image_type(&image_type)?;
-    delete_user_image_for(&state, &identity, target_id).await
+    delete_user_image_for(&state, authenticated.user, target_id).await
 }
 
 async fn delete_user_image_for(
     state: &AppState,
-    identity: &authentication::AuthenticatedIdentity,
+    authenticated_user: user::Model,
     target_id: Uuid,
 ) -> Result<StatusCode, ApiError> {
     let target = state.users.get(target_id).await?;
-    assert_identity_can_update_user(identity, &target)?;
+    assert_can_update_user(&authenticated_user, &target)?;
     let removed = state
         .users
         .clear_profile_image(target.id)
@@ -559,42 +528,6 @@ pub(crate) async fn update_configuration_legacy(
     update_configuration_with_id(&state, &identity, target_id, request).await
 }
 
-pub(crate) async fn update_configuration_partial(
-    State(state): State<Arc<AppState>>,
-    OriginalUri(uri): OriginalUri,
-    headers: HeaderMap,
-    Path(target_id): Path<Uuid>,
-    body: Bytes,
-) -> Result<StatusCode, ApiError> {
-    let identity = authentication::authenticated_identity(&state, &headers, Some(&uri)).await?;
-    let target = state.users.get(target_id).await?;
-    assert_identity_can_update_user(&identity, &target)?;
-    let patch: Value = serde_json::from_slice(&body).map_err(|_| ApiError::InvalidRequest)?;
-    let Some(patch) = patch.as_object() else {
-        return Err(ApiError::InvalidRequest);
-    };
-    let mut merged = serde_json::to_value(
-        UserConfiguration::deserialize(&target.preferences).unwrap_or_default(),
-    )
-    .map_err(|_| ApiError::Internal)?;
-    let object = merged.as_object_mut().ok_or(ApiError::Internal)?;
-    for (key, value) in patch {
-        let destination = object
-            .keys()
-            .find(|existing| existing.eq_ignore_ascii_case(key))
-            .cloned()
-            .unwrap_or_else(|| key.clone());
-        object.insert(destination, value.clone());
-    }
-    let configuration: UserConfiguration =
-        serde_json::from_value(merged).map_err(|_| ApiError::InvalidRequest)?;
-    state
-        .users
-        .update_configuration(target_id, &configuration)
-        .await?;
-    Ok(StatusCode::NO_CONTENT)
-}
-
 async fn update_configuration_with_id(
     state: &AppState,
     identity: &authentication::AuthenticatedIdentity,
@@ -611,43 +544,15 @@ async fn update_configuration_with_id(
     Ok(StatusCode::NO_CONTENT)
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, rename_all = "PascalCase")]
 pub struct UpdateUserPassword {
+    #[serde(alias = "currentPw", alias = "currentpw")]
     pub current_pw: Option<String>,
+    #[serde(alias = "newPw", alias = "newpw")]
     pub new_pw: Option<String>,
+    #[serde(alias = "resetPassword", alias = "resetpassword")]
     pub reset_password: bool,
-}
-
-impl<'de> Deserialize<'de> for UpdateUserPassword {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        struct Visitor;
-
-        impl<'de> de::Visitor<'de> for Visitor {
-            type Value = UpdateUserPassword;
-
-            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-                formatter.write_str("an UpdateUserPassword object")
-            }
-
-            fn visit_map<M: de::MapAccess<'de>>(self, mut map: M) -> Result<Self::Value, M::Error> {
-                let mut request = UpdateUserPassword::default();
-                while let Some(name) = map.next_key::<String>()? {
-                    if name.eq_ignore_ascii_case("CurrentPw") {
-                        request.current_pw = map.next_value()?;
-                    } else if name.eq_ignore_ascii_case("NewPw") {
-                        request.new_pw = map.next_value()?;
-                    } else if name.eq_ignore_ascii_case("ResetPassword") {
-                        request.reset_password = map.next_value()?;
-                    } else {
-                        map.next_value::<de::IgnoredAny>()?;
-                    }
-                }
-                Ok(request)
-            }
-        }
-
-        deserializer.deserialize_map(Visitor)
-    }
 }
 
 pub(crate) async fn update_password(
@@ -727,12 +632,12 @@ pub(crate) async fn update_policy(
     OriginalUri(uri): OriginalUri,
     headers: HeaderMap,
     Path(target_id): Path<Uuid>,
-    request: Result<Json<CaseInsensitiveUserPolicy>, JsonRejection>,
+    request: Result<Json<UserPolicy>, JsonRejection>,
 ) -> Result<StatusCode, ApiError> {
     let identity = authentication::authenticated_identity(&state, &headers, Some(&uri)).await?;
     identity.require_administrator()?;
     let current_token = identity.access_token().to_owned();
-    let Json(CaseInsensitiveUserPolicy(policy)) = request.map_err(|_| ApiError::InvalidRequest)?;
+    let Json(policy) = request.map_err(|_| ApiError::InvalidRequest)?;
     let (_, became_disabled) = state.users.update_policy(target_id, &policy).await?;
     if became_disabled {
         state
@@ -747,92 +652,6 @@ pub(crate) async fn update_policy(
     )
     .await;
     Ok(StatusCode::NO_CONTENT)
-}
-
-pub(crate) struct CaseInsensitiveUserPolicy(UserPolicy);
-
-impl<'de> Deserialize<'de> for CaseInsensitiveUserPolicy {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        struct PolicyVisitor;
-
-        impl<'de> de::Visitor<'de> for PolicyVisitor {
-            type Value = CaseInsensitiveUserPolicy;
-
-            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-                formatter.write_str("a user policy object")
-            }
-
-            fn visit_map<M: de::MapAccess<'de>>(self, mut map: M) -> Result<Self::Value, M::Error> {
-                let mut normalized = serde_json::Map::new();
-                while let Some(key) = map.next_key::<String>()? {
-                    let value = map.next_value::<Value>()?;
-                    if let Some(field) = canonical_user_policy_field(&key) {
-                        // ASP.NET's JSON binder matches property names without
-                        // regard to case and the last duplicate value wins.
-                        normalized.insert(field.to_owned(), value);
-                    }
-                }
-                serde_json::from_value(Value::Object(normalized))
-                    .map(CaseInsensitiveUserPolicy)
-                    .map_err(de::Error::custom)
-            }
-        }
-
-        deserializer.deserialize_map(PolicyVisitor)
-    }
-}
-
-fn canonical_user_policy_field(name: &str) -> Option<&'static str> {
-    const FIELDS: &[&str] = &[
-        "IsAdministrator",
-        "IsHidden",
-        "EnableCollectionManagement",
-        "EnableSubtitleManagement",
-        "EnableLyricManagement",
-        "IsDisabled",
-        "MaxParentalRating",
-        "MaxParentalSubRating",
-        "BlockedTags",
-        "AllowedTags",
-        "EnableUserPreferenceAccess",
-        "AccessSchedules",
-        "BlockUnratedItems",
-        "EnableRemoteControlOfOtherUsers",
-        "EnableSharedDeviceControl",
-        "EnableRemoteAccess",
-        "EnableLiveTvManagement",
-        "EnableLiveTvAccess",
-        "EnableMediaPlayback",
-        "EnableAudioPlaybackTranscoding",
-        "EnableVideoPlaybackTranscoding",
-        "EnablePlaybackRemuxing",
-        "ForceRemoteSourceTranscoding",
-        "EnableContentDeletion",
-        "EnableContentDeletionFromFolders",
-        "EnableContentDownloading",
-        "EnableSyncTranscoding",
-        "EnableMediaConversion",
-        "EnabledDevices",
-        "EnableAllDevices",
-        "EnabledChannels",
-        "EnableAllChannels",
-        "EnabledFolders",
-        "EnableAllFolders",
-        "InvalidLoginAttemptCount",
-        "LoginAttemptsBeforeLockout",
-        "MaxActiveSessions",
-        "EnablePublicSharing",
-        "BlockedMediaFolders",
-        "BlockedChannels",
-        "RemoteClientBitrateLimit",
-        "AuthenticationProviderId",
-        "PasswordResetProviderId",
-        "SyncPlayAccess",
-    ];
-    FIELDS
-        .iter()
-        .find(|field| field.eq_ignore_ascii_case(name))
-        .copied()
 }
 
 fn management_target_id(
@@ -857,195 +676,6 @@ fn assert_identity_can_update_user(
             assert_can_update_user(&session.user, target)
         }
         authentication::AuthenticatedIdentity::ApiKey(_) => Ok(()),
-    }
-}
-
-impl AppState {
-    /// Resolves and authorizes an Emby password target before parsing the
-    /// generated protocol body. Emby's DTO has no current-password field, so
-    /// an authorized user may change their own password without the Jellyfin
-    /// protocol's separate `CurrentPw` requirement.
-    pub async fn emby_password_update_target(
-        &self,
-        headers: &HeaderMap,
-        uri: &axum::http::Uri,
-        target_id: Uuid,
-    ) -> Result<String, Response> {
-        let identity = authentication::authenticated_identity(self, headers, Some(uri))
-            .await
-            .map_err(IntoResponse::into_response)?;
-        let target = self
-            .users
-            .get(target_id)
-            .await
-            .map_err(ApiError::from)
-            .map_err(IntoResponse::into_response)?;
-        assert_identity_can_update_user(&identity, &target).map_err(IntoResponse::into_response)?;
-        Ok(identity.access_token().to_owned())
-    }
-
-    /// Persists an Emby password mutation while retaining Jellyfin's token
-    /// revocation distinction between password changes and resets.
-    pub async fn persist_emby_password(
-        &self,
-        target_id: Uuid,
-        new_password: String,
-        reset_password: bool,
-        current_token: &str,
-    ) -> Result<StatusCode, Response> {
-        let target = self
-            .users
-            .get(target_id)
-            .await
-            .map_err(ApiError::from)
-            .map_err(IntoResponse::into_response)?;
-        hash_and_save_password(
-            self,
-            target,
-            if reset_password {
-                String::new()
-            } else {
-                new_password
-            },
-        )
-        .await
-        .map_err(IntoResponse::into_response)?;
-        if !reset_password {
-            self.devices
-                .revoke_user_tokens(target_id, Some(current_token))
-                .await
-                .map_err(ApiError::from)
-                .map_err(IntoResponse::into_response)?;
-        }
-        Ok(StatusCode::OK)
-    }
-
-    /// Resolves and authorizes an Emby configuration target before the
-    /// protocol adapter parses its request body, preserving official lookup
-    /// and authorization precedence.
-    pub async fn emby_configuration_update_target(
-        &self,
-        headers: &HeaderMap,
-        uri: &axum::http::Uri,
-        target_id: Uuid,
-    ) -> Result<UserConfiguration, Response> {
-        let identity = authentication::authenticated_identity(self, headers, Some(uri))
-            .await
-            .map_err(IntoResponse::into_response)?;
-        let target = self
-            .users
-            .get(target_id)
-            .await
-            .map_err(ApiError::from)
-            .map_err(IntoResponse::into_response)?;
-        assert_identity_can_update_user(&identity, &target).map_err(IntoResponse::into_response)?;
-        let mut configuration =
-            UserConfiguration::deserialize(&target.preferences).unwrap_or_default();
-        configuration.enable_local_password = target.enable_local_password;
-        Ok(configuration)
-    }
-
-    /// Resolves an Emby policy target under the shared elevated boundary
-    /// before the adapter parses its protocol-local body.
-    pub async fn emby_policy_update_target(
-        &self,
-        headers: &HeaderMap,
-        uri: &axum::http::Uri,
-        target_id: Uuid,
-    ) -> Result<(UserPolicy, String), Response> {
-        let identity = authentication::authenticated_identity(self, headers, Some(uri))
-            .await
-            .map_err(IntoResponse::into_response)?;
-        identity
-            .require_administrator()
-            .map_err(IntoResponse::into_response)?;
-        let target = self
-            .users
-            .get(target_id)
-            .await
-            .map_err(ApiError::from)
-            .map_err(IntoResponse::into_response)?;
-        let policy =
-            authentication::stored_user_policy(&target).map_err(IntoResponse::into_response)?;
-        Ok((policy, identity.access_token().to_owned()))
-    }
-
-    /// Persists a validated Emby configuration and its shared Jellyfin view.
-    pub async fn persist_emby_configuration(
-        &self,
-        target_id: Uuid,
-        configuration: &UserConfiguration,
-        emby_configuration: serde_json::Value,
-    ) -> Result<StatusCode, Response> {
-        self.users
-            .update_emby_configuration(target_id, configuration, emby_configuration)
-            .await
-            .map_err(ApiError::from)
-            .map_err(IntoResponse::into_response)?;
-        Ok(StatusCode::OK)
-    }
-
-    /// Persists a validated Emby policy, revokes sessions when disabling the
-    /// target, and emits the same user-updated event as Jellyfin's mutation.
-    pub async fn persist_emby_policy(
-        &self,
-        target_id: Uuid,
-        policy: &UserPolicy,
-        emby_policy: serde_json::Value,
-        current_token: &str,
-    ) -> Result<StatusCode, Response> {
-        let (_, became_disabled) = self
-            .users
-            .update_emby_policy(target_id, policy, emby_policy)
-            .await
-            .map_err(ApiError::from)
-            .map_err(IntoResponse::into_response)?;
-        if became_disabled {
-            self.devices
-                .revoke_user_tokens(target_id, Some(current_token))
-                .await
-                .map_err(ApiError::from)
-                .map_err(IntoResponse::into_response)?;
-        }
-        let dto = user_to_dto_with_server_id(
-            self,
-            self.users
-                .get(target_id)
-                .await
-                .map_err(ApiError::from)
-                .map_err(IntoResponse::into_response)?,
-        )
-        .await
-        .map_err(IntoResponse::into_response)?;
-        crate::websocket::broadcast_user_updated(
-            self,
-            &serde_json::to_value(&dto).unwrap_or_default(),
-        )
-        .await;
-        Ok(StatusCode::OK)
-    }
-
-    /// Batch-loads the PostgreSQL documents used to adapt Jellyfin UserDto
-    /// values into the Emby wire contract without one query per user.
-    pub async fn emby_user_contract_storage(
-        &self,
-        ids: &[Uuid],
-    ) -> Result<HashMap<Uuid, (Value, Value, bool)>, Response> {
-        let users = self
-            .users
-            .get_many(ids)
-            .await
-            .map_err(ApiError::from)
-            .map_err(IntoResponse::into_response)?;
-        Ok(users
-            .into_iter()
-            .map(|user| {
-                (
-                    user.id,
-                    (user.preferences, user.policy, user.enable_local_password),
-                )
-            })
-            .collect())
     }
 }
 
@@ -1134,82 +764,5 @@ mod user_image_query_tests {
             .unwrap();
         let query = Query::<GetUserImageQuery>::try_from_uri(&uri).unwrap().0;
         assert_eq!(query.user_id, Some(user_id));
-    }
-}
-
-#[cfg(test)]
-mod user_policy_request_tests {
-    use super::CaseInsensitiveUserPolicy;
-
-    #[test]
-    fn user_policy_properties_bind_case_insensitively_and_last_value_wins() {
-        let CaseInsensitiveUserPolicy(policy) = serde_json::from_str(
-            r#"{
-                "isadministrator": false,
-                "ENABLECONTENTDOWNLOADING": false,
-                "enableContentDownloading": true,
-                "aUtHeNtIcAtIoNpRoViDeRiD": "auth-provider",
-                "PASSWORDRESETPROVIDERID": "reset-provider"
-            }"#,
-        )
-        .expect("case-insensitive user policy");
-
-        assert!(!policy.is_administrator);
-        assert!(policy.enable_content_downloading);
-        assert_eq!(
-            policy.authentication_provider_id.as_deref(),
-            Some("auth-provider")
-        );
-        assert_eq!(
-            policy.password_reset_provider_id.as_deref(),
-            Some("reset-provider")
-        );
-    }
-}
-
-#[cfg(test)]
-mod user_password_request_tests {
-    use super::UpdateUserPassword;
-
-    #[test]
-    fn password_properties_bind_case_insensitively_and_last_value_wins() {
-        let request: UpdateUserPassword = serde_json::from_str(
-            r#"{
-                "CurrentPw":"old-first",
-                "cUrReNtPw":"old-last",
-                "NewPw":"new-first",
-                "nEwPw":"new-last",
-                "ResetPassword":true,
-                "rEsEtPaSsWoRd":false,
-                "Ignored":"value"
-            }"#,
-        )
-        .expect("case-insensitive password update");
-
-        assert_eq!(request.current_pw.as_deref(), Some("old-last"));
-        assert_eq!(request.new_pw.as_deref(), Some("new-last"));
-        assert!(!request.reset_password);
-    }
-}
-
-#[cfg(test)]
-mod create_user_request_tests {
-    use super::CreateUserByName;
-
-    #[test]
-    fn create_properties_bind_case_insensitively_and_last_value_wins() {
-        let request: CreateUserByName = serde_json::from_str(
-            r#"{
-                "Name":"first",
-                "nAmE":"last",
-                "Password":"old",
-                "pAsSwOrD":"new",
-                "Ignored":"value"
-            }"#,
-        )
-        .expect("case-insensitive user creation");
-
-        assert_eq!(request.name.as_deref(), Some("last"));
-        assert_eq!(request.password.as_deref(), Some("new"));
     }
 }

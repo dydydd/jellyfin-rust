@@ -2,10 +2,9 @@ use std::sync::Arc;
 
 use axum::{
     Json,
-    extract::{OriginalUri, State},
+    extract::{OriginalUri, Query, State, rejection::QueryRejection},
     http::HeaderMap,
 };
-use axum_extra::extract::{Query, QueryRejection};
 use jellyfin_data::{
     ActivityLogQuery, ActivityLogSortBy, SortDirection,
     entities::activity_log::{self, LogSeverity},
@@ -43,28 +42,18 @@ pub(crate) struct ActivityLogParameters {
     username: Option<String>,
     #[serde(alias = "Severity")]
     severity: Option<String>,
-    #[serde(
-        default,
-        alias = "SortBy",
-        alias = "sortby",
-        deserialize_with = "crate::query::comma::deserialize"
-    )]
-    sort_by: Vec<String>,
-    #[serde(
-        default,
-        alias = "SortOrder",
-        alias = "sortorder",
-        deserialize_with = "crate::query::comma::deserialize"
-    )]
-    sort_order: Vec<String>,
+    #[serde(alias = "SortBy", alias = "sortby")]
+    sort_by: Option<String>,
+    #[serde(alias = "SortOrder", alias = "sortorder")]
+    sort_order: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "PascalCase")]
 pub(crate) struct ActivityLogResult {
     items: Vec<ActivityLogEntry>,
-    total_record_count: i32,
-    start_index: i32,
+    total_record_count: u64,
+    start_index: u64,
 }
 
 #[derive(Debug, Serialize)]
@@ -83,8 +72,7 @@ struct ActivityLogEntry {
     #[serde(serialize_with = "serialize_date")]
     date: DateTimeUtc,
     user_id: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    severity: Option<&'static str>,
+    severity: &'static str,
 }
 
 pub(crate) async fn entries(
@@ -96,43 +84,35 @@ pub(crate) async fn entries(
     let identity = authentication::authenticated_identity(&state, &headers, Some(&uri)).await?;
     identity.require_administrator()?;
     let Query(parameters) = parameters.map_err(|_| ApiError::InvalidRequest)?;
-    let requested_start_index = parameters.start_index.unwrap_or(0);
     let query = parameters.try_into_query()?;
     let page = state.activity_logs.query(&query).await?;
-    let mut items = page
-        .items
-        .into_iter()
-        .map(ActivityLogEntry::from)
-        .collect::<Vec<_>>();
-    adapt_emby_severities(&uri, &mut items);
 
     Ok(Json(ActivityLogResult {
-        items,
-        total_record_count: crate::user_library::checked_int32(page.total_record_count)?,
-        start_index: requested_start_index,
+        items: page.items.into_iter().map(ActivityLogEntry::from).collect(),
+        total_record_count: page.total_record_count,
+        start_index: page.start_index.unwrap_or(0),
     }))
 }
 
 impl ActivityLogParameters {
     fn try_into_query(self) -> Result<ActivityLogQuery, ApiError> {
-        let sort_by = parse_collection(&self.sort_by, parse_sort_by)?;
-        let sort_order = parse_collection(&self.sort_order, parse_sort_direction)?;
+        let sort_by = parse_csv(self.sort_by.as_deref(), parse_sort_by)?;
+        let sort_order = parse_csv(self.sort_order.as_deref(), parse_sort_direction)?;
         let severity = self
             .severity
             .as_deref()
             .map(|value| parse_severity(value).ok_or(ApiError::InvalidRequest))
             .transpose()?;
-        // EF/SQLite preserves the signed controller values in the response,
-        // while Skip treats a negative count as zero and SQLite's negative
-        // LIMIT is unlimited. Normalize only at the PostgreSQL query boundary.
-        let start_index = self.start_index.map(|value| value.max(0) as u64);
-        let limit = self.limit.map(|value| {
-            if value < 0 {
-                i64::MAX as u64
-            } else {
-                value as u64
-            }
-        });
+        let start_index = self
+            .start_index
+            .map(u64::try_from)
+            .transpose()
+            .map_err(|_| ApiError::InvalidRequest)?;
+        let limit = self
+            .limit
+            .map(u64::try_from)
+            .transpose()
+            .map_err(|_| ApiError::InvalidRequest)?;
         if sort_order.len() > sort_by.len() {
             return Err(ApiError::InvalidRequest);
         }
@@ -180,48 +160,25 @@ impl From<activity_log::Model> for ActivityLogEntry {
             item_id: entry.item_id,
             date: entry.date_created,
             user_id: entry.user_id.simple().to_string(),
-            severity: Some(severity_name(entry.log_severity)),
+            severity: severity_name(entry.log_severity),
         }
     }
 }
 
-fn adapt_emby_severities(uri: &axum::http::Uri, entries: &mut [ActivityLogEntry]) {
-    if !uri
-        .path()
-        .split('/')
-        .nth(1)
-        .is_some_and(|segment| segment.eq_ignore_ascii_case("emby"))
-    {
-        return;
-    }
-
-    for entry in entries {
-        entry.severity = entry.severity.and_then(emby_severity_name);
-    }
-}
-
-const fn emby_severity_name(severity: &str) -> Option<&'static str> {
-    match severity.as_bytes() {
-        b"Information" => Some("Info"),
-        b"Warning" => Some("Warn"),
-        b"Critical" => Some("Fatal"),
-        b"Debug" => Some("Debug"),
-        b"Error" => Some("Error"),
-        // Emby's generated LoggingLogSeverity is closed and has no
-        // representation for Jellyfin's Trace or None values. Its Severity
-        // property is nullable, so omission is the only lossless adaptation.
-        _ => None,
-    }
-}
-
-fn parse_collection<T>(
-    values: &[String],
+fn parse_csv<T>(
+    value: Option<&str>,
     parse: impl Fn(&str) -> Option<T>,
 ) -> Result<Vec<T>, ApiError> {
-    values
-        .iter()
-        .map(|value| parse(value).ok_or(ApiError::InvalidRequest))
-        .collect()
+    value.filter(|value| !value.is_empty()).map_or_else(
+        || Ok(Vec::new()),
+        |value| {
+            value
+                .split(',')
+                .map(str::trim)
+                .map(|value| parse(value).ok_or(ApiError::InvalidRequest))
+                .collect()
+        },
+    )
 }
 
 fn parse_sort_by(value: &str) -> Option<ActivityLogSortBy> {
@@ -304,53 +261,5 @@ mod tests {
         );
         assert_eq!(parse_severity("Warning"), Some(LogSeverity::Warning));
         assert_eq!(parse_severity("6"), Some(LogSeverity::None));
-    }
-
-    #[test]
-    fn emby_activity_log_severities_use_the_generated_closed_enum() {
-        for (jellyfin, emby) in [
-            ("Information", Some("Info")),
-            ("Warning", Some("Warn")),
-            ("Critical", Some("Fatal")),
-            ("Debug", Some("Debug")),
-            ("Error", Some("Error")),
-            ("Trace", None),
-            ("None", None),
-        ] {
-            assert_eq!(emby_severity_name(jellyfin), emby, "{jellyfin}");
-        }
-    }
-
-    #[test]
-    fn activity_log_severity_adaptation_is_emby_only() {
-        fn entries() -> Vec<ActivityLogEntry> {
-            vec![ActivityLogEntry {
-                id: 1,
-                name: "test".to_owned(),
-                overview: None,
-                short_overview: None,
-                activity_type: "test".to_owned(),
-                item_id: None,
-                date: chrono::Utc::now(),
-                user_id: Uuid::nil().simple().to_string(),
-                severity: Some("Warning"),
-            }]
-        }
-
-        let mut emby = entries();
-        adapt_emby_severities(
-            &"/eMbY/System/ActivityLog/Entries".parse().unwrap(),
-            &mut emby,
-        );
-        assert_eq!(emby[0].severity, Some("Warn"));
-
-        for path in [
-            "/System/ActivityLog/Entries",
-            "/api/System/ActivityLog/Entries",
-        ] {
-            let mut jellyfin = entries();
-            adapt_emby_severities(&path.parse().unwrap(), &mut jellyfin);
-            assert_eq!(jellyfin[0].severity, Some("Warning"), "{path}");
-        }
     }
 }

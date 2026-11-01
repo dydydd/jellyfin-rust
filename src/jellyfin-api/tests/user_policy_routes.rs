@@ -193,46 +193,6 @@ impl Fixture {
             dto["Policy"]["PasswordResetProviderId"],
             "Example.PasswordReset, Assembly"
         );
-
-        let mixed_case_policy = json!({
-            "iShIdDeN": true,
-            "eNaBlEcOnTeNtDoWnLoAdInG": false,
-            "aUtHeNtIcAtIoNpRoViDeRiD": "Example.Authentication, Assembly",
-            "pAsSwOrDrEsEtPrOvIdErId": "Example.PasswordReset, Assembly",
-            "aCcEsSsChEdUlEs": [{
-                "iD": 7,
-                "uSeRiD": self.target_id,
-                "dAyOfWeEk": "Everyday",
-                "sTaRtHoUr": 8.5,
-                "eNdHoUr": 17.0
-            }]
-        });
-        let response = post_policy(
-            &self.app,
-            &self.route,
-            Some(&self.admin_token),
-            mixed_case_policy,
-        )
-        .await;
-        assert_eq!(response.status(), StatusCode::NO_CONTENT);
-        let stored = self.users.get(self.target_id).await.unwrap();
-        assert!(stored.is_hidden);
-        assert_eq!(stored.policy["IsHidden"], true);
-        assert_eq!(stored.policy["EnableContentDownloading"], false);
-
-        let response = get_authenticated(
-            &self.app,
-            &format!("/Users/{}", self.target_id),
-            &self.admin_token,
-        )
-        .await;
-        assert_eq!(response.status(), StatusCode::OK);
-        let dto = response_json(response).await;
-        assert_eq!(dto["Policy"]["AccessSchedules"][0]["Id"], 7);
-        assert_eq!(
-            dto["Policy"]["AccessSchedules"][0]["UserId"],
-            self.target_id.simple().to_string()
-        );
     }
 
     async fn assert_provider_authentication(&self) {

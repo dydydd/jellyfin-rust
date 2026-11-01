@@ -7,7 +7,7 @@ use axum::{
     response::Response,
 };
 use jellyfin_controller::UserError;
-use jellyfin_data::{BaseItemPage, ItemValueQuery};
+use jellyfin_data::ItemValueQuery;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -41,32 +41,6 @@ pub(crate) struct StudiosQuery {
         deserialize_with = "crate::query::comma::deserialize"
     )]
     fields: Vec<String>,
-    #[serde(
-        rename = "enableUserData",
-        alias = "EnableUserData",
-        alias = "enableuserdata"
-    )]
-    enable_user_data: Option<bool>,
-    #[serde(
-        rename = "imageTypeLimit",
-        alias = "ImageTypeLimit",
-        alias = "imagetypelimit"
-    )]
-    image_type_limit: Option<i32>,
-    #[serde(
-        default,
-        rename = "enableImageTypes",
-        alias = "EnableImageTypes",
-        alias = "enableimagetypes",
-        deserialize_with = "crate::query::comma::deserialize"
-    )]
-    enable_image_types: Vec<String>,
-    #[serde(
-        rename = "enableImages",
-        alias = "EnableImages",
-        alias = "enableimages"
-    )]
-    enable_images: Option<bool>,
     #[serde(
         default,
         rename = "includeItemTypes",
@@ -127,14 +101,13 @@ pub(crate) struct StudioByNameQuery {
 #[serde(rename_all = "PascalCase")]
 pub(crate) struct StudiosResult {
     items: Vec<user_library::BaseItemDto>,
-    total_record_count: i32,
+    total_record_count: usize,
     start_index: i32,
 }
 
 pub(crate) async fn list(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    OriginalUri(uri): OriginalUri,
     Query(query): Query<StudiosQuery>,
 ) -> Result<Json<StudiosResult>, ApiError> {
     let authenticated = authentication::authenticated_session(&state, &headers).await?;
@@ -182,66 +155,26 @@ pub(crate) async fn list(
         }
     }
     let page = state.studios.list_authorized(item_query).await?;
-    let studio_ids = page
+    let items = page
         .studios
-        .iter()
-        .map(|studio| studio.id)
-        .collect::<Vec<_>>();
-    let mut persisted_by_id = state
-        .base_items
-        .get_many(&studio_ids)
-        .await?
         .into_iter()
-        .map(|item| (item.id, item))
-        .collect::<std::collections::HashMap<_, _>>();
-    let persisted_studios = page
-        .studios
-        .iter()
-        .map(|studio| persisted_by_id.remove(&studio.id).ok_or(ApiError::Internal))
-        .collect::<Result<Vec<_>, _>>()?;
-    let dto_options = crate::items::PageDtoOptions {
-        enable_images: query.enable_images.unwrap_or(true),
-        image_type_limit: query
-            .image_type_limit
-            .map_or(usize::MAX, |limit| usize::try_from(limit).unwrap_or(0)),
-        enable_image_types: crate::items::parse_image_type_selectors(&query.enable_image_types),
-        enable_user_data: query.enable_user_data.unwrap_or(true),
-    };
-    let mut projected = crate::items::page_to_dto_with_options(
-        state.as_ref(),
-        BaseItemPage {
-            items: persisted_studios,
-            total_record_count: page.total_record_count,
-            start_index: page.start_index,
-        },
-        query.fields,
-        target_user_id,
-        &dto_options,
-    )
-    .await?;
-    if include_item_counts {
-        for (dto, studio) in projected.items.iter_mut().zip(page.studios) {
-            apply_studio_counts(dto, studio.item_count, studio.counts)?;
-        }
-    }
+        .map(|studio| user_library::studio_to_dto(studio, state.server_id(), include_item_counts))
+        .collect::<Vec<_>>();
     let total_record_count = if enable_total_record_count {
-        user_library::checked_int32(page.total_record_count)?
+        usize::try_from(page.total_record_count).unwrap_or(usize::MAX)
     } else {
         0
     };
-    let mut result = StudiosResult {
-        items: projected.items,
+    Ok(Json(StudiosResult {
+        items,
         total_record_count,
         start_index: requested_start_index,
-    };
-    user_library::omit_incompatible_emby_relations(&uri, &mut result.items);
-    Ok(Json(result))
+    }))
 }
 
 pub(crate) async fn get(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    OriginalUri(uri): OriginalUri,
     Path(name): Path<String>,
     Query(query): Query<StudioByNameQuery>,
 ) -> Result<Json<user_library::BaseItemDto>, ApiError> {
@@ -282,8 +215,7 @@ pub(crate) async fn get(
     } else {
         project_studio_without_user(&state, studio.item).await?
     };
-    apply_studio_counts(&mut dto, studio.item_count, studio.counts)?;
-    user_library::omit_incompatible_emby_relations(&uri, std::slice::from_mut(&mut dto));
+    apply_studio_counts(&mut dto, studio.item_count, studio.counts);
     Ok(Json(dto))
 }
 
@@ -315,18 +247,17 @@ fn apply_studio_counts(
     dto: &mut user_library::BaseItemDto,
     item_count: u64,
     counts: jellyfin_data::ItemValueCounts,
-) -> Result<(), ApiError> {
-    dto.child_count = Some(user_library::checked_int32(item_count)?);
-    dto.album_count = Some(user_library::checked_int32(counts.album_count)?);
-    dto.artist_count = Some(user_library::checked_int32(counts.artist_count)?);
-    dto.episode_count = Some(user_library::checked_int32(counts.episode_count)?);
-    dto.movie_count = Some(user_library::checked_int32(counts.movie_count)?);
-    dto.music_video_count = Some(user_library::checked_int32(counts.music_video_count)?);
-    dto.program_count = Some(user_library::checked_int32(counts.program_count)?);
-    dto.series_count = Some(user_library::checked_int32(counts.series_count)?);
-    dto.song_count = Some(user_library::checked_int32(counts.song_count)?);
-    dto.trailer_count = Some(user_library::checked_int32(counts.trailer_count)?);
-    Ok(())
+) {
+    dto.child_count = Some(item_count);
+    dto.album_count = Some(counts.album_count);
+    dto.artist_count = Some(counts.artist_count);
+    dto.episode_count = Some(counts.episode_count);
+    dto.movie_count = Some(counts.movie_count);
+    dto.music_video_count = Some(counts.music_video_count);
+    dto.program_count = Some(counts.program_count);
+    dto.series_count = Some(counts.series_count);
+    dto.song_count = Some(counts.song_count);
+    dto.trailer_count = Some(counts.trailer_count);
 }
 
 pub(crate) async fn get_image(

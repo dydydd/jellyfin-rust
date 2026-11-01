@@ -223,10 +223,6 @@ async fn assert_get_defaults_and_key_resolution(fixture: &Fixture) {
     for route in [
         modern_route(fixture.allowed_item_id),
         legacy_route(fixture.user_id, fixture.allowed_item_id),
-        format!(
-            "/users/{}/items/{}/userdata",
-            fixture.user_id, fixture.allowed_item_id
-        ),
     ] {
         let response = request(&fixture.app, "GET", &route, &fixture.user_token, None).await;
         assert_eq!(response.status(), StatusCode::OK);
@@ -708,7 +704,6 @@ fn blocked_schedule_policy(is_administrator: bool) -> UserPolicy {
             day_of_week: DynamicDayOfWeek::Everyday,
             start_hour: 18.0,
             end_hour: 6.0,
-            ..AccessSchedule::default()
         }],
         ..policy()
     }

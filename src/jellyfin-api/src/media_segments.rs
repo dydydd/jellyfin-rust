@@ -49,9 +49,7 @@ pub(crate) async fn get_item_segments(
             &disabled_provider_names,
         )
         .await?;
-    Ok(Json(
-        QueryResult::from_items(items).map_err(|_| ApiError::Internal)?,
-    ))
+    Ok(Json(QueryResult::from_items(items)))
 }
 
 async fn disabled_provider_names(

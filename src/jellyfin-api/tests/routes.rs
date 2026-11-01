@@ -61,49 +61,44 @@ async fn system_routes_follow_the_public_contract() {
     assert_eq!(body["Id"].as_str().unwrap().len(), 32);
     assert!(body.get("server_name").is_none());
 
-    for route in ["/System/Ping", "/system/ping"] {
-        for method in ["GET", "POST"] {
-            let response = app
-                .clone()
-                .oneshot(
-                    Request::builder()
-                        .method(method)
-                        .uri(route)
-                        .body(Body::empty())
-                        .unwrap(),
-                )
-                .await
-                .unwrap();
-            assert_eq!(response.status(), StatusCode::OK, "route {route}");
-            assert_eq!(body_text(response).await, "Test Server");
-        }
-    }
-
-    for route in ["/GetUtcTime", "/getutctime"] {
-        let before_time_sync = Utc::now();
+    for method in ["GET", "POST"] {
         let response = app
             .clone()
-            .oneshot(Request::get(route).body(Body::empty()).unwrap())
+            .oneshot(
+                Request::builder()
+                    .method(method)
+                    .uri("/System/Ping")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
-        let after_time_sync = Utc::now();
-        assert_eq!(response.status(), StatusCode::OK, "route {route}");
-        assert_eq!(response.headers()[header::CONTENT_TYPE], "application/json");
-        let body = body_json(response).await;
-        assert!(body.get("request_reception_time").is_none());
-        let request_reception_time =
-            chrono::DateTime::parse_from_rfc3339(body["RequestReceptionTime"].as_str().unwrap())
-                .unwrap()
-                .with_timezone(&Utc);
-        let response_transmission_time = chrono::DateTime::parse_from_rfc3339(
-            body["ResponseTransmissionTime"].as_str().unwrap(),
-        )
-        .unwrap()
-        .with_timezone(&Utc);
-        assert!(request_reception_time >= before_time_sync);
-        assert!(response_transmission_time >= request_reception_time);
-        assert!(response_transmission_time <= after_time_sync);
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(body_text(response).await, "Test Server");
     }
+
+    let before_time_sync = Utc::now();
+    let response = app
+        .clone()
+        .oneshot(Request::get("/GetUtcTime").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    let after_time_sync = Utc::now();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers()[header::CONTENT_TYPE], "application/json");
+    let body = body_json(response).await;
+    assert!(body.get("request_reception_time").is_none());
+    let request_reception_time =
+        chrono::DateTime::parse_from_rfc3339(body["RequestReceptionTime"].as_str().unwrap())
+            .unwrap()
+            .with_timezone(&Utc);
+    let response_transmission_time =
+        chrono::DateTime::parse_from_rfc3339(body["ResponseTransmissionTime"].as_str().unwrap())
+            .unwrap()
+            .with_timezone(&Utc);
+    assert!(request_reception_time >= before_time_sync);
+    assert!(response_transmission_time >= request_reception_time);
+    assert!(response_transmission_time <= after_time_sync);
 }
 
 #[tokio::test]
@@ -217,19 +212,6 @@ async fn activity_log_routes_match_the_official_controller_contract() {
     assert_eq!(all_entries["StartIndex"], 0);
     assert!(all_entries["TotalRecordCount"].as_u64().unwrap() >= 3);
     assert!(all_entries.get("items").is_none());
-
-    let lowercase_response = app
-        .clone()
-        .oneshot(authenticated_request(
-            "GET",
-            "/system/activitylog/entries",
-            &administrator_session.access_token,
-            Body::empty(),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(lowercase_response.status(), StatusCode::OK);
-    assert_eq!(body_json(lowercase_response).await, all_entries);
 
     let filtered_queries = [
         format!(
@@ -358,37 +340,6 @@ async fn activity_log_routes_match_the_official_controller_contract() {
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(body_json(response).await["Items"][0]["Id"], oldest.id);
 
-    for (route, query) in [
-        (
-            "/System/ActivityLog/Entries",
-            format!(
-                "name={marker}&limit=2&SortBy=Username&SortBy=DateCreated\
-                 &SortOrder=Ascending&SortOrder=Descending"
-            ),
-        ),
-        (
-            "/system/activitylog/entries",
-            format!("name={marker}&limit=2&sortby=6&sortby=5&sortorder=0&sortorder=1"),
-        ),
-    ] {
-        let response = app
-            .clone()
-            .oneshot(authenticated_request(
-                "GET",
-                &format!("{route}?{}", query.replace(' ', "")),
-                &administrator_session.access_token,
-                Body::empty(),
-            ))
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::OK, "{route}");
-        let page = body_json(response).await;
-        assert_eq!(page["TotalRecordCount"], 3, "{route}");
-        assert_eq!(page["Items"].as_array().unwrap().len(), 2, "{route}");
-        assert_eq!(page["Items"][0]["Id"], newest.id, "{route}");
-        assert_eq!(page["Items"][1]["Id"], oldest.id, "{route}");
-    }
-
     let response = app
         .clone()
         .oneshot(authenticated_request(
@@ -402,31 +353,12 @@ async fn activity_log_routes_match_the_official_controller_contract() {
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(body_json(response).await["Items"][0]["Id"], oldest.id);
 
-    for route in ["/System/ActivityLog/Entries", "/system/activitylog/entries"] {
-        let response = app
-            .clone()
-            .oneshot(authenticated_request(
-                "GET",
-                &format!("{route}?name={marker}&startIndex=-1&limit=-1"),
-                &administrator_session.access_token,
-                Body::empty(),
-            ))
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::OK, "{route}");
-        let page = body_json(response).await;
-        assert_eq!(page["StartIndex"], -1, "{route}");
-        assert_eq!(page["TotalRecordCount"], 3, "{route}");
-        assert_eq!(page["Items"].as_array().unwrap().len(), 3, "{route}");
-    }
-
     for invalid_query in [
         "severity=Verbose",
         "sortBy=Item",
         "sortBy=Name&sortOrder=Ascending%2CDescending",
         "minDate=not-a-date",
-        "startIndex=-2147483649",
-        "startIndex=2147483648",
+        "startIndex=-1",
         "limit=2147483648",
     ] {
         let response = app
@@ -1024,7 +956,7 @@ async fn startup_and_password_authentication_use_persisted_device_sessions() {
 }
 
 async fn assert_legacy_server_domain_probe(fixture: &StartupAuthFixture, token: &str) {
-    for prefix in ["", "/api"] {
+    for prefix in ["", "/api", "/emby"] {
         let uri = format!("{prefix}/System/Ext/ServerDomains");
         assert_eq!(
             get_response(&fixture.app, &uri).await.status(),

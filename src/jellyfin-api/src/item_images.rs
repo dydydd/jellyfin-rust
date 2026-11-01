@@ -116,44 +116,17 @@ pub(crate) struct UpdateItemImageIndexQuery {
     new_index: Option<i32>,
 }
 
-#[derive(Debug, Deserialize)]
-pub(crate) struct ImageUrlQuery {
-    #[serde(rename = "url", alias = "Url", alias = "URL")]
-    url: String,
-}
-
 pub(crate) async fn list(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Path(item_id): Path<Uuid>,
 ) -> Result<Json<Vec<ImageInfo>>, ApiError> {
-    list_internal(&state, &headers, item_id).await.map(Json)
-}
-
-pub(crate) async fn list_emby(
-    State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
-    Path(item_id): Path<Uuid>,
-) -> Result<Json<Vec<ImageInfo>>, ApiError> {
-    let mut images = list_internal(&state, &headers, item_id).await?;
-    // Emby 4.10's generated clients use a closed ImageType enum which does
-    // not contain Jellyfin's later user-only Profile value. Item image infos
-    // have no compatible Emby representation for it, so omit that entry.
-    images.retain(|image| image.image_type != ImageType::Profile);
-    Ok(Json(images))
-}
-
-async fn list_internal(
-    state: &AppState,
-    headers: &HeaderMap,
-    item_id: Uuid,
-) -> Result<Vec<ImageInfo>, ApiError> {
-    let authenticated = authentication::authenticated_session(state, headers).await?;
+    let authenticated = authentication::authenticated_session(&state, &headers).await?;
     let item = state
         .user_library
         .item(&authenticated.user, authenticated.user.id, item_id)
         .await?;
-    Ok(state.item_images.list(&item).await?)
+    Ok(Json(state.item_images.list(&item).await?))
 }
 
 pub(crate) async fn get(
@@ -260,27 +233,6 @@ pub(crate) async fn upload_by_index(
     request: Request<Body>,
 ) -> Result<StatusCode, ApiError> {
     upload_internal(state, uri, headers, item_id, image_type, request).await
-}
-
-pub(crate) async fn upload_url(
-    State(state): State<Arc<AppState>>,
-    OriginalUri(uri): OriginalUri,
-    headers: HeaderMap,
-    Path((item_id, image_type, _image_index)): Path<(Uuid, String, i32)>,
-    Query(query): Query<ImageUrlQuery>,
-) -> Result<StatusCode, ApiError> {
-    authentication::authenticated_identity(&state, &headers, Some(&uri))
-        .await?
-        .require_administrator()?;
-    let image_type = parse_image_type(&image_type)?;
-    if query.url.is_empty() {
-        return Err(ApiError::InvalidRequest);
-    }
-    state
-        .item_images
-        .download_remote_image(item_id, image_type, &query.url)
-        .await?;
-    Ok(StatusCode::NO_CONTENT)
 }
 
 pub(crate) async fn update_index(

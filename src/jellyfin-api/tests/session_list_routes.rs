@@ -6,7 +6,6 @@ use axum::{
     http::{Request, StatusCode, header},
 };
 use chrono::{Duration, Utc};
-use futures_util::StreamExt;
 use jellyfin_api::AppState;
 use jellyfin_controller::UserService;
 use jellyfin_data::{
@@ -35,121 +34,6 @@ async fn sessions_list_projects_postgres_device_sessions_with_official_filters()
     fixture.cleanup().await;
 }
 
-#[tokio::test]
-async fn controllable_sessions_follow_association_policy_and_device_access() {
-    let fixture = Fixture::new().await;
-    let devices = DeviceRepository::new(fixture.database.clone());
-    devices
-        .update_capabilities_by_token(
-            &fixture.other_token,
-            json!({
-                "PlayableMediaTypes": [],
-                "SupportedCommands": [],
-                "SupportsMediaControl": true,
-                "SupportsPersistentIdentifier": true
-            }),
-        )
-        .await
-        .expect("target capabilities update");
-    devices
-        .add_additional_user(
-            fixture.other_device_row_id,
-            fixture.user_id,
-            &fixture.user_name,
-        )
-        .await
-        .expect("additional user association");
-
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-        .await
-        .expect("test WebSocket listener");
-    let address = listener.local_addr().unwrap();
-    let app = fixture.app.clone();
-    let server = tokio::spawn(async move { axum::serve(listener, app).await });
-    let (mut socket, _) = tokio_tungstenite::connect_async(format!(
-        "ws://{address}/websocket?api_key={}",
-        fixture.other_token
-    ))
-    .await
-    .expect("target WebSocket connection");
-    socket.next().await.expect("keepalive message").unwrap();
-    socket.next().await.expect("sessions message").unwrap();
-
-    let ordinary = body_json(fixture.get("/Sessions", Some(&fixture.user_token)).await).await;
-    assert_device_ids(
-        &ordinary,
-        &[
-            &fixture.user_device_id,
-            &fixture.stale_user_device_id,
-            &fixture.other_device_id,
-        ],
-    );
-
-    let uri = format!("/Sessions?ControllableByUserId={}", fixture.user_id);
-    let associated = body_json(fixture.get(&uri, Some(&fixture.user_token)).await).await;
-    assert_device_ids(&associated, &[&fixture.other_device_id]);
-    let nil_target = body_json(
-        fixture
-            .get(
-                "/Sessions?ControllableByUserId=00000000-0000-0000-0000-000000000000",
-                Some(&fixture.user_token),
-            )
-            .await,
-    )
-    .await;
-    assert_device_ids(&nil_target, &[&fixture.other_device_id]);
-
-    devices
-        .remove_additional_user(fixture.other_device_row_id, fixture.user_id)
-        .await
-        .expect("additional user removal");
-    let unrelated = body_json(fixture.get(&uri, Some(&fixture.user_token)).await).await;
-    assert_eq!(unrelated, json!([]));
-
-    let users = UserService::new(fixture.database.clone());
-    let stored = users.get(fixture.user_id).await.expect("requesting user");
-    let mut policy: jellyfin_model::UserPolicy =
-        serde_json::from_value(stored.policy).expect("requesting user policy");
-    policy.enable_remote_control_of_other_users = true;
-    policy.enable_shared_device_control = false;
-    policy.enable_all_devices = false;
-    policy.enabled_devices = vec![fixture.other_device_id.to_uppercase()];
-    users
-        .update_policy(fixture.user_id, &policy)
-        .await
-        .expect("requesting user policy update");
-    let explicitly_allowed = body_json(fixture.get(&uri, Some(&fixture.user_token)).await).await;
-    assert_device_ids(&explicitly_allowed, &[&fixture.other_device_id]);
-
-    policy.enabled_devices.clear();
-    users
-        .update_policy(fixture.user_id, &policy)
-        .await
-        .expect("device restriction update");
-    let persistent_blocked = body_json(fixture.get(&uri, Some(&fixture.user_token)).await).await;
-    assert_eq!(persistent_blocked, json!([]));
-
-    devices
-        .update_capabilities_by_token(
-            &fixture.other_token,
-            json!({
-                "PlayableMediaTypes": [],
-                "SupportedCommands": [],
-                "SupportsMediaControl": true,
-                "SupportsPersistentIdentifier": false
-            }),
-        )
-        .await
-        .expect("non-persistent target capabilities update");
-    let non_persistent_allowed =
-        body_json(fixture.get(&uri, Some(&fixture.user_token)).await).await;
-    assert_device_ids(&non_persistent_allowed, &[&fixture.other_device_id]);
-
-    socket.close(None).await.unwrap();
-    server.abort();
-    fixture.cleanup().await;
-}
-
 struct Fixture {
     database: sea_orm::DatabaseConnection,
     app: Router,
@@ -165,8 +49,6 @@ struct Fixture {
     user_device_id: String,
     stale_user_device_id: String,
     other_device_id: String,
-    other_device_row_id: i64,
-    other_token: String,
     inactive_device_id: String,
     user_session_id: String,
 }
@@ -209,7 +91,7 @@ impl Fixture {
 
         let stale_user_device_id = create_stale_session(&devices, user.id, &suffix).await;
         let other_device_id = format!("other-device-{suffix}");
-        let other_session = session(
+        session(
             &devices,
             other.id,
             "Other Client",
@@ -239,8 +121,6 @@ impl Fixture {
             user_device_id,
             stale_user_device_id,
             other_device_id,
-            other_device_row_id: other_session.id,
-            other_token: other_session.access_token,
             inactive_device_id,
             user_session_id,
         }
@@ -437,20 +317,6 @@ async fn assert_recent_scope(fixture: &Fixture) {
         )
         .await;
         assert_device_ids(&recent, &[&fixture.user_device_id]);
-    }
-
-    for value in ["2147483648", "-2147483649"] {
-        assert_eq!(
-            fixture
-                .get(
-                    &format!("/Sessions?activeWithinSeconds={value}"),
-                    Some(&fixture.user_token),
-                )
-                .await
-                .status(),
-            StatusCode::BAD_REQUEST,
-            "activeWithinSeconds uses the SDK/ASP.NET signed Int32 contract"
-        );
     }
 }
 

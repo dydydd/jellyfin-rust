@@ -1,16 +1,15 @@
 #![allow(clippy::too_many_lines)]
-use std::{path::PathBuf, sync::Arc};
+use std::path::PathBuf;
 
 use axum::{
-    Router,
     body::{Body, Bytes},
     http::{Method, Request, StatusCode, header},
 };
 use jellyfin_api::AppState;
 use jellyfin_controller::{MediaStreamFilter, MediaStreamService, UserService};
 use jellyfin_data::{
-    ApiKeyRepository, BaseItemRepository, DatabaseConfig, DeviceRepository, ItemValueRepository,
-    NewBaseItem, NewDevice,
+    BaseItemRepository, DatabaseConfig, DeviceRepository, ItemValueRepository, NewBaseItem,
+    NewDevice,
     entities::{item_value, user},
 };
 use jellyfin_model::{MediaStream, MediaStreamType, UserPolicy};
@@ -23,7 +22,7 @@ const AUTHORIZATION: &str = "MediaBrowser Client=\"Subtitle Tests\", Device=\"Te
 const DATABASE_PREFIX: &str = "jellyfin_subtitle_routes_";
 
 #[tokio::test]
-async fn delete_subtitle_route_requires_elevation_and_deletes_only_target_stream() {
+async fn delete_subtitle_route_uses_subtitle_management_and_deletes_only_target_stream() {
     let administrator = jellyfin_data::connect(&DatabaseConfig::default())
         .await
         .expect("local PostgreSQL must be available");
@@ -79,19 +78,13 @@ async fn exercise_delete_subtitle_route(database_name: &str) {
             .status(),
         StatusCode::NOT_FOUND
     );
-    for route in [
-        route.clone(),
-        Fixture::lowercase_subtitle_route(fixture.item_id, 2),
-    ] {
-        assert_eq!(
-            fixture
-                .send(Method::DELETE, &route, Some(&fixture.manager_token))
-                .await
-                .status(),
-            StatusCode::FORBIDDEN,
-            "subtitle-management permission must not satisfy RequiresElevation for {route}",
-        );
-    }
+    assert_eq!(
+        fixture
+            .send(Method::DELETE, &route, Some(&fixture.manager_token))
+            .await
+            .status(),
+        StatusCode::NO_CONTENT
+    );
     assert_eq!(
         fixture
             .send(Method::DELETE, &route, Some(&fixture.admin_token))
@@ -99,28 +92,12 @@ async fn exercise_delete_subtitle_route(database_name: &str) {
             .status(),
         StatusCode::NO_CONTENT
     );
-    assert!(
-        !tokio::fs::try_exists(fixture.primary_subtitle_path(2))
-            .await
-            .expect("deleted English subtitle existence check"),
-        "deleting a subtitle stream must also remove its external file",
-    );
     assert_eq!(
         fixture
-            .send(
-                Method::DELETE,
-                &Fixture::lowercase_subtitle_route(fixture.item_id, 3),
-                Some(&fixture.api_key_token),
-            )
+            .send(Method::DELETE, &route, Some(&fixture.manager_token))
             .await
             .status(),
         StatusCode::NO_CONTENT
-    );
-    assert!(
-        !tokio::fs::try_exists(fixture.primary_subtitle_path(3))
-            .await
-            .expect("deleted Japanese subtitle existence check"),
-        "the lowercase/API-key route must remove its external file",
     );
 
     let streams = MediaStreamService::new(fixture.database.clone())
@@ -133,7 +110,11 @@ async fn exercise_delete_subtitle_route(database_name: &str) {
         .collect::<Vec<_>>();
     assert_eq!(
         remaining,
-        vec![(0, MediaStreamType::Video), (1, MediaStreamType::Audio),]
+        vec![
+            (0, MediaStreamType::Video),
+            (1, MediaStreamType::Audio),
+            (3, MediaStreamType::Subtitle),
+        ]
     );
 
     fixture.cleanup().await;
@@ -225,11 +206,6 @@ async fn exercise_remote_subtitle_routes(database_name: &str) {
         .await;
     assert_eq!(search.status(), StatusCode::OK);
     assert_eq!(body_json(search).await, Value::Array(Vec::new()));
-    let api_key_search = fixture
-        .send(Method::GET, &search_route, Some(&fixture.api_key_token))
-        .await;
-    assert_eq!(api_key_search.status(), StatusCode::OK);
-    assert_eq!(body_json(api_key_search).await, Value::Array(Vec::new()));
 
     let missing_search = fixture
         .send(
@@ -248,28 +224,6 @@ async fn exercise_remote_subtitle_routes(database_name: &str) {
         )
         .await;
     assert_eq!(non_video_search.status(), StatusCode::NOT_FOUND);
-    assert_eq!(
-        fixture
-            .send(
-                Method::GET,
-                &Fixture::search_route(Uuid::new_v4(), "eng"),
-                Some(&fixture.api_key_token),
-            )
-            .await
-            .status(),
-        StatusCode::NOT_FOUND
-    );
-    assert_eq!(
-        fixture
-            .send(
-                Method::GET,
-                &Fixture::search_route(fixture.folder_id, "eng"),
-                Some(&fixture.api_key_token),
-            )
-            .await
-            .status(),
-        StatusCode::NOT_FOUND
-    );
 
     let download_route = Fixture::download_route(fixture.item_id, "provider-subtitle-id");
     assert_eq!(
@@ -295,17 +249,10 @@ async fn exercise_remote_subtitle_routes(database_name: &str) {
     );
     assert_eq!(
         fixture
-            .send(Method::POST, &download_route, Some(&fixture.api_key_token))
-            .await
-            .status(),
-        StatusCode::NO_CONTENT
-    );
-    assert_eq!(
-        fixture
             .send(
                 Method::POST,
                 &Fixture::download_route(Uuid::new_v4(), "provider-subtitle-id"),
-                Some(&fixture.api_key_token),
+                Some(&fixture.manager_token),
             )
             .await
             .status(),
@@ -327,73 +274,6 @@ async fn exercise_remote_subtitle_routes(database_name: &str) {
             .status(),
         StatusCode::NOT_FOUND
     );
-    assert_eq!(
-        fixture
-            .send(Method::GET, provider_route, Some(&fixture.api_key_token))
-            .await
-            .status(),
-        StatusCode::NOT_FOUND
-    );
-
-    let emby_route = format!("/emby/Videos/{}/subtitles.m3u8", fixture.item_id);
-    assert_eq!(
-        fixture.send(Method::GET, &emby_route, None).await.status(),
-        StatusCode::UNAUTHORIZED
-    );
-    assert_eq!(
-        fixture
-            .send(Method::GET, &emby_route, Some(&fixture.manager_token))
-            .await
-            .status(),
-        StatusCode::BAD_REQUEST,
-        "both generated Emby query parameters are required"
-    );
-    for route in [
-        format!("{emby_route}?SubtitleSegmentLength=10&ManifestSubtitles=vtt"),
-        format!(
-            "/emby/Videos/{}/live_subtitles.m3u8?subtitleSegmentLength=10&manifestSubtitles=VTT",
-            fixture.item_id
-        ),
-        format!(
-            "/emby/videos/{}/subtitles.m3u8?subtitlesegmentlength=10&manifestsubtitles=vtt",
-            fixture.item_id
-        ),
-    ] {
-        let response = fixture
-            .send(Method::GET, &route, Some(&fixture.manager_token))
-            .await;
-        assert_eq!(response.status(), StatusCode::OK, "{route}");
-        assert_eq!(
-            response.headers()[header::CONTENT_TYPE],
-            "application/x-mpegURL",
-            "{route}"
-        );
-        let playlist = String::from_utf8(body_bytes(response).await.to_vec())
-            .expect("legacy Emby subtitle playlist text");
-        assert!(playlist.contains("#EXT-X-PLAYLIST-TYPE:VOD"), "{route}");
-        assert!(
-            playlist.contains(&format!(
-                "{}/Subtitles/3/stream.vtt?",
-                fixture.item_id.simple()
-            )),
-            "legacy Emby playlist must reference the persisted subtitle stream: {route}"
-        );
-    }
-    for query in [
-        "SubtitleSegmentLength=0&ManifestSubtitles=vtt",
-        "SubtitleSegmentLength=10&ManifestSubtitles=",
-        "SubtitleSegmentLength=10&ManifestSubtitles=srt",
-    ] {
-        let status = fixture
-            .send(
-                Method::GET,
-                &format!("{emby_route}?{query}"),
-                Some(&fixture.manager_token),
-            )
-            .await
-            .status();
-        assert_eq!(status, StatusCode::BAD_REQUEST, "{query}");
-    }
 
     fixture.cleanup().await;
 }
@@ -467,12 +347,7 @@ async fn exercise_upload_subtitle_route(database_name: &str) {
     );
     assert_eq!(
         fixture
-            .send_json(
-                Method::POST,
-                &Fixture::lowercase_upload_route(fixture.item_id),
-                Some(&fixture.manager_token),
-                &body,
-            )
+            .send_json(Method::POST, &route, Some(&fixture.manager_token), &body)
             .await
             .status(),
         StatusCode::NO_CONTENT
@@ -512,26 +387,6 @@ async fn exercise_upload_subtitle_route(database_name: &str) {
     assert_eq!(
         body_bytes(direct).await,
         Bytes::from_static(b"1\n00:00:01,000 --> 00:00:02,000\nHello from upload\n")
-    );
-    assert_eq!(
-        fixture
-            .send_json(
-                Method::POST,
-                &Fixture::upload_route(Uuid::new_v4()),
-                Some(&fixture.api_key_token),
-                &json!({ "Data": "not-base64" }),
-            )
-            .await
-            .status(),
-        StatusCode::NOT_FOUND,
-        "API-key item lookup must precede malformed upload validation"
-    );
-    assert_eq!(
-        fixture
-            .send_json(Method::POST, &route, Some(&fixture.api_key_token), &body,)
-            .await
-            .status(),
-        StatusCode::NO_CONTENT
     );
     let alternate_source = fixture
         .alternate_id
@@ -650,7 +505,7 @@ async fn exercise_upload_subtitle_route(database_name: &str) {
         assert_eq!(
             body_bytes(converted).await,
             Bytes::from_static(
-                b"WEBVTT\nX-TIMESTAMP-MAP=MPEGTS:90000,LOCAL:00:00:00.000\n\n00:00:00.000 --> 00:00:01.000\nHello from upload\n\n"
+                b"WEBVTT\nX-TIMESTAMP-MAP=MPEGTS:90000,LOCAL:00:00:00.000\n\n00:00:01.000 --> 00:00:02.000\nHello from upload\n"
             ),
             "{query}"
         );
@@ -670,50 +525,7 @@ async fn exercise_upload_subtitle_route(database_name: &str) {
     assert_eq!(
         body_bytes(converted_from_ticks_route).await,
         Bytes::from_static(
-            b"WEBVTT\nX-TIMESTAMP-MAP=MPEGTS:90000,LOCAL:00:00:00.000\n\n00:00:00.000 --> 00:00:01.000\nHello from upload\n\n"
-        )
-    );
-
-    tokio::fs::write(
-        path,
-        b"1\n00:00:01,000 --> 00:00:02,000\nbefore\n\n\
-2\n00:00:04,000 --> 00:00:06,000\ninside\n\n\
-3\n00:00:09,000 --> 00:00:10,000\nafter\n\n",
-    )
-    .await
-    .expect("replace subtitle with time-window fixture");
-    let copied_window = fixture
-        .send(
-            Method::GET,
-            &format!(
-                "{}?startPositionTicks=30000000&endPositionTicks=80000000&copyTimestamps=true",
-                Fixture::stream_route(fixture.item_id, 4, "vtt")
-            ),
-            None,
-        )
-        .await;
-    assert_eq!(copied_window.status(), StatusCode::OK);
-    assert_eq!(
-        body_bytes(copied_window).await,
-        Bytes::from_static(b"WEBVTT\n\n00:00:04.000 --> 00:00:06.000\ninside\n\n")
-    );
-    let rebased_window = fixture
-        .send(
-            Method::GET,
-            &format!(
-                "{}?StartPositionTicks=30000000&EndPositionTicks=80000000&CopyTimestamps=false",
-                Fixture::stream_route(fixture.item_id, 4, "srt")
-            ),
-            None,
-        )
-        .await;
-    assert_eq!(rebased_window.status(), StatusCode::OK);
-    assert_eq!(
-        body_bytes(rebased_window).await,
-        Bytes::from_static(
-            b"1\n00:00:01,000 --> 00:00:02,000\nbefore\n\n\
-2\n00:00:04,000 --> 00:00:06,000\ninside\n\n\
-3\n00:00:09,000 --> 00:00:10,000\nafter\n\n"
+            b"WEBVTT\nX-TIMESTAMP-MAP=MPEGTS:90000,LOCAL:00:00:00.000\n\n00:00:01.000 --> 00:00:02.000\nHello from upload\n"
         )
     );
 
@@ -898,7 +710,6 @@ struct Fixture {
     user_token: String,
     manager_id: Uuid,
     manager_token: String,
-    api_key_token: String,
     item_id: Uuid,
     alternate_id: Uuid,
     outsider_id: Uuid,
@@ -921,20 +732,6 @@ impl Fixture {
 
         let suffix = Uuid::new_v4().simple().to_string();
         let storage_root = std::env::temp_dir().join(format!("jellyfin-subtitle-routes-{suffix}"));
-        tokio::fs::create_dir_all(&storage_root)
-            .await
-            .expect("subtitle fixture directory");
-        let primary_english_subtitle_path = storage_root.join("primary.eng.srt");
-        let primary_japanese_subtitle_path = storage_root.join("primary.jpn.ass");
-        tokio::fs::write(&primary_english_subtitle_path, b"English subtitle bytes\n")
-            .await
-            .expect("English subtitle fixture file");
-        tokio::fs::write(
-            &primary_japanese_subtitle_path,
-            b"Japanese subtitle bytes\n",
-        )
-        .await
-        .expect("Japanese subtitle fixture file");
         let users = UserService::new(database.clone());
         let admin = users
             .create_initial_administrator(&format!("subtitle-admin-{suffix}"))
@@ -985,11 +782,6 @@ impl Fixture {
             ))
             .await
             .expect("manager session")
-            .access_token;
-        let api_key_token = ApiKeyRepository::new(database.clone())
-            .create(&format!("subtitle-key-{suffix}"))
-            .await
-            .expect("subtitle API key creation")
             .access_token;
 
         let mut item = NewBaseItem::new(Uuid::new_v4(), "Movie");
@@ -1061,7 +853,7 @@ impl Fixture {
                         codec: Some("srt".to_owned()),
                         language: Some("eng".to_owned()),
                         is_external: true,
-                        path: Some(primary_english_subtitle_path.to_string_lossy().into_owned()),
+                        path: Some(format!("/media/Subtitle Movie {suffix}.eng.srt")),
                         ..MediaStream::default()
                     },
                     MediaStream {
@@ -1069,13 +861,8 @@ impl Fixture {
                         stream_type: MediaStreamType::Subtitle,
                         codec: Some("ass".to_owned()),
                         language: Some("jpn".to_owned()),
-                        is_default: true,
                         is_external: true,
-                        path: Some(
-                            primary_japanese_subtitle_path
-                                .to_string_lossy()
-                                .into_owned(),
-                        ),
+                        path: Some(format!("/media/Subtitle Movie {suffix}.jpn.ass")),
                         ..MediaStream::default()
                     },
                 ],
@@ -1083,6 +870,9 @@ impl Fixture {
             .await
             .expect("media stream creation");
         let alternate_subtitle_path = storage_root.join("alternate.srt");
+        tokio::fs::create_dir_all(&storage_root)
+            .await
+            .expect("subtitle fixture directory");
         tokio::fs::write(&alternate_subtitle_path, b"alternate subtitle bytes\n")
             .await
             .expect("alternate subtitle fixture file");
@@ -1123,10 +913,7 @@ impl Fixture {
             storage_root.join("cache"),
             storage_root.join("metadata"),
         );
-        let emby = jellyfin_api::emby_legacy_subtitle_hls_routes()
-            .fallback_service(jellyfin_api::unprefixed_router(app_state.clone()))
-            .with_state(Arc::new(app_state.clone()));
-        let app = jellyfin_api::router(app_state).merge(Router::new().nest("/emby", emby));
+        let app = jellyfin_api::router(app_state);
         Self {
             database,
             app,
@@ -1136,7 +923,6 @@ impl Fixture {
             user_token,
             manager_id: manager.id,
             manager_token,
-            api_key_token,
             item_id: item.id,
             alternate_id: alternate.id,
             outsider_id: outsider.id,
@@ -1149,18 +935,6 @@ impl Fixture {
         format!("/Videos/{item_id}/Subtitles/{index}")
     }
 
-    fn lowercase_subtitle_route(item_id: Uuid, index: i32) -> String {
-        format!("/videos/{item_id}/subtitles/{index}")
-    }
-
-    fn primary_subtitle_path(&self, index: i32) -> PathBuf {
-        match index {
-            2 => self.storage_root.join("primary.eng.srt"),
-            3 => self.storage_root.join("primary.jpn.ass"),
-            _ => panic!("no primary subtitle fixture for index {index}"),
-        }
-    }
-
     fn search_route(item_id: Uuid, language: &str) -> String {
         format!("/Items/{item_id}/RemoteSearch/Subtitles/{language}?isPerfectMatch=true")
     }
@@ -1171,10 +945,6 @@ impl Fixture {
 
     fn upload_route(item_id: Uuid) -> String {
         format!("/Videos/{item_id}/Subtitles")
-    }
-
-    fn lowercase_upload_route(item_id: Uuid) -> String {
-        format!("/videos/{item_id}/subtitles")
     }
 
     fn stream_route(item_id: Uuid, index: i32, format: &str) -> String {
@@ -1272,10 +1042,6 @@ impl Fixture {
     }
 
     async fn cleanup(self) {
-        ApiKeyRepository::new(self.database.clone())
-            .revoke(&self.api_key_token)
-            .await
-            .expect("API key cleanup");
         BaseItemRepository::new(self.database.clone())
             .delete_many(&[
                 self.item_id,

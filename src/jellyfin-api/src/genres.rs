@@ -7,7 +7,7 @@ use axum::{
     response::Response,
 };
 use jellyfin_controller::UserError;
-use jellyfin_data::{BaseItemPage, ItemValueQuery};
+use jellyfin_data::ItemValueQuery;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -41,26 +41,6 @@ pub(crate) struct GenresQuery {
         deserialize_with = "crate::query::comma::deserialize"
     )]
     fields: Vec<String>,
-    #[serde(
-        rename = "imageTypeLimit",
-        alias = "ImageTypeLimit",
-        alias = "imagetypelimit"
-    )]
-    image_type_limit: Option<i32>,
-    #[serde(
-        default,
-        rename = "enableImageTypes",
-        alias = "EnableImageTypes",
-        alias = "enableimagetypes",
-        deserialize_with = "crate::query::comma::deserialize"
-    )]
-    enable_image_types: Vec<String>,
-    #[serde(
-        rename = "enableImages",
-        alias = "EnableImages",
-        alias = "enableimages"
-    )]
-    enable_images: Option<bool>,
     #[serde(
         default,
         rename = "includeItemTypes",
@@ -137,14 +117,13 @@ pub(crate) struct GenreByNameQuery {
 #[serde(rename_all = "PascalCase")]
 pub(crate) struct GenresResult {
     items: Vec<user_library::BaseItemDto>,
-    total_record_count: i32,
+    total_record_count: usize,
     start_index: i32,
 }
 
 pub(crate) async fn list(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    OriginalUri(uri): OriginalUri,
     Query(query): Query<GenresQuery>,
 ) -> Result<Json<GenresResult>, ApiError> {
     let authenticated = authentication::authenticated_session(&state, &headers).await?;
@@ -189,64 +168,26 @@ pub(crate) async fn list(
         .apply_item_value_policy(&authenticated.user, target_user_id, &mut item_query)
         .await?;
     let page = state.genres.list_authorized(item_query).await?;
-    let genre_ids = page.genres.iter().map(|genre| genre.id).collect::<Vec<_>>();
-    let mut persisted_by_id = state
-        .base_items
-        .get_many(&genre_ids)
-        .await?
-        .into_iter()
-        .map(|item| (item.id, item))
-        .collect::<std::collections::HashMap<_, _>>();
-    let persisted_genres = page
+    let items = page
         .genres
-        .iter()
-        .map(|genre| persisted_by_id.remove(&genre.id).ok_or(ApiError::Internal))
-        .collect::<Result<Vec<_>, _>>()?;
-    let dto_options = crate::items::PageDtoOptions {
-        enable_images: query.enable_images.unwrap_or(true),
-        image_type_limit: query
-            .image_type_limit
-            .map_or(usize::MAX, |limit| usize::try_from(limit).unwrap_or(0)),
-        enable_image_types: crate::items::parse_image_type_selectors(&query.enable_image_types),
-        // `GenresController` deliberately passes false to
-        // `AddAdditionalDtoOptions` for user-data projection.
-        enable_user_data: false,
-    };
-    let mut projected = crate::items::page_to_dto_with_options(
-        state.as_ref(),
-        BaseItemPage {
-            items: persisted_genres,
-            total_record_count: page.total_record_count,
-            start_index: page.start_index,
-        },
-        query.fields,
-        target_user_id,
-        &dto_options,
-    )
-    .await?;
-    if include_item_counts {
-        for (dto, genre) in projected.items.iter_mut().zip(page.genres) {
-            apply_genre_counts(dto, genre.item_count, genre.counts)?;
-        }
-    }
+        .into_iter()
+        .map(|genre| user_library::genre_to_dto(genre, state.server_id(), include_item_counts))
+        .collect::<Vec<_>>();
     let total_record_count = if enable_total_record_count {
-        user_library::checked_int32(page.total_record_count)?
+        usize::try_from(page.total_record_count).unwrap_or(usize::MAX)
     } else {
         0
     };
-    let mut result = GenresResult {
-        items: projected.items,
+    Ok(Json(GenresResult {
+        items,
         total_record_count,
         start_index: requested_start_index,
-    };
-    user_library::omit_incompatible_emby_relations(&uri, &mut result.items);
-    Ok(Json(result))
+    }))
 }
 
 pub(crate) async fn get(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    OriginalUri(uri): OriginalUri,
     Path(genre_name): Path<String>,
     Query(query): Query<GenreByNameQuery>,
 ) -> Result<Json<user_library::BaseItemDto>, ApiError> {
@@ -275,9 +216,7 @@ pub(crate) async fn get(
         .get(&authenticated.user, target_user_id, &genre_name, item_query)
         .await?
     else {
-        let mut dto = empty_genre_dto(state.server_id());
-        user_library::omit_incompatible_emby_relations(&uri, std::slice::from_mut(&mut dto));
-        return Ok(Json(dto));
+        return Ok(Json(empty_genre_dto(state.server_id())));
     };
     let mut dto = if target_user_exists {
         user_library::project_item_to_dto(
@@ -292,8 +231,7 @@ pub(crate) async fn get(
     } else {
         project_genre_without_user(&state, genre.item).await?
     };
-    apply_genre_counts(&mut dto, genre.item_count, genre.counts)?;
-    user_library::omit_incompatible_emby_relations(&uri, std::slice::from_mut(&mut dto));
+    apply_genre_counts(&mut dto, genre.item_count, genre.counts);
     Ok(Json(dto))
 }
 
@@ -339,18 +277,17 @@ fn apply_genre_counts(
     dto: &mut user_library::BaseItemDto,
     item_count: u64,
     counts: jellyfin_data::ItemValueCounts,
-) -> Result<(), ApiError> {
-    dto.child_count = Some(user_library::checked_int32(item_count)?);
-    dto.album_count = Some(user_library::checked_int32(counts.album_count)?);
-    dto.artist_count = Some(user_library::checked_int32(counts.artist_count)?);
-    dto.episode_count = Some(user_library::checked_int32(counts.episode_count)?);
-    dto.movie_count = Some(user_library::checked_int32(counts.movie_count)?);
-    dto.music_video_count = Some(user_library::checked_int32(counts.music_video_count)?);
-    dto.program_count = Some(user_library::checked_int32(counts.program_count)?);
-    dto.series_count = Some(user_library::checked_int32(counts.series_count)?);
-    dto.song_count = Some(user_library::checked_int32(counts.song_count)?);
-    dto.trailer_count = Some(user_library::checked_int32(counts.trailer_count)?);
-    Ok(())
+) {
+    dto.child_count = Some(item_count);
+    dto.album_count = Some(counts.album_count);
+    dto.artist_count = Some(counts.artist_count);
+    dto.episode_count = Some(counts.episode_count);
+    dto.movie_count = Some(counts.movie_count);
+    dto.music_video_count = Some(counts.music_video_count);
+    dto.program_count = Some(counts.program_count);
+    dto.series_count = Some(counts.series_count);
+    dto.song_count = Some(counts.song_count);
+    dto.trailer_count = Some(counts.trailer_count);
 }
 
 pub(crate) async fn get_image(

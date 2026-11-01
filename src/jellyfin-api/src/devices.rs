@@ -1,4 +1,4 @@
-use std::{collections::HashMap, fmt, sync::Arc};
+use std::{collections::HashMap, sync::Arc};
 
 use axum::{
     Json,
@@ -14,7 +14,7 @@ use jellyfin_data::{
 use jellyfin_model::{
     ClientCapabilitiesDto, DeviceInfoDto, DeviceOptionsDto, QueryResult, UserPolicy,
 };
-use serde::{Deserialize, Deserializer, de};
+use serde::Deserialize;
 use uuid::Uuid;
 
 use crate::{ApiError, AppState, authentication};
@@ -24,43 +24,13 @@ use crate::{ApiError, AppState, authentication};
 pub(crate) struct DevicesQuery {
     #[serde(alias = "UserId", alias = "userid", alias = "user_id")]
     user_id: Option<Uuid>,
-    #[serde(alias = "SortOrder", alias = "sortorder")]
-    sort_order: Option<String>,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
 pub(crate) struct DeviceIdQuery {
+    #[serde(alias = "Id", alias = "ID")]
     id: Option<String>,
-}
-
-impl<'de> Deserialize<'de> for DeviceIdQuery {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        struct Visitor;
-
-        impl<'de> de::Visitor<'de> for Visitor {
-            type Value = DeviceIdQuery;
-
-            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-                formatter.write_str("a device query containing an optional Id")
-            }
-
-            fn visit_map<M: de::MapAccess<'de>>(self, mut map: M) -> Result<Self::Value, M::Error> {
-                let mut id = None;
-                while let Some(name) = map.next_key::<String>()? {
-                    if name.eq_ignore_ascii_case("Id") {
-                        // ASP.NET's case-insensitive simple-value binder keeps
-                        // the last value assigned to the same property.
-                        id = Some(map.next_value::<String>()?);
-                    } else {
-                        map.next_value::<de::IgnoredAny>()?;
-                    }
-                }
-                Ok(DeviceIdQuery { id })
-            }
-        }
-
-        deserializer.deserialize_map(Visitor)
-    }
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -89,23 +59,11 @@ pub(crate) async fn list(
             serde_json::from_value(user.policy).map_err(|_| ApiError::Internal)?;
         devices.retain(|device| can_access_device(&policy, device));
     }
-    if query
-        .sort_order
-        .as_deref()
-        .is_some_and(|value| value.eq_ignore_ascii_case("Ascending"))
-    {
-        devices.sort_by(|a, b| {
-            a.date_last_activity
-                .cmp(&b.date_last_activity)
-                .then_with(|| a.device_id.cmp(&b.device_id))
-        });
-    } else {
-        devices.sort_by(|a, b| {
-            b.date_last_activity
-                .cmp(&a.date_last_activity)
-                .then_with(|| a.device_id.cmp(&b.device_id))
-        });
-    }
+    devices.sort_by(|a, b| {
+        b.date_last_activity
+            .cmp(&a.date_last_activity)
+            .then_with(|| a.device_id.cmp(&b.device_id))
+    });
     let options = device_options_by_id(&state, &devices).await?;
 
     let mut items = Vec::with_capacity(devices.len());
@@ -113,9 +71,7 @@ pub(crate) async fn list(
         let custom_name = options.get(&device.device_id).cloned().flatten();
         items.push(device_info(&state, device, custom_name).await?);
     }
-    Ok(Json(
-        QueryResult::from_items(items).map_err(|_| ApiError::Internal)?,
-    ))
+    Ok(Json(QueryResult::from_items(items)))
 }
 
 pub(crate) async fn info(
@@ -191,17 +147,9 @@ pub(crate) async fn delete(
     State(state): State<Arc<AppState>>,
     OriginalUri(uri): OriginalUri,
     headers: HeaderMap,
+    Query(query): Query<DeleteDevicesQuery>,
 ) -> Result<StatusCode, ApiError> {
     require_elevated(&state, &headers, &uri).await?;
-    let query = if is_emby_protocol_uri(&uri) {
-        DeleteDevicesQuery {
-            id: vec![emby_required_device_id(&uri)?],
-        }
-    } else {
-        Query::<DeleteDevicesQuery>::try_from_uri(&uri)
-            .map_err(|_| ApiError::InvalidRequest)?
-            .0
-    };
     for id in &query.id {
         if id.is_empty() || state.devices.latest_by_device_id(id).await?.is_none() {
             return Err(ApiError::InvalidRequest);
@@ -211,21 +159,6 @@ pub(crate) async fn delete(
         state.devices.delete_by_device_id(&id).await?;
     }
     Ok(StatusCode::NO_CONTENT)
-}
-
-fn emby_required_device_id(uri: &axum::http::Uri) -> Result<String, ApiError> {
-    let mut id = None;
-    for (name, value) in form_urlencoded::parse(uri.query().unwrap_or_default().as_bytes()) {
-        if name.eq_ignore_ascii_case("Id") {
-            id = Some(value.into_owned());
-        }
-    }
-    id.filter(|id| !id.is_empty())
-        .ok_or(ApiError::InvalidRequest)
-}
-
-fn is_emby_protocol_uri(uri: &axum::http::Uri) -> bool {
-    uri.path() == "/emby" || uri.path().starts_with("/emby/")
 }
 
 async fn elevated_target_user_id(
@@ -276,7 +209,8 @@ async fn device_info(
 ) -> Result<DeviceInfoDto, ApiError> {
     let user = state.users.get(device.user_id).await?;
     let capabilities = ClientCapabilitiesDto::from_stored_value(device.capabilities);
-    let icon_url = capabilities.icon_url.clone();
+    let mut capabilities = capabilities;
+    let icon_url = capabilities.icon_url.take();
     Ok(DeviceInfoDto {
         name: Some(device.device_name),
         custom_name,
@@ -330,26 +264,4 @@ fn can_access_device(policy: &UserPolicy, device: &device::Model) -> bool {
     }
     let capabilities = ClientCapabilitiesDto::from_stored_value(device.capabilities.clone());
     !capabilities.supports_persistent_identifier
-}
-
-#[cfg(test)]
-mod tests {
-    use serde::{Deserialize, de::value::MapDeserializer};
-
-    use super::DeviceIdQuery;
-
-    #[test]
-    fn device_id_query_uses_case_insensitive_last_value() {
-        let query = DeviceIdQuery::deserialize(MapDeserializer::<_, serde::de::value::Error>::new(
-            [
-                ("ID", "wrong-device"),
-                ("Unknown", "ignored"),
-                ("iD", "expected-device"),
-            ]
-            .into_iter(),
-        ))
-        .expect("device query");
-
-        assert_eq!(query.id.as_deref(), Some("expected-device"));
-    }
 }

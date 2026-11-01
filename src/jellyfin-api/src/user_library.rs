@@ -12,27 +12,24 @@ use axum::{
 use axum_extra::extract::Query;
 use chrono::{DateTime, NaiveDate, SecondsFormat, Utc};
 use jellyfin_controller::{
-    Artist, LocalizationService, MusicGenre, RelatedItemKind, TrickplayManifest, item_can_delete,
-    item_can_download,
+    Artist, Genre, GenreKind, LocalizationService, MusicGenre, RelatedItemKind, Studio,
+    TrickplayManifest, Year, item_can_delete, item_can_download,
     library::{get_common_media_source_prefix, get_media_source_name},
 };
 use jellyfin_data::{
-    BaseItemDtoRelatedCounts, BaseItemPage, ChapterRecord, ItemValueCounts,
+    BaseItemPage, ChapterRecord, ItemValueCounts,
     entities::{base_item, item_value, user_data},
 };
 use jellyfin_model::{
-    ChapterInfo, ExternalUrl, ImageOrientation, ImageType, IsoType, LocationType, MediaAttachment,
-    MediaProtocol, MediaSourceInfo, MediaSourceType, MediaStream, MediaStreamType, MediaUrl,
-    MetadataField, NameIdPair, PersonKind, PlayAccess, SubtitleDeliveryMethod,
-    SubtitlePlaybackMode, TransportStreamTimestamp, UserConfiguration, UserItemDataDto, UserPolicy,
-    Video3DFormat, VideoType,
+    ChapterInfo, ExternalUrl, ImageType, IsoType, MediaAttachment, MediaProtocol, MediaSourceInfo,
+    MediaSourceType, MediaStream, MediaStreamType, MediaUrl, MetadataField, NameIdPair, PersonKind,
+    PlayAccess, SubtitlePlaybackMode, TransportStreamTimestamp, UserConfiguration, UserItemDataDto,
+    UserPolicy, Video3DFormat, VideoType,
 };
 use jellyfin_providers::external_url::{
     ExternalUrlItem, ExternalUrlItemKind, ExternalUrlProviderRegistry,
 };
-use jellyfin_server_implementations::{
-    DtoImageOptions, DtoPrimaryImageMetadata, MediaStreamSelector,
-};
+use jellyfin_server_implementations::{DtoImageOptions, MediaStreamSelector};
 use md5::{Digest, Md5};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -69,13 +66,6 @@ pub(crate) struct BaseItemDtoFields {
     settings: bool,
     external_urls: bool,
     remote_trailers: bool,
-    is_hd: bool,
-    cumulative_run_time_ticks: bool,
-    date_last_media_added: bool,
-    series_studio: bool,
-    enable_media_source_display: bool,
-    local_trailer_count: bool,
-    special_feature_count: bool,
 }
 
 impl BaseItemDtoFields {
@@ -97,13 +87,6 @@ impl BaseItemDtoFields {
             settings: true,
             external_urls: true,
             remote_trailers: true,
-            is_hd: true,
-            cumulative_run_time_ticks: true,
-            date_last_media_added: true,
-            series_studio: true,
-            enable_media_source_display: true,
-            local_trailer_count: true,
-            special_feature_count: true,
         }
     }
 
@@ -125,13 +108,6 @@ impl BaseItemDtoFields {
             settings: false,
             external_urls: false,
             remote_trailers: false,
-            is_hd: false,
-            cumulative_run_time_ticks: false,
-            date_last_media_added: false,
-            series_studio: false,
-            enable_media_source_display: false,
-            local_trailer_count: false,
-            special_feature_count: false,
         }
     }
 
@@ -169,21 +145,6 @@ impl BaseItemDtoFields {
                 result.external_urls = true;
             } else if field.eq_ignore_ascii_case("RemoteTrailers") || field.trim() == "35" {
                 result.remote_trailers = true;
-            } else if field.eq_ignore_ascii_case("IsHD") || field.trim() == "47" {
-                result.is_hd = true;
-            } else if field.eq_ignore_ascii_case("CumulativeRunTimeTicks") || field.trim() == "7" {
-                result.cumulative_run_time_ticks = true;
-            } else if field.eq_ignore_ascii_case("DateLastMediaAdded") || field.trim() == "10" {
-                result.date_last_media_added = true;
-            } else if field.eq_ignore_ascii_case("SeriesStudio") || field.trim() == "29" {
-                result.series_studio = true;
-            } else if field.eq_ignore_ascii_case("EnableMediaSourceDisplay") || field.trim() == "42"
-            {
-                result.enable_media_source_display = true;
-            } else if field.eq_ignore_ascii_case("LocalTrailerCount") || field.trim() == "46" {
-                result.local_trailer_count = true;
-            } else if field.eq_ignore_ascii_case("SpecialFeatureCount") || field.trim() == "48" {
-                result.special_feature_count = true;
             }
         }
         result
@@ -275,60 +236,22 @@ impl BaseItemDtoFields {
     }
 
     #[must_use]
-    pub(crate) const fn wants_is_hd(self) -> bool {
-        self.is_hd
+    pub(crate) const fn without_trickplay(mut self) -> Self {
+        self.trickplay = false;
+        self
     }
 
-    #[must_use]
-    pub(crate) const fn wants_cumulative_run_time_ticks(self) -> bool {
-        self.cumulative_run_time_ticks
-    }
-
-    #[must_use]
-    pub(crate) const fn wants_date_last_media_added(self) -> bool {
-        self.date_last_media_added
-    }
-
-    #[must_use]
-    pub(crate) const fn wants_series_studio(self) -> bool {
-        self.series_studio
-    }
-
-    #[must_use]
-    pub(crate) const fn wants_enable_media_source_display(self) -> bool {
-        self.enable_media_source_display
-    }
-
-    #[must_use]
-    pub(crate) const fn wants_local_trailer_count(self) -> bool {
-        self.local_trailer_count
-    }
-
-    #[must_use]
-    pub(crate) const fn wants_special_feature_count(self) -> bool {
-        self.special_feature_count
-    }
-
-    #[cfg(test)]
     #[must_use]
     pub(crate) const fn without_chapters(mut self) -> Self {
         self.chapters = false;
         self
     }
 
-    #[cfg(test)]
     #[must_use]
     pub(crate) const fn without_external_urls(mut self) -> Self {
         self.external_urls = false;
         self
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "PascalCase")]
-pub(crate) struct EmbyNameLongIdPair {
-    name: String,
-    id: i64,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -352,15 +275,11 @@ pub struct BaseItemDto {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub date_created: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub date_last_media_added: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub sort_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub forced_sort_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub enable_media_source_display: Option<bool>,
     #[serde(skip)]
     pub(crate) media_source_path: Option<String>,
     #[serde(skip)]
@@ -369,16 +288,6 @@ pub struct BaseItemDto {
     pub(crate) media_source_container: Option<String>,
     #[serde(skip)]
     pub(crate) media_source_size: Option<i64>,
-    /// Emby-only top-level file size. The Jellyfin BaseItemDto contract keeps
-    /// this value on MediaSources, so protocol adapters opt in explicitly.
-    #[serde(rename = "Size", skip_serializing_if = "Option::is_none")]
-    pub(crate) emby_size: Option<i64>,
-    /// Emby-only top-level aggregate bitrate.
-    #[serde(rename = "Bitrate", skip_serializing_if = "Option::is_none")]
-    pub(crate) emby_bitrate: Option<i32>,
-    /// Emby-only name of the item's local media/shortcut file.
-    #[serde(rename = "FileName", skip_serializing_if = "Option::is_none")]
-    pub(crate) emby_file_name: Option<String>,
     #[serde(skip)]
     pub(crate) media_source_etag: Option<String>,
     #[serde(skip)]
@@ -393,46 +302,32 @@ pub struct BaseItemDto {
     pub media_type: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub collection_type: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub display_order: Option<String>,
     pub is_folder: bool,
     pub is_virtual_item: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub is_place_holder: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub location_type: Option<LocationType>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub parent_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub child_count: Option<i32>,
+    pub child_count: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub recursive_item_count: Option<i32>,
+    pub recursive_item_count: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub album_count: Option<i32>,
+    pub album_count: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub artist_count: Option<i32>,
+    pub artist_count: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub episode_count: Option<i32>,
+    pub episode_count: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub game_count: Option<i32>,
+    pub movie_count: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub movie_count: Option<i32>,
+    pub music_video_count: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub music_video_count: Option<i32>,
+    pub program_count: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub program_count: Option<i32>,
+    pub series_count: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub series_count: Option<i32>,
+    pub song_count: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub song_count: Option<i32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub trailer_count: Option<i32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub local_trailer_count: Option<i32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub special_feature_count: Option<i32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub part_count: Option<i32>,
+    pub trailer_count: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub display_preferences_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -446,8 +341,6 @@ pub struct BaseItemDto {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub run_time_ticks: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub cumulative_run_time_ticks: Option<i64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub media_source_count: Option<i32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub presentation_unique_key: Option<String>,
@@ -456,8 +349,6 @@ pub struct BaseItemDto {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub series_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub series_studio: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub season_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub season_name: Option<String>,
@@ -465,8 +356,6 @@ pub struct BaseItemDto {
     pub album: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub album_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub album_primary_image_tag: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub artists: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -489,16 +378,12 @@ pub struct BaseItemDto {
     pub genres: Vec<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub genre_items: Vec<NameIdPair>,
-    #[serde(rename = "GenreItems", skip_serializing_if = "Vec::is_empty")]
-    pub(crate) emby_genre_items: Vec<EmbyNameLongIdPair>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub people: Vec<BaseItemPerson>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub tags: Vec<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub studios: Vec<NameIdPair>,
-    #[serde(rename = "Studios", skip_serializing_if = "Vec::is_empty")]
-    pub(crate) emby_studios: Vec<EmbyNameLongIdPair>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub community_rating: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -513,8 +398,6 @@ pub struct BaseItemDto {
     pub taglines: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub status: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub air_time: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub custom_rating: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -538,37 +421,7 @@ pub struct BaseItemDto {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub height: Option<i32>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub camera_make: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub camera_model: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub software: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub exposure_time: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub focal_length: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub image_orientation: Option<ImageOrientation>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub aperture: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub shutter_speed: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub latitude: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub longitude: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub altitude: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub iso_speed_rating: Option<i32>,
-    #[serde(rename = "IsHD", skip_serializing_if = "Option::is_none")]
-    pub is_hd: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub has_subtitles: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub normalization_gain: Option<f32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub album_normalization_gain: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub video_type: Option<VideoType>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -636,8 +489,8 @@ pub struct BaseItemPerson {
     pub name: String,
     pub id: String,
     pub role: String,
-    #[serde(rename = "Type", skip_serializing_if = "Option::is_none")]
-    pub person_type: Option<PersonKind>,
+    #[serde(rename = "Type")]
+    pub person_type: PersonKind,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub primary_image_tag: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -648,7 +501,7 @@ pub struct BaseItemPerson {
 #[serde(rename_all = "PascalCase")]
 pub struct BaseItemQueryResult {
     pub items: Vec<BaseItemDto>,
-    pub total_record_count: i32,
+    pub total_record_count: usize,
     pub start_index: i32,
 }
 
@@ -656,7 +509,6 @@ pub struct BaseItemQueryResult {
 pub(crate) struct EpisodeHierarchyNames {
     series_name: Option<String>,
     season_name: Option<String>,
-    series_studio: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -728,24 +580,18 @@ pub(crate) async fn media_stream_defaults_for_user(
 pub(crate) async fn get_root_legacy(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    OriginalUri(uri): OriginalUri,
     Path(user_id): Path<Uuid>,
     Query(_query): Query<UserIdQuery>,
 ) -> Result<Json<BaseItemDto>, ApiError> {
-    let mut result = get_root_for(state, headers, Some(user_id), BaseItemDtoFields::all()).await?;
-    omit_incompatible_emby_relations(&uri, std::slice::from_mut(&mut result.0));
-    Ok(result)
+    get_root_for(state, headers, Some(user_id), BaseItemDtoFields::all()).await
 }
 
 pub(crate) async fn get_root(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    OriginalUri(uri): OriginalUri,
     Query(query): Query<UserIdQuery>,
 ) -> Result<Json<BaseItemDto>, ApiError> {
-    let mut result = get_root_for(state, headers, query.user_id, BaseItemDtoFields::all()).await?;
-    omit_incompatible_emby_relations(&uri, std::slice::from_mut(&mut result.0));
-    Ok(result)
+    get_root_for(state, headers, query.user_id, BaseItemDtoFields::all()).await
 }
 
 pub(crate) async fn get_item_legacy(
@@ -754,17 +600,15 @@ pub(crate) async fn get_item_legacy(
     OriginalUri(uri): OriginalUri,
     Path((user_id, item_id)): Path<(Uuid, Uuid)>,
 ) -> Result<Json<BaseItemDto>, ApiError> {
-    let mut result = get_item_for(
+    get_item_for(
         state,
         headers,
-        uri.clone(),
+        uri,
         Some(user_id),
         item_id,
         BaseItemDtoFields::all(),
     )
-    .await?;
-    omit_incompatible_emby_relations(&uri, std::slice::from_mut(&mut result.0));
-    Ok(result)
+    .await
 }
 
 pub(crate) async fn get_item(
@@ -774,128 +618,108 @@ pub(crate) async fn get_item(
     Path(item_id): Path<Uuid>,
     Query(query): Query<UserIdQuery>,
 ) -> Result<Json<BaseItemDto>, ApiError> {
-    let mut result = get_item_for(
+    get_item_for(
         state,
         headers,
-        uri.clone(),
+        uri,
         query.user_id,
         item_id,
         BaseItemDtoFields::all(),
     )
-    .await?;
-    omit_incompatible_emby_relations(&uri, std::slice::from_mut(&mut result.0));
-    Ok(result)
+    .await
 }
 
 pub(crate) async fn get_intros_legacy(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    OriginalUri(uri): OriginalUri,
     Path((user_id, item_id)): Path<(Uuid, Uuid)>,
 ) -> Result<Json<BaseItemQueryResult>, ApiError> {
-    let mut result = get_related_query_for(
+    get_related_query_for(
         state,
         headers,
         Some(user_id),
         item_id,
         RelatedItemKind::Intro,
     )
-    .await?;
-    omit_incompatible_emby_relations(&uri, &mut result.0.items);
-    Ok(result)
+    .await
 }
 
 pub(crate) async fn get_intros(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    OriginalUri(uri): OriginalUri,
     Path(item_id): Path<Uuid>,
     Query(query): Query<UserIdQuery>,
 ) -> Result<Json<BaseItemQueryResult>, ApiError> {
-    let mut result = get_related_query_for(
+    get_related_query_for(
         state,
         headers,
         query.user_id,
         item_id,
         RelatedItemKind::Intro,
     )
-    .await?;
-    omit_incompatible_emby_relations(&uri, &mut result.0.items);
-    Ok(result)
+    .await
 }
 
 pub(crate) async fn get_local_trailers_legacy(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    OriginalUri(uri): OriginalUri,
     Path((user_id, item_id)): Path<(Uuid, Uuid)>,
 ) -> Result<Json<Vec<BaseItemDto>>, ApiError> {
-    let mut result = get_related_for(
+    get_related_for(
         state,
         headers,
         Some(user_id),
         item_id,
         RelatedItemKind::LocalTrailer,
     )
-    .await?;
-    omit_incompatible_emby_relations(&uri, &mut result.0);
-    Ok(result)
+    .await
 }
 
 pub(crate) async fn get_local_trailers(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    OriginalUri(uri): OriginalUri,
     Path(item_id): Path<Uuid>,
     Query(query): Query<UserIdQuery>,
 ) -> Result<Json<Vec<BaseItemDto>>, ApiError> {
-    let mut result = get_related_for(
+    get_related_for(
         state,
         headers,
         query.user_id,
         item_id,
         RelatedItemKind::LocalTrailer,
     )
-    .await?;
-    omit_incompatible_emby_relations(&uri, &mut result.0);
-    Ok(result)
+    .await
 }
 
 pub(crate) async fn get_special_features_legacy(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    OriginalUri(uri): OriginalUri,
     Path((user_id, item_id)): Path<(Uuid, Uuid)>,
 ) -> Result<Json<Vec<BaseItemDto>>, ApiError> {
-    let mut result = get_related_for(
+    get_related_for(
         state,
         headers,
         Some(user_id),
         item_id,
         RelatedItemKind::SpecialFeature,
     )
-    .await?;
-    omit_incompatible_emby_relations(&uri, &mut result.0);
-    Ok(result)
+    .await
 }
 
 pub(crate) async fn get_special_features(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    OriginalUri(uri): OriginalUri,
     Path(item_id): Path<Uuid>,
     Query(query): Query<UserIdQuery>,
 ) -> Result<Json<Vec<BaseItemDto>>, ApiError> {
-    let mut result = get_related_for(
+    get_related_for(
         state,
         headers,
         query.user_id,
         item_id,
         RelatedItemKind::SpecialFeature,
     )
-    .await?;
-    omit_incompatible_emby_relations(&uri, &mut result.0);
-    Ok(result)
+    .await
 }
 
 pub(crate) async fn get_lyrics_legacy(
@@ -919,21 +743,14 @@ pub(crate) async fn delete_lyrics(
     headers: HeaderMap,
     Path(item_id): Path<Uuid>,
 ) -> Result<StatusCode, ApiError> {
-    let identity = authentication::authenticated_identity(&state, &headers, None).await?;
-    match &identity {
-        authentication::AuthenticatedIdentity::Device(authenticated) => {
-            if !authenticated.can_manage_lyrics() {
-                return Err(ApiError::Forbidden);
-            }
-            state
-                .user_library
-                .delete_lyrics(&authenticated.user, authenticated.user.id, item_id)
-                .await?;
-        }
-        authentication::AuthenticatedIdentity::ApiKey(_) => {
-            state.user_library.delete_lyrics_by_id(item_id).await?;
-        }
+    let authenticated = authentication::authenticated_session(&state, &headers).await?;
+    if !authenticated.can_manage_lyrics() {
+        return Err(ApiError::Forbidden);
     }
+    state
+        .user_library
+        .delete_lyrics(&authenticated.user, authenticated.user.id, item_id)
+        .await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -944,30 +761,21 @@ pub(crate) async fn upload_lyrics(
     Query(query): Query<UploadLyricsQuery>,
     body: Bytes,
 ) -> Result<Json<Value>, ApiError> {
-    let identity = authentication::authenticated_identity(&state, &headers, None).await?;
-    let lyrics = match &identity {
-        authentication::AuthenticatedIdentity::Device(authenticated) => {
-            if !authenticated.can_manage_lyrics() {
-                return Err(ApiError::Forbidden);
-            }
-            state
-                .user_library
-                .save_lyrics(
-                    &authenticated.user,
-                    authenticated.user.id,
-                    item_id,
-                    query.file_name.as_deref(),
-                    body.as_ref(),
-                )
-                .await?
-        }
-        authentication::AuthenticatedIdentity::ApiKey(_) => {
-            state
-                .user_library
-                .save_lyrics_by_id(item_id, query.file_name.as_deref(), body.as_ref())
-                .await?
-        }
-    };
+    let authenticated = authentication::authenticated_session(&state, &headers).await?;
+    if !authenticated.can_manage_lyrics() {
+        return Err(ApiError::Forbidden);
+    }
+    let file_name = query.file_name.as_deref().ok_or(ApiError::InvalidRequest)?;
+    let lyrics = state
+        .user_library
+        .save_lyrics(
+            &authenticated.user,
+            authenticated.user.id,
+            item_id,
+            file_name,
+            body.as_ref(),
+        )
+        .await?;
     Ok(Json(lyrics))
 }
 
@@ -976,19 +784,14 @@ pub(crate) async fn search_remote_lyrics(
     headers: HeaderMap,
     Path(item_id): Path<Uuid>,
 ) -> Result<Json<Vec<Value>>, ApiError> {
-    let identity = authentication::authenticated_identity(&state, &headers, None).await?;
-    ensure_can_manage_lyrics(&identity)?;
-    let lyrics = match &identity {
-        authentication::AuthenticatedIdentity::Device(authenticated) => {
-            state
-                .user_library
-                .remote_lyrics(&authenticated.user, authenticated.user.id, item_id)
-                .await?
-        }
-        authentication::AuthenticatedIdentity::ApiKey(_) => {
-            state.user_library.remote_lyrics_by_id(item_id).await?
-        }
-    };
+    let authenticated = authentication::authenticated_session(&state, &headers).await?;
+    if !authenticated.can_manage_lyrics() {
+        return Err(ApiError::Forbidden);
+    }
+    let lyrics = state
+        .user_library
+        .remote_lyrics(&authenticated.user, authenticated.user.id, item_id)
+        .await?;
     Ok(Json(lyrics))
 }
 
@@ -997,29 +800,19 @@ pub(crate) async fn download_remote_lyrics(
     headers: HeaderMap,
     Path((item_id, lyric_id)): Path<(Uuid, String)>,
 ) -> Result<Json<Value>, ApiError> {
-    let identity = authentication::authenticated_identity(&state, &headers, None).await?;
-    let lyrics = match &identity {
-        authentication::AuthenticatedIdentity::Device(authenticated) => {
-            if !authenticated.can_manage_lyrics() {
-                return Err(ApiError::Forbidden);
-            }
-            state
-                .user_library
-                .download_remote_lyrics(
-                    &authenticated.user,
-                    authenticated.user.id,
-                    item_id,
-                    &lyric_id,
-                )
-                .await?
-        }
-        authentication::AuthenticatedIdentity::ApiKey(_) => {
-            state
-                .user_library
-                .download_remote_lyrics_by_id(item_id, &lyric_id)
-                .await?
-        }
-    };
+    let authenticated = authentication::authenticated_session(&state, &headers).await?;
+    if !authenticated.can_manage_lyrics() {
+        return Err(ApiError::Forbidden);
+    }
+    let lyrics = state
+        .user_library
+        .download_remote_lyrics(
+            &authenticated.user,
+            authenticated.user.id,
+            item_id,
+            &lyric_id,
+        )
+        .await?;
     Ok(Json(lyrics))
 }
 
@@ -1028,22 +821,12 @@ pub(crate) async fn get_remote_lyrics(
     headers: HeaderMap,
     Path(lyric_id): Path<String>,
 ) -> Result<Json<Value>, ApiError> {
-    let identity = authentication::authenticated_identity(&state, &headers, None).await?;
-    ensure_can_manage_lyrics(&identity)?;
+    let authenticated = authentication::authenticated_session(&state, &headers).await?;
+    if !authenticated.can_manage_lyrics() {
+        return Err(ApiError::Forbidden);
+    }
     let lyrics = state.user_library.get_remote_lyrics(&lyric_id).await?;
     Ok(Json(lyrics))
-}
-
-fn ensure_can_manage_lyrics(
-    identity: &authentication::AuthenticatedIdentity,
-) -> Result<(), ApiError> {
-    match identity {
-        authentication::AuthenticatedIdentity::Device(session) if !session.can_manage_lyrics() => {
-            Err(ApiError::Forbidden)
-        }
-        authentication::AuthenticatedIdentity::Device(_)
-        | authentication::AuthenticatedIdentity::ApiKey(_) => Ok(()),
-    }
 }
 
 async fn get_root_for(
@@ -1053,9 +836,7 @@ async fn get_root_for(
     requested_fields: BaseItemDtoFields,
 ) -> Result<Json<BaseItemDto>, ApiError> {
     let authenticated = authentication::authenticated_session(&state, &headers).await?;
-    let target_user_id = requested_user_id
-        .filter(|user_id| !user_id.is_nil())
-        .unwrap_or(authenticated.user.id);
+    let target_user_id = requested_user_id.unwrap_or(authenticated.user.id);
     let item = state
         .user_library
         .root(&authenticated.user, target_user_id)
@@ -1089,8 +870,8 @@ async fn get_root_for(
         remembered_user_data.as_ref(),
     )
     .await?;
-    attach_child_count(&mut dto, child_counts.remove(&item_id))?;
-    attach_recursive_item_count(&mut dto, recursive_item_counts.remove(&item_id))?;
+    attach_child_count(&mut dto, child_counts.remove(&item_id));
+    attach_recursive_item_count(&mut dto, recursive_item_counts.remove(&item_id));
     Ok(Json(dto))
 }
 
@@ -1123,9 +904,6 @@ async fn get_item_for(
                 .await?
         }
     };
-    if !is_emby_request(&uri) && is_emby_game_type(&item.item_type) {
-        return Err(ApiError::NotFound);
-    }
     let defaults =
         media_stream_defaults_for_user(state.as_ref(), target_user_id, requested_fields).await?;
     let remembered_user_data =
@@ -1155,8 +933,8 @@ async fn get_item_for(
         remembered_user_data.as_ref(),
     )
     .await?;
-    attach_child_count(&mut dto, child_counts.remove(&item_id))?;
-    attach_recursive_item_count(&mut dto, recursive_item_counts.remove(&item_id))?;
+    attach_child_count(&mut dto, child_counts.remove(&item_id));
+    attach_recursive_item_count(&mut dto, recursive_item_counts.remove(&item_id));
     Ok(Json(dto))
 }
 
@@ -1210,9 +988,7 @@ async fn related_items(
     kind: RelatedItemKind,
 ) -> Result<(Vec<base_item::Model>, Uuid), ApiError> {
     let authenticated = authentication::authenticated_session(&state, &headers).await?;
-    let target_user_id = requested_user_id
-        .filter(|user_id| !user_id.is_nil())
-        .unwrap_or(authenticated.user.id);
+    let target_user_id = requested_user_id.unwrap_or(authenticated.user.id);
     let items = state
         .user_library
         .related_items(&authenticated.user, target_user_id, item_id, kind)
@@ -1245,9 +1021,7 @@ async fn get_lyrics_for(
     item_id: Uuid,
 ) -> Result<Json<Value>, ApiError> {
     let authenticated = authentication::authenticated_session(&state, &headers).await?;
-    let target_user_id = requested_user_id
-        .filter(|user_id| !user_id.is_nil())
-        .unwrap_or(authenticated.user.id);
+    let target_user_id = requested_user_id.unwrap_or(authenticated.user.id);
     let lyrics = state
         .user_library
         .lyrics(&authenticated.user, target_user_id, item_id)
@@ -1258,7 +1032,6 @@ async fn get_lyrics_for(
 #[allow(clippy::too_many_lines)]
 pub(crate) fn item_to_dto(item: base_item::Model, server_id: &str) -> BaseItemDto {
     let is_user_view = item.item_type == "UserView";
-    let is_photo = is_item_type(&item.item_type, "Photo");
     let has_artists = has_artist_fields(&item.item_type);
     let has_album_artists = has_album_artist_fields(&item.item_type);
     let has_album =
@@ -1327,30 +1100,6 @@ pub(crate) fn item_to_dto(item: base_item::Model, server_id: &str) -> BaseItemDt
         ISO_TYPES,
     );
     let original_language = original_language_from_item(&item);
-    let display_order = (is_item_type(&item.item_type, "Series")
-        || is_item_type(&item.item_type, "BoxSet"))
-    .then(|| {
-        metadata_string(
-            item.data.as_ref(),
-            &["DisplayOrder", "displayOrder", "display_order"],
-        )
-    })
-    .flatten();
-    let air_time = is_item_type(&item.item_type, "Series")
-        .then(|| metadata_string(item.data.as_ref(), &["AirTime", "airTime", "air_time"]))
-        .flatten();
-    let location_type = item_location_type(&item);
-    let is_place_holder = (is_video_item_type(&item.item_type)
-        && metadata_bool(
-            item.data.as_ref(),
-            &[
-                "IsPlaceHolder",
-                "isPlaceHolder",
-                "isplaceholder",
-                "is_place_holder",
-            ],
-        ) == Some(true))
-    .then_some(true);
     BaseItemDto {
         name: item.name,
         server_id: server_id.to_owned(),
@@ -1362,18 +1111,13 @@ pub(crate) fn item_to_dto(item: base_item::Model, server_id: &str) -> BaseItemDt
         can_download: None,
         play_access: None,
         date_created: Some(item.date_created.to_rfc3339()),
-        date_last_media_added: None,
         sort_name: item.sort_name,
         forced_sort_name: None,
         path: item.path,
-        enable_media_source_display: None,
         media_source_path,
         media_source_bitrate,
         media_source_container,
         media_source_size,
-        emby_size: None,
-        emby_bitrate: None,
-        emby_file_name: None,
         media_source_etag,
         media_source_timestamp,
         media_source_required_http_headers,
@@ -1392,46 +1136,36 @@ pub(crate) fn item_to_dto(item: base_item::Model, server_id: &str) -> BaseItemDt
         } else {
             None
         },
-        display_order,
         is_folder: item.is_folder,
         is_virtual_item: item.is_virtual_item,
-        is_place_holder,
-        location_type,
         parent_id: item.parent_id.map(|id| id.simple().to_string()),
         child_count: None,
         recursive_item_count: None,
         album_count: None,
         artist_count: None,
         episode_count: None,
-        game_count: None,
         movie_count: None,
         music_video_count: None,
         program_count: None,
         series_count: None,
         song_count: None,
         trailer_count: None,
-        local_trailer_count: None,
-        special_feature_count: None,
-        part_count: None,
         display_preferences_id: None,
         index_number: item.index_number,
         parent_index_number: item.parent_index_number,
         production_year: item.production_year,
         premiere_date: item.premiere_date.map(|date| date.to_rfc3339()),
         run_time_ticks: item.runtime_ticks,
-        cumulative_run_time_ticks: None,
         media_source_count: None,
         presentation_unique_key: item.presentation_unique_key,
         series_id: item.series_id.map(|id| id.simple().to_string()),
         series_name: metadata_string(item.data.as_ref(), &["SeriesName", "series_name"]),
-        series_studio: None,
         season_id: item.season_id.map(|id| id.simple().to_string()),
         season_name: metadata_string(item.data.as_ref(), &["SeasonName", "season_name"]),
         album: has_album
             .then(|| metadata_string(item.data.as_ref(), &["Album", "album"]))
             .flatten(),
         album_id: None,
-        album_primary_image_tag: None,
         artists,
         artist_items: has_artists.then(Vec::new),
         album_artist,
@@ -1443,11 +1177,9 @@ pub(crate) fn item_to_dto(item: base_item::Model, server_id: &str) -> BaseItemDt
         user_data: None,
         genres: metadata_strings(item.data.as_ref(), &["Genres", "genres"]),
         genre_items: Vec::new(),
-        emby_genre_items: Vec::new(),
         people: Vec::new(),
         tags: metadata_strings(item.data.as_ref(), &["Tags", "tags"]),
         studios: Vec::new(),
-        emby_studios: Vec::new(),
         community_rating: metadata_f64(
             item.data.as_ref(),
             &["CommunityRating", "community_rating"],
@@ -1461,7 +1193,6 @@ pub(crate) fn item_to_dto(item: base_item::Model, server_id: &str) -> BaseItemDt
         original_language,
         taglines: metadata_taglines(item.data.as_ref()),
         status: metadata_string(item.data.as_ref(), &["Status", "status"]),
-        air_time,
         custom_rating: metadata_string(item.data.as_ref(), &["CustomRating", "custom_rating"]),
         collection_name: metadata_string(
             item.data.as_ref(),
@@ -1479,76 +1210,7 @@ pub(crate) fn item_to_dto(item: base_item::Model, server_id: &str) -> BaseItemDt
         end_date: metadata_api_datetime(item.data.as_ref(), &["EndDate", "end_date"]),
         width: metadata_i32(item.data.as_ref(), &["Width", "width"]),
         height: metadata_i32(item.data.as_ref(), &["Height", "height"]),
-        camera_make: is_photo
-            .then(|| {
-                metadata_string(
-                    item.data.as_ref(),
-                    &["CameraMake", "cameraMake", "camera_make"],
-                )
-            })
-            .flatten(),
-        camera_model: is_photo
-            .then(|| {
-                metadata_string(
-                    item.data.as_ref(),
-                    &["CameraModel", "cameraModel", "camera_model"],
-                )
-            })
-            .flatten(),
-        software: is_photo
-            .then(|| metadata_string(item.data.as_ref(), &["Software", "software"]))
-            .flatten(),
-        exposure_time: is_photo
-            .then(|| {
-                metadata_f64(
-                    item.data.as_ref(),
-                    &["ExposureTime", "exposureTime", "exposure_time"],
-                )
-            })
-            .flatten(),
-        focal_length: is_photo
-            .then(|| {
-                metadata_f64(
-                    item.data.as_ref(),
-                    &["FocalLength", "focalLength", "focal_length"],
-                )
-            })
-            .flatten(),
-        image_orientation: is_photo
-            .then(|| metadata_image_orientation(item.data.as_ref()))
-            .flatten(),
-        aperture: is_photo
-            .then(|| metadata_f64(item.data.as_ref(), &["Aperture", "aperture"]))
-            .flatten(),
-        shutter_speed: is_photo
-            .then(|| {
-                metadata_f64(
-                    item.data.as_ref(),
-                    &["ShutterSpeed", "shutterSpeed", "shutter_speed"],
-                )
-            })
-            .flatten(),
-        latitude: is_photo
-            .then(|| metadata_f64(item.data.as_ref(), &["Latitude", "latitude"]))
-            .flatten(),
-        longitude: is_photo
-            .then(|| metadata_f64(item.data.as_ref(), &["Longitude", "longitude"]))
-            .flatten(),
-        altitude: is_photo
-            .then(|| metadata_f64(item.data.as_ref(), &["Altitude", "altitude"]))
-            .flatten(),
-        iso_speed_rating: is_photo
-            .then(|| {
-                metadata_i32(
-                    item.data.as_ref(),
-                    &["IsoSpeedRating", "isoSpeedRating", "iso_speed_rating"],
-                )
-            })
-            .flatten(),
-        is_hd: None,
         has_subtitles: None,
-        normalization_gain: metadata_normalization_gain(item.data.as_ref()),
-        album_normalization_gain: None,
         video_type,
         video_3d_format,
         iso_type,
@@ -1603,43 +1265,12 @@ pub(crate) fn item_to_dto_with_fields(
     let remote_trailers = fields
         .wants_remote_trailers()
         .then(|| metadata_remote_trailers(item.data.as_ref()));
-    let cumulative_run_time_ticks = (fields.wants_cumulative_run_time_ticks() && item.is_folder)
-        .then_some(item.runtime_ticks)
-        .flatten();
-    let date_last_media_added = (fields.wants_date_last_media_added() && item.is_folder)
-        .then(|| {
-            metadata_api_datetime(
-                item.data.as_ref(),
-                &[
-                    "DateLastMediaAdded",
-                    "dateLastMediaAdded",
-                    "date_last_media_added",
-                ],
-            )
-        })
-        .flatten();
-    // Ordinary library items always return true. Channel sources delegate to
-    // ChannelManager in the official server; Rust has no equivalent provider
-    // capability state, so do not fabricate that channel-specific value.
-    let enable_media_source_display = (fields.wants_enable_media_source_display()
-        && !item_source_is_channel(item.data.as_ref()))
-    .then_some(true);
     let mut dto = item_to_dto(item, server_id);
     dto.can_delete = can_delete;
     dto.can_download = can_download;
     dto.chapters = fields.wants_chapters().then(Vec::new);
     dto.external_urls = fields.wants_external_urls().then(Vec::new);
     dto.remote_trailers = remote_trailers;
-    dto.cumulative_run_time_ticks = cumulative_run_time_ticks;
-    dto.date_last_media_added = date_last_media_added;
-    dto.enable_media_source_display = enable_media_source_display;
-    // `BaseItem.IsHD` is derived from the persisted item height. For legacy
-    // compatibility the official projector writes the property only when it
-    // is requested and true; its wire name retains the uppercase acronym.
-    dto.is_hd = fields
-        .wants_is_hd()
-        .then_some(dto.height.is_some_and(|height| height >= 720))
-        .filter(|is_hd| *is_hd);
     if let Some(settings) = settings {
         dto.locked_fields = Some(settings.locked_fields);
         dto.is_locked = Some(settings.is_locked);
@@ -1648,42 +1279,6 @@ pub(crate) fn item_to_dto_with_fields(
         dto.preferred_metadata_country_code = settings.preferred_metadata_country_code;
     }
     dto
-}
-
-pub(crate) async fn related_item_counts_for_items(
-    state: &AppState,
-    items: &[base_item::Model],
-    fields: BaseItemDtoFields,
-) -> Result<HashMap<Uuid, BaseItemDtoRelatedCounts>, ApiError> {
-    let include_extra_counts =
-        fields.wants_local_trailer_count() || fields.wants_special_feature_count();
-    let item_ids = items
-        .iter()
-        .filter(|item| {
-            include_extra_counts
-                || (is_video_item_type(&item.item_type)
-                    && metadata_value(item.data.as_ref(), &["AdditionalParts", "additional_parts"])
-                        .is_some_and(|value| {
-                            value.as_array().is_some_and(|parts| !parts.is_empty())
-                        }))
-        })
-        .map(|item| item.id)
-        .collect::<Vec<_>>();
-    Ok(state.base_items.dto_related_item_counts(&item_ids).await?)
-}
-
-pub(crate) fn attach_related_item_counts(
-    dto: &mut BaseItemDto,
-    fields: BaseItemDtoFields,
-    counts: BaseItemDtoRelatedCounts,
-) {
-    dto.local_trailer_count = fields
-        .wants_local_trailer_count()
-        .then_some(counts.local_trailer_count);
-    dto.special_feature_count = fields
-        .wants_special_feature_count()
-        .then_some(counts.special_feature_count);
-    dto.part_count = counts.part_count;
 }
 
 pub(crate) struct ItemAccessPolicy {
@@ -1855,8 +1450,7 @@ pub(crate) async fn project_item_to_dto(
     remembered_user_data: Option<&user_data::Model>,
 ) -> Result<BaseItemDto, ApiError> {
     let item_id = item.id;
-    let mut hierarchy_names =
-        episode_hierarchy_names(state, std::slice::from_ref(&item), fields).await?;
+    let mut hierarchy_names = episode_hierarchy_names(state, std::slice::from_ref(&item)).await?;
     let hierarchy_names = hierarchy_names.remove(&item_id);
     project_item_to_dto_with_context(
         state,
@@ -1893,8 +1487,6 @@ pub(crate) async fn project_item_to_dto_with_context(
 ) -> Result<BaseItemDto, ApiError> {
     let item_id = item.id;
     let is_playlist = is_item_type(&item.item_type, "Playlist");
-    let mut related_item_counts =
-        related_item_counts_for_items(state, std::slice::from_ref(&item), fields).await?;
     let mut external_urls =
         external_urls_for_items(state, std::slice::from_ref(&item), fields).await?;
     let mut chapters = chapters_for_items(state, std::slice::from_ref(&item), fields).await?;
@@ -1949,11 +1541,6 @@ pub(crate) async fn project_item_to_dto_with_context(
         None
     };
     let mut dto = item_to_dto_with_fields(item, state.server_id(), fields);
-    attach_related_item_counts(
-        &mut dto,
-        fields,
-        related_item_counts.remove(&item_id).unwrap_or_default(),
-    );
     attach_external_urls(
         &mut dto,
         fields,
@@ -2020,7 +1607,7 @@ pub(crate) async fn project_item_to_dto_with_context(
             .await?
             .remove(&item_id)
             .unwrap_or_default();
-        attach_media_source_count(&mut dto, count)?;
+        attach_media_source_count(&mut dto, count);
     }
     if !fields.wants_media_streams() {
         return Ok(dto);
@@ -2056,7 +1643,7 @@ pub(crate) async fn project_item_to_dto_with_context(
                 attach_media_source_count(
                     &mut dto,
                     u64::try_from(source_items.len()).unwrap_or(u64::MAX),
-                )?;
+                );
             }
             attach_versioned_media_sources(
                 state,
@@ -2257,71 +1844,46 @@ pub(crate) fn attach_external_urls(
 pub(crate) async fn episode_hierarchy_names(
     state: &AppState,
     items: &[base_item::Model],
-    fields: BaseItemDtoFields,
 ) -> Result<HashMap<Uuid, EpisodeHierarchyNames>, ApiError> {
-    let hierarchy_items = items
+    let episodes = items
         .iter()
-        .filter(|item| {
-            is_item_type(&item.item_type, "Episode") || is_item_type(&item.item_type, "Season")
-        })
+        .filter(|item| is_item_type(&item.item_type, "Episode"))
         .collect::<Vec<_>>();
-    if hierarchy_items.is_empty() {
+    if episodes.is_empty() {
         return Ok(HashMap::new());
     }
 
     let mut parent_ids = HashSet::new();
-    for item in &hierarchy_items {
-        if is_item_type(&item.item_type, "Episode") {
-            if metadata_string(item.data.as_ref(), &["SeriesName", "series_name"])
-                .as_deref()
-                .is_none_or(str::is_empty)
-            {
-                parent_ids.extend(item.series_id);
-            }
-            if metadata_string(item.data.as_ref(), &["SeasonName", "season_name"])
-                .as_deref()
-                .is_none_or(str::is_empty)
-            {
-                parent_ids.extend(item.season_id);
-            }
-        }
-        if fields.wants_series_studio() {
+    for item in &episodes {
+        if metadata_string(item.data.as_ref(), &["SeriesName", "series_name"])
+            .as_deref()
+            .is_none_or(str::is_empty)
+        {
             parent_ids.extend(item.series_id);
         }
+        if metadata_string(item.data.as_ref(), &["SeasonName", "season_name"])
+            .as_deref()
+            .is_none_or(str::is_empty)
+        {
+            parent_ids.extend(item.season_id);
+        }
     }
-    let parent_items = state
+    let parent_names = state
         .base_items
         .get_many(&parent_ids.into_iter().collect::<Vec<_>>())
         .await?
         .into_iter()
-        .map(|item| (item.id, item))
+        .filter_map(|item| item.name.map(|name| (item.id, name)))
         .collect::<HashMap<_, _>>();
 
-    Ok(hierarchy_items
+    Ok(episodes
         .into_iter()
         .map(|item| {
-            let series = item.series_id.and_then(|id| parent_items.get(&id));
             (
                 item.id,
                 EpisodeHierarchyNames {
-                    series_name: series.and_then(|series| series.name.clone()),
-                    season_name: item
-                        .season_id
-                        .and_then(|id| parent_items.get(&id))
-                        .and_then(|season| season.name.clone()),
-                    series_studio: fields
-                        .wants_series_studio()
-                        .then(|| {
-                            series
-                                .filter(|series| is_item_type(&series.item_type, "Series"))
-                                .and_then(|series| {
-                                    metadata_first_string(
-                                        series.data.as_ref(),
-                                        &["Studios", "studios"],
-                                    )
-                                })
-                        })
-                        .flatten(),
+                    series_name: item.series_id.and_then(|id| parent_names.get(&id).cloned()),
+                    season_name: item.season_id.and_then(|id| parent_names.get(&id).cloned()),
                 },
             )
         })
@@ -2341,7 +1903,6 @@ pub(crate) fn attach_episode_hierarchy_names(
     if dto.season_name.as_deref().is_none_or(str::is_empty) {
         dto.season_name.clone_from(&hierarchy_names.season_name);
     }
-    dto.series_studio.clone_from(&hierarchy_names.series_studio);
 }
 
 pub(crate) async fn media_source_policy_for_user(
@@ -2374,13 +1935,8 @@ pub(crate) fn apply_media_source_policy(dto: &mut BaseItemDto, policy: &UserPoli
     }
 }
 
-pub(crate) fn attach_media_source_count(dto: &mut BaseItemDto, count: u64) -> Result<(), ApiError> {
-    dto.media_source_count = if count > 1 {
-        Some(checked_int32(count)?)
-    } else {
-        None
-    };
-    Ok(())
+pub(crate) fn attach_media_source_count(dto: &mut BaseItemDto, count: u64) {
+    dto.media_source_count = (count > 1).then(|| i32::try_from(count).ok()).flatten();
 }
 
 pub(crate) fn attach_has_lyrics(dto: &mut BaseItemDto, has_lyrics: bool) {
@@ -2514,7 +2070,7 @@ pub(crate) fn project_item_dto_with_versioned_sources(
 
 pub(crate) fn attach_dto_image_projection(
     dto: &mut BaseItemDto,
-    mut projection: jellyfin_server_implementations::DtoImageProjection,
+    projection: jellyfin_server_implementations::DtoImageProjection,
 ) {
     dto.image_tags = projection
         .image_tags_present
@@ -2540,16 +2096,6 @@ pub(crate) fn attach_dto_image_projection(
         .parent_backdrop_image_item_id
         .map(|id| id.simple().to_string());
     dto.parent_backdrop_image_tags = projection.parent_backdrop_image_tags;
-    // Album artwork is projected with the audio relation batch rather than as
-    // the current item's image. Preserve its Primary blur hash alongside the
-    // local/inherited image hashes produced by the normal image projector.
-    for (image_type, hashes) in std::mem::take(&mut dto.image_blur_hashes) {
-        projection
-            .image_blur_hashes
-            .entry(image_type)
-            .or_default()
-            .extend(hashes);
-    }
     dto.image_blur_hashes = projection.image_blur_hashes;
 }
 
@@ -2559,8 +2105,6 @@ pub(crate) struct ItemRelationMetadata {
     artist_items: Vec<NameIdPair>,
     album_artist_items: Vec<NameIdPair>,
     album_id: Option<Uuid>,
-    album_primary_image: Option<DtoPrimaryImageMetadata>,
-    album_normalization_gain: Option<f32>,
     people: Vec<BaseItemPerson>,
     tags: Vec<String>,
     studios: Vec<NameIdPair>,
@@ -2578,13 +2122,6 @@ struct MusicRelationMetadata {
     artist_items: HashMap<Uuid, Vec<NameIdPair>>,
     album_artist_items: HashMap<Uuid, Vec<NameIdPair>>,
     album_ids: HashMap<Uuid, Uuid>,
-    albums: HashMap<Uuid, MusicAlbumMetadata>,
-}
-
-#[derive(Debug, Default, Clone)]
-struct MusicAlbumMetadata {
-    primary_image: Option<DtoPrimaryImageMetadata>,
-    normalization_gain: Option<f32>,
 }
 
 pub(crate) async fn load_relation_metadata(
@@ -2651,8 +2188,6 @@ pub(crate) async fn load_relation_metadata(
 
     let mut result = HashMap::with_capacity(items.len());
     for item in items {
-        let album_id = music.album_ids.remove(&item.id);
-        let album = album_id.and_then(|album_id| music.albums.get(&album_id).cloned());
         let metadata = ItemRelationMetadata {
             genres: genres
                 .remove(&item.id)
@@ -2661,7 +2196,6 @@ pub(crate) async fn load_relation_metadata(
                 .map(|genre| NameIdPair {
                     name: genre.value,
                     id: genre.id.simple().to_string(),
-                    emby_id: Some(genre.emby_id),
                 })
                 .collect(),
             artist_items: music.artist_items.remove(&item.id).unwrap_or_default(),
@@ -2669,9 +2203,7 @@ pub(crate) async fn load_relation_metadata(
                 .album_artist_items
                 .remove(&item.id)
                 .unwrap_or_default(),
-            album_id,
-            album_primary_image: album.as_ref().and_then(|album| album.primary_image.clone()),
-            album_normalization_gain: album.and_then(|album| album.normalization_gain),
+            album_id: music.album_ids.remove(&item.id),
             people: people
                 .remove(&item.id)
                 .unwrap_or_default()
@@ -2691,7 +2223,7 @@ pub(crate) async fn load_relation_metadata(
                         name: credit.person.name,
                         id: canonical.id.simple().to_string(),
                         role: credit.role,
-                        person_type: Some(person_kind_from_name(&credit.person_type)),
+                        person_type: person_kind_from_name(&credit.person_type),
                         primary_image_tag: image.map(|image| image.tag.clone()),
                         image_blur_hashes,
                     })
@@ -2705,7 +2237,6 @@ pub(crate) async fn load_relation_metadata(
                 .map(|studio| NameIdPair {
                     name: studio.value,
                     id: studio.id.simple().to_string(),
-                    emby_id: Some(studio.emby_id),
                 })
                 .collect(),
         };
@@ -2759,38 +2290,6 @@ async fn load_music_relation_metadata(
                 .map_err(ApiError::from)
         },
     )?;
-    let album_item_ids = album_ids
-        .values()
-        .copied()
-        .collect::<HashSet<_>>()
-        .into_iter()
-        .collect::<Vec<_>>();
-    let (album_items, mut album_images) = tokio::try_join!(
-        async {
-            state
-                .base_items
-                .get_many(&album_item_ids)
-                .await
-                .map_err(ApiError::from)
-        },
-        async {
-            state
-                .dto_images
-                .primary_image_metadata(&album_item_ids)
-                .await
-                .map_err(|_| ApiError::Internal)
-        },
-    )?;
-    let albums = album_items
-        .into_iter()
-        .map(|album| {
-            let metadata = MusicAlbumMetadata {
-                primary_image: album_images.remove(&album.id),
-                normalization_gain: metadata_normalization_gain(album.data.as_ref()),
-            };
-            (album.id, metadata)
-        })
-        .collect();
     Ok(MusicRelationMetadata {
         artist_items: artist_items
             .into_iter()
@@ -2801,7 +2300,6 @@ async fn load_music_relation_metadata(
             .map(|(item_id, artists)| (item_id, item_value_pairs_to_dto(artists)))
             .collect(),
         album_ids,
-        albums,
     })
 }
 
@@ -2811,7 +2309,6 @@ fn item_value_pairs_to_dto(pairs: Vec<jellyfin_data::ItemValuePair>) -> Vec<Name
         .map(|pair| NameIdPair {
             name: pair.value,
             id: pair.id.simple().to_string(),
-            emby_id: Some(pair.emby_id),
         })
         .collect()
 }
@@ -2835,16 +2332,6 @@ pub(crate) fn attach_relation_metadata(dto: &mut BaseItemDto, metadata: ItemRela
     if let Some(album_id) = metadata.album_id {
         dto.album_id = Some(album_id.simple().to_string());
     }
-    if let Some(image) = metadata.album_primary_image {
-        dto.album_primary_image_tag = Some(image.tag.clone());
-        if let Some(blur_hash) = image.blur_hash {
-            dto.image_blur_hashes
-                .entry(ImageType::Primary)
-                .or_default()
-                .insert(image.tag, blur_hash);
-        }
-    }
-    dto.album_normalization_gain = metadata.album_normalization_gain;
     if let Some(artists) = dto.artists.as_ref() {
         dto.artist_items = Some(ordered_name_id_pairs(artists, &metadata.artist_items));
     }
@@ -2867,7 +2354,6 @@ fn ordered_name_id_pairs(names: &[String], pairs: &[NameIdPair]) -> Vec<NameIdPa
                 .map(|pair| NameIdPair {
                     name: name.clone(),
                     id: pair.id.clone(),
-                    emby_id: pair.emby_id,
                 })
         })
         .collect()
@@ -2891,46 +2377,6 @@ fn is_item_type(item_type: &str, expected: &str) -> bool {
             .rsplit('.')
             .next()
             .is_some_and(|name| name.eq_ignore_ascii_case(expected))
-}
-
-fn item_location_type(item: &base_item::Model) -> Option<LocationType> {
-    // The official projector deliberately omits this for LiveTvProgram even
-    // though BaseItem otherwise exposes LocationType unconditionally.
-    if is_item_type(&item.item_type, "LiveTvProgram") {
-        return None;
-    }
-    match item.path.as_deref() {
-        None | Some("") => Some(if item_source_is_channel(item.data.as_ref()) {
-            LocationType::Remote
-        } else {
-            LocationType::Virtual
-        }),
-        Some(path)
-            if path.contains("://")
-                && !path
-                    .get(.."file://".len())
-                    .is_some_and(|prefix| prefix.eq_ignore_ascii_case("file://")) =>
-        {
-            Some(LocationType::Remote)
-        }
-        Some(_) => Some(LocationType::FileSystem),
-    }
-}
-
-fn item_source_is_channel(data: Option<&Value>) -> bool {
-    if metadata_string(data, &["ChannelId", "channelId", "channelid", "channel_id"])
-        .is_some_and(|channel_id| !channel_id.is_empty())
-    {
-        return true;
-    }
-    match metadata_value(
-        data,
-        &["SourceType", "sourceType", "sourcetype", "source_type"],
-    ) {
-        Some(Value::String(source_type)) => source_type.eq_ignore_ascii_case("Channel"),
-        Some(Value::Number(source_type)) => source_type.as_i64() == Some(1),
-        _ => false,
-    }
 }
 
 pub(crate) fn attach_user_data_dto(dto: &mut BaseItemDto, user_data: UserItemDataDto) {
@@ -3054,46 +2500,31 @@ pub(crate) async fn unplayed_item_counts_for_items(
             .user_library
             .recursive_played_item_counts(target_user_id, &parent_ids),
     )?;
-    total
+    Ok(total
         .into_iter()
         .map(|(item_id, total)| {
             let played = played.get(&item_id).copied().unwrap_or_default();
-            Ok((item_id, checked_unplayed_item_count(total, played)?))
+            (
+                item_id,
+                i32::try_from(total.saturating_sub(played)).unwrap_or(i32::MAX),
+            )
         })
-        .collect()
+        .collect())
 }
 
-fn checked_unplayed_item_count(total: u64, played: u64) -> Result<i32, ApiError> {
-    checked_int32(total.saturating_sub(played))
-}
-
-/// Official Jellyfin response counts use signed `Int32`; reject wider database
-/// counts instead of emitting JSON that generated clients cannot decode.
-pub(crate) fn checked_int32<T>(value: T) -> Result<i32, ApiError>
-where
-    i32: TryFrom<T>,
-{
-    i32::try_from(value).map_err(|_| ApiError::Internal)
-}
-
-pub(crate) fn attach_child_count(
-    dto: &mut BaseItemDto,
-    child_count: Option<u64>,
-) -> Result<(), ApiError> {
+pub(crate) fn attach_child_count(dto: &mut BaseItemDto, child_count: Option<u64>) {
     if let Some(child_count) = child_count {
-        dto.child_count = Some(checked_int32(child_count)?);
+        dto.child_count = Some(child_count);
     }
-    Ok(())
 }
 
 pub(crate) fn attach_recursive_item_count(
     dto: &mut BaseItemDto,
     recursive_item_count: Option<u64>,
-) -> Result<(), ApiError> {
+) {
     if let Some(recursive_item_count) = recursive_item_count {
-        dto.recursive_item_count = Some(checked_int32(recursive_item_count)?);
+        dto.recursive_item_count = Some(recursive_item_count);
     }
-    Ok(())
 }
 
 pub(crate) fn attach_trickplay_manifest(
@@ -3544,7 +2975,7 @@ pub(crate) fn music_genre_to_dto(
     genre: MusicGenre,
     server_id: &str,
     include_item_counts: bool,
-) -> Result<BaseItemDto, ApiError> {
+) -> BaseItemDto {
     let presentation_unique_key = Some(format!("MusicGenre-{}", genre.name));
     let counts = genre.counts;
     let item_count = genre.item_count;
@@ -3600,15 +3031,135 @@ pub(crate) fn music_genre_to_dto(
         item_count,
         "MusicGenre",
         include_item_counts,
-    )?;
-    Ok(dto)
+    );
+    dto
+}
+
+pub(crate) fn genre_to_dto(
+    genre: Genre,
+    server_id: &str,
+    include_item_counts: bool,
+) -> BaseItemDto {
+    let (item_type, presentation_prefix) = match genre.kind {
+        GenreKind::Genre => ("Genre", "Genre"),
+        GenreKind::MusicGenre => ("MusicGenre", "MusicGenre"),
+    };
+    let presentation_unique_key = Some(format!("{presentation_prefix}-{}", genre.name));
+    let counts = genre.counts;
+    let item_count = genre.item_count;
+    let name = genre.name;
+    let mut dto = BaseItemDto {
+        // ALLOW: Jellyfin exposes name and sort name as separate owned fields.
+        name: Some(name.clone()),
+        server_id: server_id.to_owned(),
+        id: genre.id.simple().to_string(),
+        playlist_item_id: None,
+        item_type: item_type.to_owned(),
+        etag: genre.id.simple().to_string(),
+        date_created: None,
+        sort_name: Some(name),
+        path: None,
+        overview: None,
+        media_type: None,
+        collection_type: None,
+        is_folder: true,
+        is_virtual_item: false,
+        parent_id: None,
+        index_number: None,
+        parent_index_number: None,
+        production_year: None,
+        premiere_date: None,
+        run_time_ticks: None,
+        presentation_unique_key,
+        series_id: None,
+        season_id: None,
+        extra_type: None,
+        has_lyrics: None,
+        provider_ids: None,
+        image_tags: Some(HashMap::new()),
+        backdrop_image_tags: Some(Vec::new()),
+        parent_primary_image_item_id: None,
+        parent_primary_image_tag: None,
+        parent_logo_item_id: None,
+        parent_logo_image_tag: None,
+        parent_thumb_item_id: None,
+        parent_thumb_image_tag: None,
+        primary_image_aspect_ratio: None,
+        series_primary_image_tag: None,
+        parent_backdrop_image_item_id: None,
+        parent_backdrop_image_tags: Vec::new(),
+        media_sources: None,
+        media_streams: None,
+        trickplay: None,
+        ..BaseItemDto::default()
+    };
+    apply_item_value_counts(&mut dto, counts, item_count, item_type, include_item_counts);
+    dto
+}
+
+pub(crate) fn studio_to_dto(
+    studio: Studio,
+    server_id: &str,
+    include_item_counts: bool,
+) -> BaseItemDto {
+    let presentation_unique_key = Some(format!("Studio-{}", studio.name));
+    let counts = studio.counts;
+    let item_count = studio.item_count;
+    let name = studio.name;
+    let mut dto = BaseItemDto {
+        // ALLOW: Jellyfin exposes name and sort name as separate owned fields.
+        name: Some(name.clone()),
+        server_id: server_id.to_owned(),
+        id: studio.id.simple().to_string(),
+        playlist_item_id: None,
+        item_type: "Studio".to_owned(),
+        etag: studio.id.simple().to_string(),
+        date_created: None,
+        sort_name: Some(name),
+        path: None,
+        overview: None,
+        media_type: None,
+        collection_type: None,
+        is_folder: true,
+        is_virtual_item: false,
+        parent_id: None,
+        index_number: None,
+        parent_index_number: None,
+        production_year: None,
+        premiere_date: None,
+        run_time_ticks: None,
+        presentation_unique_key,
+        series_id: None,
+        season_id: None,
+        extra_type: None,
+        has_lyrics: None,
+        provider_ids: None,
+        image_tags: Some(HashMap::new()),
+        backdrop_image_tags: Some(Vec::new()),
+        parent_primary_image_item_id: None,
+        parent_primary_image_tag: None,
+        parent_logo_item_id: None,
+        parent_logo_image_tag: None,
+        parent_thumb_item_id: None,
+        parent_thumb_image_tag: None,
+        primary_image_aspect_ratio: None,
+        series_primary_image_tag: None,
+        parent_backdrop_image_item_id: None,
+        parent_backdrop_image_tags: Vec::new(),
+        media_sources: None,
+        media_streams: None,
+        trickplay: None,
+        ..BaseItemDto::default()
+    };
+    apply_item_value_counts(&mut dto, counts, item_count, "Studio", include_item_counts);
+    dto
 }
 
 pub(crate) fn artist_to_dto(
     artist: Artist,
     server_id: &str,
     include_item_counts: bool,
-) -> Result<BaseItemDto, ApiError> {
+) -> BaseItemDto {
     let presentation_unique_key = Some(format!("Artist-{}", artist.name));
     let counts = artist.counts;
     let item_count = artist.item_count;
@@ -3664,8 +3215,8 @@ pub(crate) fn artist_to_dto(
         item_count,
         "MusicArtist",
         include_item_counts,
-    )?;
-    Ok(dto)
+    );
+    dto
 }
 
 fn apply_item_value_counts(
@@ -3674,27 +3225,76 @@ fn apply_item_value_counts(
     item_count: u64,
     item_type: &str,
     include_item_counts: bool,
-) -> Result<(), ApiError> {
+) {
     if !include_item_counts {
-        return Ok(());
+        return;
     }
-    dto.child_count = Some(checked_int32(item_count)?);
-    dto.album_count = Some(checked_int32(counts.album_count)?);
-    dto.music_video_count = Some(checked_int32(counts.music_video_count)?);
-    dto.song_count = Some(checked_int32(counts.song_count)?);
+    dto.child_count = Some(item_count);
+    dto.album_count = Some(counts.album_count);
+    dto.music_video_count = Some(counts.music_video_count);
+    dto.song_count = Some(counts.song_count);
     if item_type == "MusicArtist" {
-        return Ok(());
+        return;
     }
-    dto.artist_count = Some(checked_int32(counts.artist_count)?);
+    dto.artist_count = Some(counts.artist_count);
     if item_type == "MusicGenre" {
-        return Ok(());
+        return;
     }
-    dto.episode_count = Some(checked_int32(counts.episode_count)?);
-    dto.movie_count = Some(checked_int32(counts.movie_count)?);
-    dto.program_count = Some(checked_int32(counts.program_count)?);
-    dto.series_count = Some(checked_int32(counts.series_count)?);
-    dto.trailer_count = Some(checked_int32(counts.trailer_count)?);
-    Ok(())
+    dto.episode_count = Some(counts.episode_count);
+    dto.movie_count = Some(counts.movie_count);
+    dto.program_count = Some(counts.program_count);
+    dto.series_count = Some(counts.series_count);
+    dto.trailer_count = Some(counts.trailer_count);
+}
+
+pub(crate) fn year_to_dto(year: Year, server_id: &str) -> BaseItemDto {
+    let presentation_unique_key = Some(format!("Year-{}", year.name));
+    let name = year.name;
+    BaseItemDto {
+        // ALLOW: Jellyfin exposes name and sort name as separate owned fields.
+        name: Some(name.clone()),
+        server_id: server_id.to_owned(),
+        id: year.id.simple().to_string(),
+        playlist_item_id: None,
+        item_type: "Year".to_owned(),
+        etag: year.id.simple().to_string(),
+        date_created: None,
+        sort_name: Some(name),
+        path: None,
+        overview: None,
+        media_type: None,
+        collection_type: None,
+        is_folder: true,
+        is_virtual_item: false,
+        parent_id: None,
+        index_number: None,
+        parent_index_number: None,
+        production_year: None,
+        premiere_date: None,
+        run_time_ticks: None,
+        presentation_unique_key,
+        series_id: None,
+        season_id: None,
+        extra_type: None,
+        has_lyrics: None,
+        provider_ids: None,
+        image_tags: Some(HashMap::new()),
+        backdrop_image_tags: Some(Vec::new()),
+        parent_primary_image_item_id: None,
+        parent_primary_image_tag: None,
+        parent_logo_item_id: None,
+        parent_logo_image_tag: None,
+        parent_thumb_item_id: None,
+        parent_thumb_image_tag: None,
+        primary_image_aspect_ratio: None,
+        series_primary_image_tag: None,
+        parent_backdrop_image_item_id: None,
+        parent_backdrop_image_tags: Vec::new(),
+        media_sources: None,
+        media_streams: None,
+        trickplay: None,
+        ..BaseItemDto::default()
+    }
 }
 
 fn metadata_value(data: Option<&Value>, keys: &[&str]) -> Option<Value> {
@@ -3702,7 +3302,7 @@ fn metadata_value(data: Option<&Value>, keys: &[&str]) -> Option<Value> {
     keys.iter().find_map(|key| object.get(*key)).cloned()
 }
 
-pub(crate) fn metadata_string(data: Option<&Value>, keys: &[&str]) -> Option<String> {
+fn metadata_string(data: Option<&Value>, keys: &[&str]) -> Option<String> {
     metadata_value(data, keys).and_then(|value| value.as_str().map(str::to_owned))
 }
 
@@ -3771,54 +3371,7 @@ fn metadata_f64(data: Option<&Value>, keys: &[&str]) -> Option<f64> {
     metadata_value(data, keys).and_then(|value| value.as_f64())
 }
 
-fn metadata_image_orientation(data: Option<&Value>) -> Option<ImageOrientation> {
-    let value = metadata_value(
-        data,
-        &["ImageOrientation", "imageOrientation", "image_orientation"],
-    )?;
-    match value.as_str().map(str::to_ascii_lowercase).as_deref() {
-        Some("topleft") => Some(ImageOrientation::TopLeft),
-        Some("topright") => Some(ImageOrientation::TopRight),
-        Some("bottomright") => Some(ImageOrientation::BottomRight),
-        Some("bottomleft") => Some(ImageOrientation::BottomLeft),
-        Some("lefttop") => Some(ImageOrientation::LeftTop),
-        Some("righttop") => Some(ImageOrientation::RightTop),
-        Some("rightbottom") => Some(ImageOrientation::RightBottom),
-        Some("leftbottom") => Some(ImageOrientation::LeftBottom),
-        _ => match value.as_i64() {
-            Some(1) => Some(ImageOrientation::TopLeft),
-            Some(2) => Some(ImageOrientation::TopRight),
-            Some(3) => Some(ImageOrientation::BottomRight),
-            Some(4) => Some(ImageOrientation::BottomLeft),
-            Some(5) => Some(ImageOrientation::LeftTop),
-            Some(6) => Some(ImageOrientation::RightTop),
-            Some(7) => Some(ImageOrientation::RightBottom),
-            Some(8) => Some(ImageOrientation::LeftBottom),
-            _ => None,
-        },
-    }
-}
-
-fn metadata_normalization_gain(data: Option<&Value>) -> Option<f32> {
-    let lufs = metadata_f64(data, &["LUFS", "Lufs", "lufs"])
-        .map(|value| value as f32)
-        .filter(|value| value.is_finite());
-    if let Some(lufs) = lufs {
-        return Some(-18.0 - lufs);
-    }
-    metadata_f64(
-        data,
-        &[
-            "NormalizationGain",
-            "normalizationGain",
-            "normalization_gain",
-        ],
-    )
-    .map(|value| value as f32)
-    .filter(|value| value.is_finite())
-}
-
-pub(crate) fn metadata_i32(data: Option<&Value>, keys: &[&str]) -> Option<i32> {
+fn metadata_i32(data: Option<&Value>, keys: &[&str]) -> Option<i32> {
     metadata_value(data, keys)
         .and_then(|value| value.as_i64().and_then(|value| i32::try_from(value).ok()))
 }
@@ -3859,13 +3412,6 @@ fn metadata_strings(data: Option<&Value>, keys: &[&str]) -> Vec<String> {
                 .collect()
         })
         .unwrap_or_default()
-}
-
-fn metadata_first_string(data: Option<&Value>, keys: &[&str]) -> Option<String> {
-    metadata_value(data, keys)
-        .and_then(|value| value.as_array().cloned())
-        .and_then(|values| values.into_iter().next())
-        .and_then(|value| value.as_str().map(str::to_owned))
 }
 
 const MEDIA_TYPES: &[&str] = &["Unknown", "Video", "Audio", "Photo", "Book"];
@@ -3973,7 +3519,7 @@ fn metadata_enum_strings(data: Option<&Value>, keys: &[&str], variants: &[&str])
         .collect()
 }
 
-pub(crate) fn metadata_provider_ids(data: Option<&Value>) -> Option<HashMap<String, String>> {
+fn metadata_provider_ids(data: Option<&Value>) -> Option<HashMap<String, String>> {
     metadata_value(data, &["ProviderIds", "provider_ids"])
         .as_ref()
         .and_then(provider_ids_from_value)
@@ -4038,723 +3584,10 @@ fn metadata_remote_trailers(data: Option<&Value>) -> Vec<MediaUrl> {
         .unwrap_or_default()
 }
 
-/// Adapts fields whose Jellyfin values are outside Emby's generated BaseItem
-/// wire contract. Swift's `Codable` rejects the whole enclosing item when an
-/// optional field contains an unknown enum value or incompatible id type.
-///
-/// Only the first URI path segment selects the protocol. This keeps every
-/// unprefixed Jellyfin response unchanged and avoids treating a later dynamic
-/// segment containing `emby` as a protocol marker.
-pub(crate) fn omit_incompatible_emby_relations(uri: &axum::http::Uri, items: &mut [BaseItemDto]) {
-    if !is_emby_request(uri) {
-        return;
-    }
-
-    for item in items {
-        // Emby exposes these item-level fields even though Jellyfin keeps the
-        // corresponding values on MediaSourceInfo. Prefer the item's own
-        // persisted values and use its first projected source only for bitrate
-        // inference from persisted streams.
-        let first_source = item
-            .media_sources
-            .as_ref()
-            .and_then(|sources| sources.first());
-        item.emby_size = item
-            .media_source_size
-            .or_else(|| first_source.and_then(|source| source.size));
-        item.emby_bitrate = item
-            .media_source_bitrate
-            .or_else(|| first_source.and_then(|source| source.bitrate));
-        item.emby_file_name = item
-            .path
-            .as_deref()
-            .and_then(|path| path.rsplit(['/', '\\']).next())
-            .filter(|name| !name.is_empty())
-            .map(str::to_owned);
-
-        // Emby NameLongIdPair uses Int64 identifiers. The private database
-        // identity is stable and collision-free while Jellyfin continues to
-        // expose its normal GUID string relation identifiers.
-        item.emby_genre_items = item
-            .genre_items
-            .iter()
-            .filter_map(|pair| {
-                pair.emby_id.map(|id| EmbyNameLongIdPair {
-                    name: pair.name.clone(),
-                    id,
-                })
-            })
-            .collect();
-        item.emby_studios = item
-            .studios
-            .iter()
-            .filter_map(|pair| {
-                pair.emby_id.map(|id| EmbyNameLongIdPair {
-                    name: pair.name.clone(),
-                    id,
-                })
-            })
-            .collect();
-        item.studios.clear();
-        item.genre_items.clear();
-
-        // Emby's PersonType predates Jellyfin's expanded credit kinds. Preserve
-        // the person but omit the optional Type instead of inventing a role.
-        for person in &mut item.people {
-            if person
-                .person_type
-                .is_some_and(|kind| !is_emby_person_kind(kind))
-            {
-                person.person_type = None;
-            }
-        }
-
-        // Emby does not define Jellyfin's Lyric stream kind. Filtering the
-        // typed DTO before serialization avoids buffering or rewriting JSON.
-        if let Some(streams) = &mut item.media_streams {
-            retain_emby_media_streams(streams);
-        }
-        if let Some(sources) = &mut item.media_sources {
-            for source in sources {
-                retain_emby_media_streams(&mut source.media_streams);
-            }
-        }
-
-        // Remote and Offline are Jellyfin-only LocationType values. The Emby
-        // property is optional, so omission retains decodability without
-        // inventing a FileSystem or Virtual location.
-        if matches!(
-            item.location_type,
-            Some(LocationType::Remote | LocationType::Offline)
-        ) {
-            item.location_type = None;
-        }
-    }
-}
-
-/// Applies the same generated-Emby-client stream enum boundary to playback
-/// responses, whose media sources are projected outside `BaseItemDto`.
-pub(crate) fn omit_incompatible_emby_media_source_streams(
-    uri: &axum::http::Uri,
-    sources: &mut [MediaSourceInfo],
-) {
-    if !is_emby_request(uri) {
-        return;
-    }
-    for source in sources {
-        retain_emby_media_streams(&mut source.media_streams);
-    }
-}
-
-fn is_emby_request(uri: &axum::http::Uri) -> bool {
-    uri.path()
-        .split('/')
-        .nth(1)
-        .is_some_and(|segment| segment.eq_ignore_ascii_case("emby"))
-}
-
-fn is_emby_game_type(item_type: &str) -> bool {
-    [
-        "Game",
-        "MediaBrowser.Controller.Entities.Game",
-        "GameGenre",
-        "MediaBrowser.Controller.Entities.GameGenre",
-    ]
-    .iter()
-    .any(|candidate| item_type.eq_ignore_ascii_case(candidate))
-}
-
-fn retain_emby_media_streams(streams: &mut Vec<MediaStream>) {
-    streams.retain(|stream| stream.stream_type != MediaStreamType::Lyric);
-    for stream in streams {
-        // `Drop` was added after Emby's generated 4.10 client contract. Its
-        // DeliveryMethod property is nullable, so omit only that unsupported
-        // value instead of making Swift reject the enclosing item or playback
-        // response. Keep the value on Jellyfin's unprefixed route tree.
-        if stream.delivery_method == Some(SubtitleDeliveryMethod::Drop) {
-            stream.delivery_method = None;
-        }
-    }
-}
-
-const fn is_emby_person_kind(kind: PersonKind) -> bool {
-    matches!(
-        kind,
-        PersonKind::Actor
-            | PersonKind::Director
-            | PersonKind::Writer
-            | PersonKind::Producer
-            | PersonKind::GuestStar
-            | PersonKind::Composer
-            | PersonKind::Conductor
-            | PersonKind::Lyricist
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
-
-    fn item_with_name_id_relations() -> BaseItemDto {
-        BaseItemDto {
-            id: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_owned(),
-            studios: vec![NameIdPair {
-                name: "Studio".to_owned(),
-                id: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".to_owned(),
-                emby_id: Some(41),
-            }],
-            genre_items: vec![NameIdPair {
-                name: "Drama".to_owned(),
-                id: "cccccccccccccccccccccccccccccccc".to_owned(),
-                emby_id: Some(42),
-            }],
-            artist_items: Some(vec![NameIdPair {
-                name: "Artist".to_owned(),
-                id: "dddddddddddddddddddddddddddddddd".to_owned(),
-                emby_id: None,
-            }]),
-            people: vec![
-                BaseItemPerson {
-                    name: "Unknown credit".to_owned(),
-                    id: "person-unknown".to_owned(),
-                    role: String::new(),
-                    person_type: Some(PersonKind::Unknown),
-                    primary_image_tag: None,
-                    image_blur_hashes: None,
-                },
-                BaseItemPerson {
-                    name: "Narrator".to_owned(),
-                    id: "person-narrator".to_owned(),
-                    role: "Narrator".to_owned(),
-                    person_type: Some(PersonKind::Narrator),
-                    primary_image_tag: None,
-                    image_blur_hashes: None,
-                },
-                BaseItemPerson {
-                    name: "Actor".to_owned(),
-                    id: "person-actor".to_owned(),
-                    role: "Lead".to_owned(),
-                    person_type: Some(PersonKind::Actor),
-                    primary_image_tag: None,
-                    image_blur_hashes: None,
-                },
-            ],
-            media_streams: Some(vec![
-                MediaStream {
-                    stream_type: MediaStreamType::Lyric,
-                    ..MediaStream::default()
-                },
-                MediaStream {
-                    stream_type: MediaStreamType::Audio,
-                    ..MediaStream::default()
-                },
-                MediaStream {
-                    stream_type: MediaStreamType::Subtitle,
-                    delivery_method: Some(SubtitleDeliveryMethod::Drop),
-                    ..MediaStream::default()
-                },
-            ]),
-            media_sources: Some(vec![MediaSourceInfo {
-                bitrate: Some(4_200_000),
-                size: Some(4_999_999_999),
-                media_streams: vec![
-                    MediaStream {
-                        stream_type: MediaStreamType::Audio,
-                        ..MediaStream::default()
-                    },
-                    MediaStream {
-                        stream_type: MediaStreamType::Lyric,
-                        ..MediaStream::default()
-                    },
-                    MediaStream {
-                        stream_type: MediaStreamType::Subtitle,
-                        delivery_method: Some(SubtitleDeliveryMethod::Drop),
-                        ..MediaStream::default()
-                    },
-                ],
-                ..MediaSourceInfo::default()
-            }]),
-            path: Some("/media/Drama Feature.mkv".to_owned()),
-            media_source_size: Some(5_000_000_000),
-            location_type: Some(LocationType::Remote),
-            ..BaseItemDto::default()
-        }
-    }
-
-    #[derive(Debug, Deserialize, PartialEq)]
-    #[serde(rename_all = "PascalCase")]
-    enum StrictEmbyPersonType {
-        Actor,
-        Director,
-        Writer,
-        Producer,
-        GuestStar,
-        Composer,
-        Conductor,
-        Lyricist,
-    }
-
-    #[derive(Debug, Deserialize, PartialEq)]
-    #[serde(rename_all = "PascalCase")]
-    enum StrictEmbyMediaStreamType {
-        Unknown,
-        Audio,
-        Video,
-        Subtitle,
-        EmbeddedImage,
-        Attachment,
-        Data,
-    }
-
-    #[derive(Debug, Deserialize, PartialEq)]
-    #[serde(rename_all = "PascalCase")]
-    enum StrictEmbySubtitleDeliveryMethod {
-        Encode,
-        Embed,
-        External,
-        Hls,
-        VideoSideData,
-    }
-
-    #[derive(Debug, Deserialize, PartialEq)]
-    #[serde(rename_all = "PascalCase")]
-    enum StrictEmbyLocationType {
-        FileSystem,
-        Virtual,
-    }
-
-    #[derive(Debug, Deserialize)]
-    #[serde(rename_all = "PascalCase")]
-    struct StrictEmbyPerson {
-        #[serde(rename = "Type")]
-        person_type: Option<StrictEmbyPersonType>,
-    }
-
-    #[derive(Debug, Deserialize)]
-    #[serde(rename_all = "PascalCase")]
-    struct StrictEmbyMediaStream {
-        #[serde(rename = "Type")]
-        stream_type: StrictEmbyMediaStreamType,
-        delivery_method: Option<StrictEmbySubtitleDeliveryMethod>,
-    }
-
-    #[derive(Debug, Deserialize)]
-    #[serde(rename_all = "PascalCase")]
-    struct StrictEmbyMediaSource {
-        media_streams: Vec<StrictEmbyMediaStream>,
-    }
-
-    #[derive(Debug, Deserialize)]
-    #[serde(rename_all = "PascalCase")]
-    struct StrictEmbyBaseItem {
-        size: Option<i64>,
-        bitrate: Option<i32>,
-        file_name: Option<String>,
-        genre_items: Vec<EmbyNameLongIdPair>,
-        studios: Vec<EmbyNameLongIdPair>,
-        location_type: Option<StrictEmbyLocationType>,
-        people: Vec<StrictEmbyPerson>,
-        media_streams: Vec<StrictEmbyMediaStream>,
-        media_sources: Vec<StrictEmbyMediaSource>,
-    }
-
-    #[test]
-    fn emby_uri_projects_numeric_relations_and_top_level_media_fields() {
-        for path in ["/emby/Items", "/EmBy/Users/user/Items/item"] {
-            let uri = path.parse().unwrap();
-            let mut items = vec![item_with_name_id_relations(), item_with_name_id_relations()];
-            omit_incompatible_emby_relations(&uri, &mut items);
-
-            for item in items {
-                let value = serde_json::to_value(item).unwrap();
-                assert_eq!(value["Studios"], json!([{"Name": "Studio", "Id": 41}]));
-                assert_eq!(value["GenreItems"], json!([{"Name": "Drama", "Id": 42}]));
-                assert_eq!(value["Size"], 5_000_000_000_i64);
-                assert_eq!(value["Bitrate"], 4_200_000);
-                assert_eq!(value["FileName"], "Drama Feature.mkv");
-                assert_eq!(
-                    value["ArtistItems"][0]["Id"],
-                    "dddddddddddddddddddddddddddddddd"
-                );
-                assert_eq!(value["Id"], "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
-
-                let decoded: StrictEmbyBaseItem = serde_json::from_value(value).unwrap();
-                assert_eq!(decoded.size, Some(5_000_000_000));
-                assert_eq!(decoded.bitrate, Some(4_200_000));
-                assert_eq!(decoded.file_name.as_deref(), Some("Drama Feature.mkv"));
-                assert_eq!(decoded.genre_items[0].id, 42);
-                assert_eq!(decoded.studios[0].id, 41);
-                assert_eq!(decoded.location_type, None);
-                assert_eq!(decoded.people[0].person_type, None);
-                assert_eq!(decoded.people[1].person_type, None);
-                assert_eq!(
-                    decoded.people[2].person_type,
-                    Some(StrictEmbyPersonType::Actor)
-                );
-                assert_eq!(decoded.media_streams.len(), 2);
-                assert_eq!(
-                    decoded.media_streams[0].stream_type,
-                    StrictEmbyMediaStreamType::Audio
-                );
-                assert_eq!(decoded.media_streams[1].delivery_method, None);
-                assert_eq!(decoded.media_sources[0].media_streams.len(), 2);
-                assert_eq!(
-                    decoded.media_sources[0].media_streams[0].stream_type,
-                    StrictEmbyMediaStreamType::Audio
-                );
-                assert_eq!(
-                    decoded.media_sources[0].media_streams[1].delivery_method,
-                    None
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn jellyfin_or_later_emby_segment_keeps_guid_relation_ids() {
-        for path in ["/Items", "/api/Items", "/Items/emby", "//emby/Items"] {
-            let uri = path.parse().unwrap();
-            let mut items = vec![item_with_name_id_relations()];
-            omit_incompatible_emby_relations(&uri, &mut items);
-            let value = serde_json::to_value(&items[0]).unwrap();
-
-            assert_eq!(
-                value["Studios"][0]["Id"], "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-                "{path}"
-            );
-            assert_eq!(
-                value["GenreItems"][0]["Id"], "cccccccccccccccccccccccccccccccc",
-                "{path}"
-            );
-            assert_eq!(value["People"][0]["Type"], "Unknown", "{path}");
-            assert_eq!(value["People"][1]["Type"], "Narrator", "{path}");
-            assert_eq!(value["LocationType"], "Remote", "{path}");
-            assert_eq!(value["MediaStreams"][0]["Type"], "Lyric", "{path}");
-            assert_eq!(value["MediaStreams"][2]["DeliveryMethod"], "Drop", "{path}");
-            assert_eq!(
-                value["MediaSources"][0]["MediaStreams"][1]["Type"], "Lyric",
-                "{path}"
-            );
-            assert_eq!(
-                value["MediaSources"][0]["MediaStreams"][2]["DeliveryMethod"], "Drop",
-                "{path}"
-            );
-            assert!(value.get("Size").is_none(), "{path}");
-            assert!(value.get("Bitrate").is_none(), "{path}");
-            assert!(value.get("FileName").is_none(), "{path}");
-        }
-    }
-
-    #[test]
-    fn strict_emby_enum_models_reject_jellyfin_only_values() {
-        assert!(serde_json::from_value::<StrictEmbyPerson>(json!({ "Type": "Unknown" })).is_err());
-        assert!(
-            serde_json::from_value::<StrictEmbyMediaStream>(json!({ "Type": "Lyric" })).is_err()
-        );
-        assert!(
-            serde_json::from_value::<StrictEmbyMediaStream>(json!({
-                "Type": "Subtitle",
-                "DeliveryMethod": "Drop"
-            }))
-            .is_err()
-        );
-        assert!(
-            serde_json::from_value::<StrictEmbyBaseItem>(json!({
-                "LocationType": "Remote",
-                "People": [],
-                "MediaStreams": [],
-                "MediaSources": []
-            }))
-            .is_err()
-        );
-    }
-
-    #[test]
-    fn playback_media_source_adapter_is_protocol_local() {
-        let source = || MediaSourceInfo {
-            media_streams: vec![
-                MediaStream {
-                    stream_type: MediaStreamType::Audio,
-                    ..MediaStream::default()
-                },
-                MediaStream {
-                    stream_type: MediaStreamType::Lyric,
-                    ..MediaStream::default()
-                },
-                MediaStream {
-                    stream_type: MediaStreamType::Subtitle,
-                    delivery_method: Some(SubtitleDeliveryMethod::Drop),
-                    ..MediaStream::default()
-                },
-            ],
-            ..MediaSourceInfo::default()
-        };
-
-        let mut emby_sources = vec![source()];
-        omit_incompatible_emby_media_source_streams(
-            &"/emby/Items/id/PlaybackInfo".parse().unwrap(),
-            &mut emby_sources,
-        );
-        assert_eq!(emby_sources[0].media_streams.len(), 2);
-        assert_eq!(
-            emby_sources[0].media_streams[0].stream_type,
-            MediaStreamType::Audio
-        );
-        assert_eq!(emby_sources[0].media_streams[1].delivery_method, None);
-
-        let mut jellyfin_sources = vec![source()];
-        omit_incompatible_emby_media_source_streams(
-            &"/Items/id/PlaybackInfo".parse().unwrap(),
-            &mut jellyfin_sources,
-        );
-        assert_eq!(jellyfin_sources[0].media_streams.len(), 3);
-        assert_eq!(
-            jellyfin_sources[0].media_streams[1].stream_type,
-            MediaStreamType::Lyric
-        );
-        assert_eq!(
-            jellyfin_sources[0].media_streams[2].delivery_method,
-            Some(SubtitleDeliveryMethod::Drop)
-        );
-    }
-
-    #[test]
-    fn emby_base_item_keeps_only_generated_client_person_and_location_enums() {
-        for kind in [
-            PersonKind::Actor,
-            PersonKind::Director,
-            PersonKind::Writer,
-            PersonKind::Producer,
-            PersonKind::GuestStar,
-            PersonKind::Composer,
-            PersonKind::Conductor,
-            PersonKind::Lyricist,
-        ] {
-            assert!(is_emby_person_kind(kind), "{kind:?}");
-        }
-        for kind in [
-            PersonKind::Unknown,
-            PersonKind::Arranger,
-            PersonKind::Engineer,
-            PersonKind::Mixer,
-            PersonKind::Remixer,
-            PersonKind::Creator,
-            PersonKind::Artist,
-            PersonKind::AlbumArtist,
-            PersonKind::Author,
-            PersonKind::Illustrator,
-            PersonKind::Penciller,
-            PersonKind::Inker,
-            PersonKind::Colorist,
-            PersonKind::Letterer,
-            PersonKind::CoverArtist,
-            PersonKind::Editor,
-            PersonKind::Translator,
-            PersonKind::Narrator,
-        ] {
-            assert!(!is_emby_person_kind(kind), "{kind:?}");
-        }
-
-        for location_type in [LocationType::Remote, LocationType::Offline] {
-            let uri = "/emby/Items".parse().unwrap();
-            let mut item = BaseItemDto {
-                location_type: Some(location_type),
-                ..BaseItemDto::default()
-            };
-            omit_incompatible_emby_relations(&uri, std::slice::from_mut(&mut item));
-            assert_eq!(item.location_type, None, "{location_type:?}");
-        }
-    }
-
-    fn async_function_source<'a>(source: &'a str, name: &str) -> &'a str {
-        let public_signature = format!("pub(crate) async fn {name}(");
-        let private_signature = format!("async fn {name}(");
-        let start = source
-            .find(&public_signature)
-            .or_else(|| source.find(&private_signature))
-            .unwrap_or_else(|| panic!("missing handler {name}"));
-        let body = &source[start + 1..];
-        let end = ["\npub(crate) async fn ", "\nasync fn "]
-            .into_iter()
-            .filter_map(|next| body.find(next))
-            .min()
-            .unwrap_or(body.len());
-        &source[start..start + 1 + end]
-    }
-
-    #[test]
-    fn mobile_base_item_handlers_apply_the_emby_wire_adapter() {
-        let items = include_str!("items.rs");
-        for handler in [
-            "resume",
-            "resume_legacy",
-            "latest",
-            "latest_legacy",
-            "suggestions",
-            "suggestions_legacy",
-        ] {
-            assert!(
-                async_function_source(items, handler).contains("omit_incompatible_emby_relations"),
-                "items::{handler} bypasses the Emby BaseItem adapter"
-            );
-        }
-
-        let library = include_str!("library.rs");
-        for handler in [
-            "theme_songs",
-            "theme_videos",
-            "theme_media",
-            "ancestors",
-            "collections",
-            "similar",
-        ] {
-            assert!(
-                async_function_source(library, handler)
-                    .contains("omit_incompatible_emby_relations"),
-                "library::{handler} bypasses the Emby BaseItem adapter"
-            );
-        }
-        for handler in [
-            "instant_mix",
-            "instant_mix_playlist",
-            "instant_mix_genre_by_id",
-            "instant_mix_by_id",
-            "instant_mix_genre_by_name",
-        ] {
-            assert!(
-                async_function_source(library, handler).contains("&uri"),
-                "library::{handler} does not pass its protocol URI to instant_mix_for"
-            );
-        }
-        assert!(
-            async_function_source(library, "instant_mix_for")
-                .contains("omit_incompatible_emby_relations"),
-            "library::instant_mix_for bypasses the Emby BaseItem adapter"
-        );
-
-        let channels = include_str!("channels.rs");
-        for handler in ["list", "channel_items", "latest_channel_items"] {
-            assert!(
-                async_function_source(channels, handler)
-                    .contains("omit_incompatible_emby_relations"),
-                "channels::{handler} bypasses the Emby BaseItem adapter"
-            );
-        }
-
-        let media_info = include_str!("media_info.rs");
-        for handler in [
-            "get_playback_info",
-            "post_playback_info",
-            "open_live_stream",
-        ] {
-            assert!(
-                async_function_source(media_info, handler)
-                    .contains("omit_incompatible_emby_media_source_streams"),
-                "media_info::{handler} bypasses the Emby MediaSource adapter"
-            );
-        }
-
-        assert!(
-            async_function_source(include_str!("movies.rs"), "recommendations")
-                .contains("omit_incompatible_emby_relations"),
-            "movies::recommendations bypasses the Emby BaseItem adapter"
-        );
-    }
-
-    #[test]
-    fn kotlin_int_response_counts_accept_int32_max_and_reject_wider_values() {
-        let maximum = u64::try_from(i32::MAX).unwrap();
-        assert_eq!(checked_int32(maximum).unwrap(), i32::MAX);
-        assert!(matches!(
-            checked_int32(maximum + 1),
-            Err(ApiError::Internal)
-        ));
-        assert!(matches!(
-            checked_int32(usize::try_from(maximum + 1).unwrap()),
-            Err(ApiError::Internal)
-        ));
-
-        let mut dto = BaseItemDto::default();
-        attach_child_count(&mut dto, Some(maximum)).unwrap();
-        attach_recursive_item_count(&mut dto, Some(maximum)).unwrap();
-        assert_eq!(dto.child_count, Some(i32::MAX));
-        assert_eq!(dto.recursive_item_count, Some(i32::MAX));
-        assert!(matches!(
-            attach_child_count(&mut dto, Some(maximum + 1)),
-            Err(ApiError::Internal)
-        ));
-        assert!(matches!(
-            attach_recursive_item_count(&mut dto, Some(maximum + 1)),
-            Err(ApiError::Internal)
-        ));
-    }
-
-    #[test]
-    fn base_item_aggregate_counts_serialize_as_signed_int32() {
-        let dto = BaseItemDto {
-            child_count: Some(i32::MAX),
-            recursive_item_count: Some(i32::MAX),
-            album_count: Some(i32::MAX),
-            artist_count: Some(i32::MAX),
-            episode_count: Some(i32::MAX),
-            movie_count: Some(i32::MAX),
-            music_video_count: Some(i32::MAX),
-            program_count: Some(i32::MAX),
-            series_count: Some(i32::MAX),
-            song_count: Some(i32::MAX),
-            trailer_count: Some(i32::MAX),
-            ..BaseItemDto::default()
-        };
-        let value = serde_json::to_value(dto).unwrap();
-        for name in [
-            "ChildCount",
-            "RecursiveItemCount",
-            "AlbumCount",
-            "ArtistCount",
-            "EpisodeCount",
-            "MovieCount",
-            "MusicVideoCount",
-            "ProgramCount",
-            "SeriesCount",
-            "SongCount",
-            "TrailerCount",
-        ] {
-            assert_eq!(value[name], i32::MAX);
-        }
-
-        let result = BaseItemQueryResult {
-            items: Vec::new(),
-            total_record_count: i32::MAX,
-            start_index: 0,
-        };
-        assert_eq!(
-            serde_json::to_value(result).unwrap()["TotalRecordCount"],
-            i32::MAX
-        );
-    }
-
-    #[test]
-    fn media_source_and_unplayed_counts_reject_values_above_int32_max() {
-        let maximum = u64::try_from(i32::MAX).unwrap();
-        let mut dto = BaseItemDto::default();
-
-        attach_media_source_count(&mut dto, 1).unwrap();
-        assert_eq!(dto.media_source_count, None);
-        attach_media_source_count(&mut dto, maximum).unwrap();
-        assert_eq!(dto.media_source_count, Some(i32::MAX));
-        assert!(matches!(
-            attach_media_source_count(&mut dto, maximum + 1),
-            Err(ApiError::Internal)
-        ));
-
-        assert_eq!(checked_unplayed_item_count(maximum, 0).unwrap(), i32::MAX);
-        assert_eq!(checked_unplayed_item_count(1, 2).unwrap(), 0);
-        assert!(matches!(
-            checked_unplayed_item_count(maximum + 1, 0),
-            Err(ApiError::Internal)
-        ));
-    }
 
     #[test]
     fn person_serialization_includes_primary_image_tag() {
@@ -4762,7 +3595,7 @@ mod tests {
             name: "Actor".to_owned(),
             id: "person-id".to_owned(),
             role: "Lead".to_owned(),
-            person_type: Some(PersonKind::Actor),
+            person_type: PersonKind::Actor,
             primary_image_tag: Some("image-tag".to_owned()),
             image_blur_hashes: Some(HashMap::from([(
                 ImageType::Primary,
@@ -4793,7 +3626,7 @@ mod tests {
             name: "Actor".to_owned(),
             id: "person-id".to_owned(),
             role: "Lead".to_owned(),
-            person_type: Some(PersonKind::Actor),
+            person_type: PersonKind::Actor,
             primary_image_tag: Some("image-tag".to_owned()),
             image_blur_hashes: None,
         };
@@ -5123,68 +3956,6 @@ mod tests {
     }
 
     #[test]
-    fn item_to_dto_projects_photo_metadata_with_sdk_wire_names() {
-        let item = base_item::Model {
-            id: Uuid::new_v4(),
-            item_type: "Photo".to_owned(),
-            data: Some(json!({
-                "CameraMake": "Canon",
-                "cameraModel": "EOS R5",
-                "software": "Camera",
-                "ExposureTime": 0.008,
-                "focal_length": 50.0,
-                "ImageOrientation": 6,
-                "Aperture": 2.8,
-                "shutterSpeed": -7.0,
-                "Latitude": -37.8,
-                "longitude": 122.4,
-                "Altitude": -12.5,
-                "iso_speed_rating": 640
-            })),
-            path: Some("/photos/example.jpg".to_owned()),
-            parent_id: None,
-            top_parent_id: None,
-            name: Some("example".to_owned()),
-            clean_name: None,
-            sort_name: Some("example".to_owned()),
-            media_type: Some("Photo".to_owned()),
-            overview: None,
-            official_rating: None,
-            index_number: None,
-            parent_index_number: None,
-            production_year: None,
-            premiere_date: None,
-            runtime_ticks: None,
-            is_folder: false,
-            is_virtual_item: false,
-            presentation_unique_key: None,
-            primary_version_id: None,
-            series_id: None,
-            season_id: None,
-            series_presentation_unique_key: None,
-            date_created: chrono::DateTime::UNIX_EPOCH,
-            date_modified: chrono::DateTime::UNIX_EPOCH,
-            row_version: 1,
-        };
-
-        let value = serde_json::to_value(item_to_dto(item, "server")).unwrap();
-        assert_eq!(value["CameraMake"], "Canon");
-        assert_eq!(value["CameraModel"], "EOS R5");
-        assert_eq!(value["Software"], "Camera");
-        assert_eq!(value["ExposureTime"], 0.008);
-        assert_eq!(value["FocalLength"], 50.0);
-        assert_eq!(value["ImageOrientation"], "RightTop");
-        assert_eq!(value["Aperture"], 2.8);
-        assert_eq!(value["ShutterSpeed"], -7.0);
-        assert_eq!(value["Latitude"], -37.8);
-        assert_eq!(value["Longitude"], 122.4);
-        assert_eq!(value["Altitude"], -12.5);
-        assert_eq!(value["IsoSpeedRating"], 640);
-        assert!(value.get("cameraMake").is_none());
-        assert!(value.get("imageOrientation").is_none());
-    }
-
-    #[test]
     fn item_to_dto_projects_persisted_metadata_json() {
         let item = base_item::Model {
             id: Uuid::new_v4(),
@@ -5311,7 +4082,6 @@ mod tests {
         assert_eq!(dto.preferred_metadata_country_code.as_deref(), Some("JP"));
         assert_eq!(dto.width, Some(1920));
         assert_eq!(dto.height, Some(1080));
-        assert_eq!(dto.is_hd, Some(true));
         assert_eq!(dto.media_type.as_deref(), Some("Video"));
         assert_eq!(dto.extra_type.as_deref(), Some("BehindTheScenes"));
         assert_eq!(dto.air_days, ["Monday", "Friday"]);
@@ -5357,23 +4127,6 @@ mod tests {
             ])
         );
         assert_eq!(json["EndDate"], "2020-01-02T00:00:00.000Z");
-        assert_eq!(json["IsHD"], true);
-        assert!(json.get("IsHd").is_none());
-
-        let without_is_hd = item_to_dto_with_fields(
-            item.clone(),
-            "server",
-            BaseItemDtoFields::from_names(&["Height".to_owned()]),
-        );
-        assert_eq!(without_is_hd.is_hd, None);
-        for field in ["IsHD", "ishd", "47"] {
-            let selected = item_to_dto_with_fields(
-                item.clone(),
-                "server",
-                BaseItemDtoFields::from_names(&[field.to_owned()]),
-            );
-            assert_eq!(selected.is_hd, Some(true), "{field}");
-        }
 
         let mut empty_item = item.clone();
         empty_item.data = None;

@@ -38,32 +38,14 @@ def base_type(t):
     return t.rstrip('?').strip()
 
 
-def split_generic_args(content):
-    parts, depth, current = [], 0, ''
-    for char in content:
-        if char in '<([':
-            depth += 1
-        elif char in '>)]':
-            depth -= 1
-        if char == ',' and depth == 0:
-            parts.append(current.strip())
-            current = ''
-        else:
-            current += char
-    parts.append(current.strip())
-    return parts
-
-
 def check(models, enums, aliases, typ, value, path, rep, depth=0):
-    nullable = typ.strip().endswith('?')
     typ = base_type(typ)
+    nullable = typ.endswith('?')
 
     if value is None:
-        if not nullable:
-            rep.add(path, f'{typ} does not accept null')
         return
 
-    m = re_match(r'^(?:List|Collection)<(.+)>$', typ)
+    m = re_match(r'^List<(.+)>$', typ)
     if m:
         if not isinstance(value, list):
             rep.add(path, f'expected array for {typ}, got {json_type(value)}')
@@ -71,23 +53,13 @@ def check(models, enums, aliases, typ, value, path, rep, depth=0):
         for i, item in enumerate(value):
             check(models, enums, aliases, m.group(1), item, f'{path}[{i}]', rep, depth + 1)
         return
-    m = re_match(r'^Map<(.+)>$', typ)
+    m = re_match(r'^Map<\s*String\s*,\s*(.+?)\s*>$', typ)
     if m:
         if not isinstance(value, dict):
             rep.add(path, f'expected object for {typ}, got {json_type(value)}')
             return
-        arguments = split_generic_args(m.group(1))
-        if len(arguments) != 2:
-            rep.add(path, f'cannot parse map type {typ}')
-            return
-        key_type, value_type = arguments
         for k, v in value.items():
-            if key_type in enums and k not in enums[key_type]:
-                rep.add(f'{path}.{k}', f'{key_type} map key is not supported')
-            elif key_type != 'String' and key_type not in enums:
-                rep.add(path, f'unsupported map key type {key_type}')
-            check(models, enums, aliases, value_type, v,
-                  f'{path}.{k}', rep, depth + 1)
+            check(models, enums, aliases, m.group(1), v, f'{path}.{k}', rep, depth + 1)
         return
     m = re_match(r'^Set<(.+)>$', typ)
     if m:
@@ -105,15 +77,6 @@ def check(models, enums, aliases, typ, value, path, rep, depth=0):
             rep.add(path, f'{typ} value {value!r} is not one of {enums[typ]}')
         return
 
-    if typ == 'UUID':
-        if not isinstance(value, str) or not (
-                re_match(r'^[0-9a-f]{32}$', value)
-                or re_match(
-                    r'^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-'
-                    r'[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$', value)):
-            rep.add(path, f'UUID expects a simple-lowercase or hyphenated UUID, got {short(value)}')
-        return
-
     if typ in PRIMITIVES:
         want = PRIMITIVES[typ]
         if want is None:
@@ -124,10 +87,6 @@ def check(models, enums, aliases, typ, value, path, rep, depth=0):
               'str': lambda v: isinstance(v, str)}[want[0]]
         if not ok(value):
             rep.add(path, f'{typ} expects {want[0]}, got {json_type(value)} ({short(value)})')
-        elif typ == 'Int' and not -(2 ** 31) <= value < 2 ** 31:
-            rep.add(path, f'Int value is outside the signed 32-bit range: {value}')
-        elif typ == 'Long' and not -(2 ** 63) <= value < 2 ** 63:
-            rep.add(path, f'Long value is outside the signed 64-bit range: {value}')
         return
 
     if typ in models:
@@ -144,9 +103,6 @@ def check(models, enums, aliases, typ, value, path, rep, depth=0):
 
 def check_model(models, enums, aliases, name, value, path, rep, depth=0):
     if depth > 12:
-        return
-    if not models[name]:
-        rep.add(path, f'model schema for {name} has zero parsed fields')
         return
     present = {f['serial']: f for f in models[name]}
     for f in models[name]:

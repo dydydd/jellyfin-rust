@@ -5,8 +5,6 @@ mod base_item_repository;
 mod chapter_repository;
 mod collection_repository;
 mod display_preference_repository;
-mod emby_camera_upload_repository;
-mod emby_item_access_repository;
 pub mod entities;
 mod item_by_name_repository;
 mod item_types;
@@ -27,7 +25,6 @@ mod trickplay_info_repository;
 mod tuner_host_repository;
 mod user_data_repository;
 mod user_profile_image_repository;
-mod user_search_state_repository;
 mod virtual_folder_repository;
 
 pub use activity_log_repository::{
@@ -43,22 +40,15 @@ pub use base_item_image_repository::{
     BaseItemImageType, InvalidBaseItemImageType, NewBaseItemImage, StoredImageMutation,
 };
 pub use base_item_repository::{
-    BaseItemCounts, BaseItemDtoRelatedCounts, BaseItemError, BaseItemFacet, BaseItemFacetPage,
-    BaseItemHierarchyEntry, BaseItemOrder, BaseItemPage, BaseItemQuery, BaseItemRepository,
-    DescendantScanCandidate, LatestTvGroup, MediaStreamLanguageLists, MetadataRefreshCandidate,
-    MovieSimilarityScore, NewBaseItem, NewItemByNameEntity, PersonMovieRecommendationCandidate,
-    PersonMovieRecommendationRequest, ProductionYearOrder, ProductionYearPage, ScoredBaseItem,
-    ScoredBaseItemPage, TvHierarchyCandidate, USER_ROOT_FOLDER_ID,
+    BaseItemCounts, BaseItemError, BaseItemHierarchyEntry, BaseItemOrder, BaseItemPage,
+    BaseItemQuery, BaseItemRepository, DescendantScanCandidate, LatestTvGroup,
+    MediaStreamLanguageLists, MetadataRefreshCandidate, NewBaseItem, NewItemByNameEntity,
+    ProductionYearOrder, ProductionYearPage, ScoredBaseItem, ScoredBaseItemPage,
+    TvHierarchyCandidate, USER_ROOT_FOLDER_ID,
 };
 pub use chapter_repository::{ChapterRecord, ChapterRepository, ChapterStoreError, NewChapter};
 pub use collection_repository::{CollectionRepository, CollectionStoreError};
 pub use display_preference_repository::{DisplayPreferenceRepository, DisplayPreferenceStoreError};
-pub use emby_camera_upload_repository::{
-    EmbyCameraUploadRepository, EmbyCameraUploadStoreError, NewEmbyCameraUpload,
-};
-pub use emby_item_access_repository::{
-    EmbyItemAccessLevel, EmbyItemAccessRepository, EmbyItemAccessStoreError,
-};
 pub use item_by_name_repository::{ItemByNameRepository, ItemByNameStoreError};
 pub use item_types::OFFICIAL_ITEM_TYPE_ALIASES;
 pub use item_update_repository::{ItemMetadataPatch, ItemUpdateRepository, ItemUpdateStoreError};
@@ -88,8 +78,8 @@ pub use named_configuration_repository::{
     NamedConfigurationRepository, NamedConfigurationStoreError,
 };
 pub use person_repository::{
-    CanonicalPersonEntity, NewPerson, NewPersonCredit, PersonCredit, PersonError, PersonItemCredit,
-    PersonPage, PersonQuery, PersonReconciliationBatchResult, PersonRepository,
+    CanonicalPersonEntity, NewPerson, NewPersonCredit, PersonCredit, PersonError, PersonPage,
+    PersonQuery, PersonReconciliationBatchResult, PersonRepository,
 };
 pub use playlist_repository::{
     PlaylistRecord, PlaylistRepository, PlaylistStoreError, PlaylistUserPermission,
@@ -110,16 +100,15 @@ pub use trickplay_info_repository::{
 };
 pub use tuner_host_repository::{NewTunerHost, TunerHostRepository, TunerHostStoreError};
 pub use user_data_repository::{
-    GenericUserDataPatch, NewUserData, PreferredUserDataKey, RememberedTrackSelection,
-    UserDataCopyResult, UserDataError, UserDataPatch, UserDataQuery, UserDataRepository,
+    GenericUserDataPatch, NewUserData, PreferredUserDataKey, UserDataError, UserDataPatch,
+    UserDataQuery, UserDataRepository,
 };
 pub use user_profile_image_repository::{
     NewUserProfileImage, UserProfileImageRepository, UserProfileImageStoreError,
 };
-pub use user_search_state_repository::UserSearchStateRepository;
 pub use virtual_folder_repository::{
-    ItemLibraryOptions, NewMediaPath, NewVirtualFolder, VirtualFolderError,
-    VirtualFolderRepository, VirtualFolderWithPaths,
+    NewMediaPath, NewVirtualFolder, VirtualFolderError, VirtualFolderRepository,
+    VirtualFolderWithPaths,
 };
 
 use std::{sync::Arc, time::Duration};

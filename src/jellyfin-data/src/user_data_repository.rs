@@ -1,8 +1,7 @@
 use chrono::{DateTime, Utc};
 use sea_orm::{
     ColumnTrait, DbBackend, DbErr, EntityTrait, FromQueryResult, Order, QueryFilter, QueryOrder,
-    QuerySelect, Set, Statement,
-    sea_query::{Expr, OnConflict},
+    QuerySelect, Set, Statement, sea_query::OnConflict,
 };
 use std::collections::HashMap;
 use thiserror::Error;
@@ -26,7 +25,6 @@ pub struct NewUserData {
     pub subtitle_stream_index: Option<i32>,
     pub likes: Option<bool>,
     pub retention_date: Option<DateTime<Utc>>,
-    pub is_hidden_from_resume: bool,
 }
 
 impl NewUserData {
@@ -46,7 +44,6 @@ impl NewUserData {
             subtitle_stream_index: None,
             likes: None,
             retention_date: None,
-            is_hidden_from_resume: false,
         }
     }
 }
@@ -96,22 +93,6 @@ pub struct UserDataQuery {
     pub limit: Option<u64>,
 }
 
-/// Result of one atomic, set-based user-data copy operation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, FromQueryResult)]
-pub struct UserDataCopyResult {
-    /// The first requested user missing at statement time. No rows are copied
-    /// when this is populated.
-    pub missing_user_id: Option<Uuid>,
-    pub rows_copied: i64,
-}
-
-/// One remembered media-track selection stored on every user-data row.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RememberedTrackSelection {
-    Audio,
-    Subtitle,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PreferredUserDataKey {
     pub item_id: Uuid,
@@ -156,121 +137,6 @@ impl UserDataRepository {
         }
     }
 
-    /// Copies every persisted user-data value from one user to many targets
-    /// in one PostgreSQL statement.
-    ///
-    /// Targets are deduplicated in PostgreSQL. Existing rows with the same
-    /// `(item, user, custom key)` are replaced from the source, while unrelated
-    /// target rows are retained. The statement checks the source and complete
-    /// target set before its data-modifying CTE, so one missing user prevents
-    /// every write rather than leaving a partially copied target set.
-    ///
-    /// # Errors
-    ///
-    /// Returns a database error when validation or copying fails.
-    pub async fn copy_all_for_users(
-        &self,
-        source_user_id: Uuid,
-        target_user_ids: &[Uuid],
-    ) -> Result<UserDataCopyResult, UserDataError> {
-        let targets = target_user_ids
-            .iter()
-            .map(Uuid::to_string)
-            .collect::<Vec<_>>();
-        let statement = Statement::from_sql_and_values(
-            DbBackend::Postgres,
-            r"
-            WITH target_users AS (
-                SELECT DISTINCT value::uuid AS user_id
-                FROM jsonb_array_elements_text($2::jsonb)
-            ), requested_users AS (
-                SELECT $1::uuid AS user_id
-                UNION
-                SELECT user_id FROM target_users
-            ), missing_users AS (
-                SELECT requested.user_id
-                FROM requested_users AS requested
-                LEFT JOIN jellyfin.users AS users ON users.id = requested.user_id
-                WHERE users.id IS NULL
-            ), copied AS (
-                INSERT INTO jellyfin.user_data (
-                    item_id, user_id, custom_data_key, rating,
-                    playback_position_ticks, play_count, is_favorite,
-                    last_played_date, played, audio_stream_index,
-                    subtitle_stream_index, likes, retention_date,
-                    is_hidden_from_resume
-                )
-                SELECT source.item_id, targets.user_id, source.custom_data_key,
-                    source.rating, source.playback_position_ticks,
-                    source.play_count, source.is_favorite,
-                    source.last_played_date, source.played,
-                    source.audio_stream_index, source.subtitle_stream_index,
-                    source.likes, source.retention_date,
-                    source.is_hidden_from_resume
-                FROM jellyfin.user_data AS source
-                CROSS JOIN target_users AS targets
-                WHERE source.user_id = $1
-                    AND targets.user_id <> $1
-                    AND NOT EXISTS (SELECT 1 FROM missing_users)
-                ON CONFLICT (item_id, user_id, custom_data_key) DO UPDATE
-                SET rating = EXCLUDED.rating,
-                    playback_position_ticks = EXCLUDED.playback_position_ticks,
-                    play_count = EXCLUDED.play_count,
-                    is_favorite = EXCLUDED.is_favorite,
-                    last_played_date = EXCLUDED.last_played_date,
-                    played = EXCLUDED.played,
-                    audio_stream_index = EXCLUDED.audio_stream_index,
-                    subtitle_stream_index = EXCLUDED.subtitle_stream_index,
-                    likes = EXCLUDED.likes,
-                    retention_date = EXCLUDED.retention_date,
-                    is_hidden_from_resume = EXCLUDED.is_hidden_from_resume
-                RETURNING 1
-            )
-            SELECT (
-                    SELECT user_id
-                    FROM missing_users
-                    ORDER BY user_id
-                    LIMIT 1
-                ) AS missing_user_id,
-                COUNT(*)::bigint AS rows_copied
-            FROM copied
-            ",
-            [source_user_id.into(), serde_json::json!(targets).into()],
-        );
-        UserDataCopyResult::find_by_statement(statement)
-            .one(self.database.as_ref())
-            .await?
-            .ok_or_else(|| DbErr::Custom("user-data copy returned no result".to_owned()).into())
-    }
-
-    /// Clears one remembered stream-selection column across every row owned by
-    /// the target user in one PostgreSQL update.
-    ///
-    /// Every unrelated user-data value and the other stream-selection column
-    /// remain unchanged.
-    ///
-    /// # Errors
-    ///
-    /// Returns a database error when the set-based update fails.
-    pub async fn clear_remembered_track_selection(
-        &self,
-        user_id: Uuid,
-        selection: RememberedTrackSelection,
-    ) -> Result<u64, UserDataError> {
-        let update = user_data::Entity::update_many().filter(user_data::Column::UserId.eq(user_id));
-        let update = match selection {
-            RememberedTrackSelection::Audio => update.col_expr(
-                user_data::Column::AudioStreamIndex,
-                Expr::value(Option::<i32>::None),
-            ),
-            RememberedTrackSelection::Subtitle => update.col_expr(
-                user_data::Column::SubtitleStreamIndex,
-                Expr::value(Option::<i32>::None),
-            ),
-        };
-        Ok(update.exec(self.database.as_ref()).await?.rows_affected)
-    }
-
     /// Resolves a user-data row using current keys in priority order, then the
     /// lexically first retained key, in one `PostgreSQL` query.
     ///
@@ -297,8 +163,7 @@ impl UserDataRepository {
             SELECT data.item_id, data.user_id, data.custom_data_key, data.rating,
                 data.playback_position_ticks, data.play_count, data.is_favorite,
                 data.last_played_date, data.played, data.audio_stream_index,
-                data.subtitle_stream_index, data.likes, data.retention_date,
-                data.is_hidden_from_resume
+                data.subtitle_stream_index, data.likes, data.retention_date
             FROM jellyfin.user_data AS data
             LEFT JOIN preferred_keys AS preferred USING (custom_data_key)
             WHERE data.item_id = $1 AND data.user_id = $2
@@ -360,8 +225,7 @@ impl UserDataRepository {
                 data.item_id, data.user_id, data.custom_data_key, data.rating,
                 data.playback_position_ticks, data.play_count, data.is_favorite,
                 data.last_played_date, data.played, data.audio_stream_index,
-                data.subtitle_stream_index, data.likes, data.retention_date,
-                data.is_hidden_from_resume
+                data.subtitle_stream_index, data.likes, data.retention_date
             FROM jellyfin.user_data AS data
             INNER JOIN requested_items AS requested
                 ON requested.item_id = data.item_id
@@ -492,8 +356,7 @@ impl UserDataRepository {
             RETURNING item_id, user_id, custom_data_key, rating,
                 playback_position_ticks, play_count, is_favorite,
                 last_played_date, played, audio_stream_index,
-                subtitle_stream_index, likes, retention_date,
-                is_hidden_from_resume
+                subtitle_stream_index, likes, retention_date
             ",
             [
                 item_id.into(),
@@ -570,8 +433,7 @@ impl UserDataRepository {
             RETURNING item_id, user_id, custom_data_key, rating,
                 playback_position_ticks, play_count, is_favorite,
                 last_played_date, played, audio_stream_index,
-                subtitle_stream_index, likes, retention_date,
-                is_hidden_from_resume
+                subtitle_stream_index, likes, retention_date
             ",
             [
                 item_id.into(),
@@ -586,72 +448,6 @@ impl UserDataRepository {
             .await?
             .ok_or_else(|| {
                 DbErr::RecordNotFound("favorite upsert returned no row".to_owned()).into()
-            })
-    }
-
-    /// Atomically changes only the Emby continue-watching suppression flag.
-    ///
-    /// Playback position and every ordinary Jellyfin user-data field are
-    /// deliberately left untouched so hiding an item is fully reversible.
-    ///
-    /// # Errors
-    ///
-    /// Returns a validation error when no current key is supplied, or a
-    /// database error when the upsert fails.
-    pub async fn set_hidden_from_resume(
-        &self,
-        item_id: Uuid,
-        user_id: Uuid,
-        keys: &[String],
-        is_hidden: bool,
-    ) -> Result<user_data::Model, UserDataError> {
-        let primary_key = keys.first().ok_or(UserDataError::EmptyKey)?;
-        let statement = Statement::from_sql_and_values(
-            DbBackend::Postgres,
-            r"
-            WITH preferred_keys AS (
-                SELECT value AS custom_data_key, ordinality AS priority
-                FROM jsonb_array_elements_text($3::jsonb) WITH ORDINALITY
-            ), chosen_key AS (
-                SELECT data.custom_data_key
-                FROM jellyfin.user_data AS data
-                LEFT JOIN preferred_keys AS preferred
-                    USING (custom_data_key)
-                WHERE data.item_id = $1 AND data.user_id = $2
-                ORDER BY preferred.priority NULLS LAST, data.custom_data_key
-                LIMIT 1
-            ), target_key AS (
-                SELECT COALESCE(
-                    (SELECT custom_data_key FROM chosen_key),
-                    $4::text
-                ) AS custom_data_key
-            )
-            INSERT INTO jellyfin.user_data (
-                item_id, user_id, custom_data_key, is_hidden_from_resume
-            )
-            SELECT $1, $2, custom_data_key, $5
-            FROM target_key
-            ON CONFLICT (item_id, user_id, custom_data_key) DO UPDATE
-            SET is_hidden_from_resume = EXCLUDED.is_hidden_from_resume
-            RETURNING item_id, user_id, custom_data_key, rating,
-                playback_position_ticks, play_count, is_favorite,
-                last_played_date, played, audio_stream_index,
-                subtitle_stream_index, likes, retention_date,
-                is_hidden_from_resume
-            ",
-            [
-                item_id.into(),
-                user_id.into(),
-                serde_json::json!(keys).into(),
-                primary_key.as_str().into(),
-                is_hidden.into(),
-            ],
-        );
-        user_data::Model::find_by_statement(statement)
-            .one(self.database.as_ref())
-            .await?
-            .ok_or_else(|| {
-                DbErr::RecordNotFound("hide-from-resume upsert returned no row".to_owned()).into()
             })
     }
 
@@ -710,8 +506,7 @@ impl UserDataRepository {
             RETURNING item_id, user_id, custom_data_key, rating,
                 playback_position_ticks, play_count, is_favorite,
                 last_played_date, played, audio_stream_index,
-                subtitle_stream_index, likes, retention_date,
-                is_hidden_from_resume
+                subtitle_stream_index, likes, retention_date
             ",
             [
                 item_id.into(),
@@ -804,8 +599,7 @@ impl UserDataRepository {
             RETURNING item_id, user_id, custom_data_key, rating,
                 playback_position_ticks, play_count, is_favorite,
                 last_played_date, played, audio_stream_index,
-                subtitle_stream_index, likes, retention_date,
-                is_hidden_from_resume
+                subtitle_stream_index, likes, retention_date
             ",
             [
                 item_id.into(),
@@ -885,8 +679,7 @@ impl UserDataRepository {
             RETURNING item_id, user_id, custom_data_key, rating,
                 playback_position_ticks, play_count, is_favorite,
                 last_played_date, played, audio_stream_index,
-                subtitle_stream_index, likes, retention_date,
-                is_hidden_from_resume
+                subtitle_stream_index, likes, retention_date
             ",
             [
                 item_id.into(),
@@ -972,8 +765,7 @@ impl UserDataRepository {
             RETURNING item_id, user_id, custom_data_key, rating,
                 playback_position_ticks, play_count, is_favorite,
                 last_played_date, played, audio_stream_index,
-                subtitle_stream_index, likes, retention_date,
-                is_hidden_from_resume
+                subtitle_stream_index, likes, retention_date
             ",
             [
                 item_id.into(),
@@ -1081,8 +873,7 @@ impl UserDataRepository {
             RETURNING item_id, user_id, custom_data_key, rating,
                 playback_position_ticks, play_count, is_favorite,
                 last_played_date, played, audio_stream_index,
-                subtitle_stream_index, likes, retention_date,
-                is_hidden_from_resume
+                subtitle_stream_index, likes, retention_date
             ",
             [source_item_id.into(), user_id.into(), reset_position.into()],
         );
@@ -1168,8 +959,7 @@ impl UserDataRepository {
                 data.rating, data.playback_position_ticks,
                 data.play_count, data.is_favorite, data.last_played_date,
                 data.played, data.audio_stream_index,
-                data.subtitle_stream_index, data.likes, data.retention_date,
-                data.is_hidden_from_resume
+                data.subtitle_stream_index, data.likes, data.retention_date
             ",
             [source_item_id.into(), user_id.into()],
         );
@@ -1218,8 +1008,7 @@ impl UserDataRepository {
             RETURNING item_id, user_id, custom_data_key, rating,
                 playback_position_ticks, play_count, is_favorite,
                 last_played_date, played, audio_stream_index,
-                subtitle_stream_index, likes, retention_date,
-                is_hidden_from_resume
+                subtitle_stream_index, likes, retention_date
             ",
             [
                 item_id.into(),
@@ -1262,8 +1051,7 @@ impl UserDataRepository {
             RETURNING item_id, user_id, custom_data_key, rating,
                 playback_position_ticks, play_count, is_favorite,
                 last_played_date, played, audio_stream_index,
-                subtitle_stream_index, likes, retention_date,
-                is_hidden_from_resume
+                subtitle_stream_index, likes, retention_date
             ",
             [item_id.into(), user_id.into(), key.into()],
         );
@@ -1300,7 +1088,6 @@ impl UserDataRepository {
                     user_data::Column::SubtitleStreamIndex,
                     user_data::Column::Likes,
                     user_data::Column::RetentionDate,
-                    user_data::Column::IsHiddenFromResume,
                 ])
                 .to_owned(),
             )
@@ -1428,13 +1215,8 @@ impl UserDataRepository {
         if let Some(has_position) = query.has_playback_position {
             rows = if has_position {
                 rows.filter(user_data::Column::PlaybackPositionTicks.gt(0))
-                    .filter(user_data::Column::IsHiddenFromResume.eq(false))
             } else {
-                rows.filter(
-                    user_data::Column::PlaybackPositionTicks
-                        .eq(0)
-                        .or(user_data::Column::IsHiddenFromResume.eq(true)),
-                )
+                rows.filter(user_data::Column::PlaybackPositionTicks.eq(0))
             };
         }
         if let Some(min_date) = query.min_last_played_date {
@@ -1468,7 +1250,6 @@ fn to_active_model(data: NewUserData) -> user_data::ActiveModel {
         subtitle_stream_index: Set(data.subtitle_stream_index),
         likes: Set(data.likes),
         retention_date: Set(data.retention_date),
-        is_hidden_from_resume: Set(data.is_hidden_from_resume),
     }
 }
 
@@ -1487,7 +1268,6 @@ fn from_model(model: user_data::Model) -> NewUserData {
         subtitle_stream_index: model.subtitle_stream_index,
         likes: model.likes,
         retention_date: model.retention_date,
-        is_hidden_from_resume: model.is_hidden_from_resume,
     }
 }
 

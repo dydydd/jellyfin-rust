@@ -32,10 +32,6 @@ async fn client_log_document_route_matches_official_contract() {
         .post(None, "/ClientLog/Document", b"anonymous")
         .await;
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-    let response = fixture
-        .post(None, "/clientlog/document", b"anonymous")
-        .await;
-    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 
     let response = fixture
         .post(Some(&fixture.user_token), "/Document", b"device payload")
@@ -69,23 +65,6 @@ async fn client_log_document_route_matches_official_contract() {
         b"official alias payload"
     );
 
-    let response = fixture
-        .post(
-            Some(&fixture.user_token),
-            "/clientlog/document",
-            b"lowercase alias payload",
-        )
-        .await;
-    assert_eq!(response.status(), StatusCode::OK);
-    let lowercase_alias_file = body_json(response).await["FileName"]
-        .as_str()
-        .unwrap()
-        .to_owned();
-    assert_eq!(
-        fs::read(fixture.log_directory.path().join(lowercase_alias_file)).unwrap(),
-        b"lowercase alias payload"
-    );
-
     let api_key_uri = format!("/Document?api_key={}", fixture.api_key_token);
     let response = fixture.post(None, &api_key_uri, b"api key payload").await;
     assert_eq!(response.status(), StatusCode::OK);
@@ -113,7 +92,7 @@ async fn client_log_document_route_matches_official_contract() {
         .post(Some(&fixture.user_token), "/Document", b"blocked")
         .await;
     assert_eq!(disabled.status(), StatusCode::FORBIDDEN);
-    assert_eq!(log_file_count(fixture.log_directory.path()), 4);
+    assert_eq!(log_file_count(fixture.log_directory.path()), 3);
 
     fixture.cleanup().await;
 }

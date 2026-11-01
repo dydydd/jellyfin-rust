@@ -1,10 +1,6 @@
-use std::{collections::HashMap, sync::Arc};
+use std::collections::HashMap;
 
-use chrono::{Duration, Local, TimeZone, Utc};
-use jellyfin_data::{
-    BaseItemError, BaseItemRepository, LinkedChildRepository, LinkedChildStoreError,
-    VirtualFolderError, VirtualFolderRepository, entities::base_item,
-};
+use jellyfin_data::{BaseItemError, BaseItemRepository};
 use jellyfin_model::{
     ExternalIdInfo, ImageProviderInfo, ImageType, RemoteImageResult, RemoteSearchResult,
     order_by_language_descending,
@@ -21,9 +17,6 @@ use crate::tv_maze::{TvMazeClient, TvMazeProviderError};
 
 const TMDB_PROVIDER_NAME: &str = "TheMovieDb";
 const TV_MAZE_PROVIDER_NAME: &str = "TVMaze";
-const GOOGLE_BOOKS_PROVIDER_NAME: &str = "Google Books";
-const MUSIC_BRAINZ_PROVIDER_NAME: &str = "MusicBrainz";
-const TMDB_API_BASE_URL: &str = "https://api.themoviedb.org/3";
 
 #[derive(Debug, Error)]
 pub enum ItemLookupError {
@@ -31,10 +24,6 @@ pub enum ItemLookupError {
     NotFound,
     #[error(transparent)]
     BaseItem(#[from] BaseItemError),
-    #[error(transparent)]
-    VirtualFolder(#[from] VirtualFolderError),
-    #[error(transparent)]
-    LinkedChild(#[from] LinkedChildStoreError),
     #[error(transparent)]
     Metadata(#[from] MetadataProviderError),
     #[error(transparent)]
@@ -48,30 +37,20 @@ pub enum ItemLookupError {
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default, rename_all = "PascalCase")]
 pub struct RemoteSearchInfo {
-    #[serde(alias = "name")]
     pub name: Option<String>,
-    #[serde(alias = "year")]
     pub year: Option<i32>,
-    #[serde(alias = "productionYear", alias = "productionyear")]
     pub production_year: Option<i32>,
-    #[serde(alias = "providerIds", alias = "providerids")]
     pub provider_ids: HashMap<String, String>,
-    #[serde(alias = "metadataLanguage", alias = "metadatalanguage")]
     pub metadata_language: Option<String>,
-    #[serde(alias = "metadataCountryCode", alias = "metadatacountrycode")]
     pub metadata_country_code: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default, rename_all = "PascalCase")]
 pub struct RemoteSearchRequest {
-    #[serde(alias = "searchInfo", alias = "searchinfo")]
     pub search_info: RemoteSearchInfo,
-    #[serde(alias = "itemId", alias = "itemid")]
     pub item_id: Option<Uuid>,
-    #[serde(alias = "searchProviderName", alias = "searchprovidername")]
     pub search_provider_name: Option<String>,
-    #[serde(alias = "includeDisabledProviders", alias = "includedisabledproviders")]
     pub include_disabled_providers: bool,
 }
 
@@ -79,31 +58,14 @@ pub struct RemoteSearchRequest {
 #[derive(Clone)]
 pub struct ItemLookupService {
     items: BaseItemRepository,
-    linked_children: LinkedChildRepository,
-    virtual_folders: VirtualFolderRepository,
-    tmdb_base_url: Arc<str>,
 }
 
 impl ItemLookupService {
     #[must_use]
     pub fn new(database: impl Into<jellyfin_data::SharedDatabase>) -> Self {
-        let database = database.into();
         Self {
-            items: BaseItemRepository::new(database.clone()),
-            linked_children: LinkedChildRepository::new(database.clone()),
-            virtual_folders: VirtualFolderRepository::new(database),
-            tmdb_base_url: Arc::from(TMDB_API_BASE_URL),
+            items: BaseItemRepository::new(database),
         }
-    }
-
-    /// Replaces the TMDB endpoint used by lookup operations.
-    ///
-    /// This is primarily useful for deterministic integration tests and for
-    /// deployments that front TMDB with a compatible metadata proxy.
-    #[must_use]
-    pub fn with_tmdb_base_url(mut self, base_url: impl Into<String>) -> Self {
-        self.tmdb_base_url = Arc::from(base_url.into().trim_end_matches('/').to_owned());
-        self
     }
 
     /// Returns every registered external identifier supported by an item.
@@ -138,30 +100,8 @@ impl ItemLookupService {
         kind: &str,
         request: RemoteSearchRequest,
         api_key: &str,
-        metadata_options: &[jellyfin_model::MetadataOptions],
+        metadata_options: &jellyfin_model::MetadataOptions,
     ) -> Result<Vec<RemoteSearchResult>, ItemLookupError> {
-        let reference = if let Some(item_id) = request.item_id {
-            self.virtual_folders
-                .library_options_for_item(item_id)
-                .await?
-        } else {
-            None
-        };
-        let options_item_type = reference.as_ref().map_or(kind, |reference| {
-            runtime_item_type_name(&reference.item_type)
-        });
-        let global_options = metadata_options
-            .iter()
-            .find(|options| options.item_type.eq_ignore_ascii_case(options_item_type))
-            .cloned()
-            .unwrap_or_default();
-        let provider_options = RemoteSearchProviderOptions::new(
-            global_options,
-            reference
-                .as_ref()
-                .and_then(|reference| reference.library_options.as_ref()),
-            options_item_type,
-        );
         let name = request.search_info.name.as_deref().unwrap_or_default();
         if name.trim().is_empty() {
             return Ok(Vec::new());
@@ -170,9 +110,8 @@ impl ItemLookupService {
             .search_info
             .year
             .or(request.search_info.production_year);
-        let tmdb_client = TmdbClient::with_base_url_and_locale(
+        let tmdb_client = TmdbClient::with_locale(
             api_key.to_owned(),
-            self.tmdb_base_url.to_string(),
             request
                 .search_info
                 .metadata_language
@@ -190,7 +129,7 @@ impl ItemLookupService {
                 "movie" | "trailer" | "musicvideo" => {
                     if api_key.trim().is_empty()
                         || provider_disabled(
-                            &provider_options,
+                            metadata_options,
                             TMDB_PROVIDER_NAME,
                             request.include_disabled_providers,
                             selected_provider.as_deref(),
@@ -201,68 +140,50 @@ impl ItemLookupService {
                     Ok(tmdb_client.search_movie(name, year).await?)
                 }
                 "series" => {
+                    if api_key.trim().is_empty()
+                        || provider_disabled(
+                            metadata_options,
+                            TMDB_PROVIDER_NAME,
+                            request.include_disabled_providers,
+                            selected_provider.as_deref(),
+                        )
+                    {
+                        return Ok(Vec::new());
+                    }
                     let mut results = Vec::new();
                     if !provider_disabled(
-                        &provider_options,
+                        metadata_options,
                         TV_MAZE_PROVIDER_NAME,
                         request.include_disabled_providers,
                         selected_provider.as_deref(),
                     ) {
                         results.extend(TvMazeClient::new().search(name).await?);
                     }
-                    if !api_key.trim().is_empty()
-                        && !provider_disabled(
-                            &provider_options,
-                            TMDB_PROVIDER_NAME,
-                            request.include_disabled_providers,
-                            selected_provider.as_deref(),
-                        )
-                    {
-                        results.extend(tmdb_client.search_tv(name, year).await?);
-                    }
+                    results.extend(tmdb_client.search_tv(name, year).await?);
                     Ok(results)
                 }
                 "person" => {
-                    if api_key.trim().is_empty()
-                        || provider_disabled(
-                            &provider_options,
-                            TMDB_PROVIDER_NAME,
-                            request.include_disabled_providers,
-                            selected_provider.as_deref(),
-                        )
-                    {
+                    if api_key.trim().is_empty() {
                         return Ok(Vec::new());
                     }
                     Ok(tmdb_client.search_person(name).await?)
                 }
                 "boxset" => {
-                    if api_key.trim().is_empty()
-                        || provider_disabled(
-                            &provider_options,
-                            TMDB_PROVIDER_NAME,
-                            request.include_disabled_providers,
-                            selected_provider.as_deref(),
-                        )
-                    {
+                    if api_key.trim().is_empty() {
                         return Ok(Vec::new());
                     }
                     Ok(tmdb_client.search_collection(name).await?)
                 }
                 "book" => {
-                    if provider_disabled(
-                        &provider_options,
-                        GOOGLE_BOOKS_PROVIDER_NAME,
-                        request.include_disabled_providers,
-                        selected_provider.as_deref(),
-                    ) {
+                    if api_key.trim().is_empty() {
                         return Ok(Vec::new());
                     }
                     Ok(GoogleBooksClient::new().search(name, year).await?)
                 }
                 "musicartist" => {
                     if provider_disabled(
-                        &provider_options,
-                        MUSIC_BRAINZ_PROVIDER_NAME,
+                        metadata_options,
+                        "MusicBrainz",
                         request.include_disabled_providers,
                         selected_provider.as_deref(),
                     ) {
@@ -272,8 +193,8 @@ impl ItemLookupService {
                 }
                 "musicalbum" => {
                     if provider_disabled(
-                        &provider_options,
-                        MUSIC_BRAINZ_PROVIDER_NAME,
+                        metadata_options,
+                        "MusicBrainz",
                         request.include_disabled_providers,
                         selected_provider.as_deref(),
                     ) {
@@ -283,110 +204,7 @@ impl ItemLookupService {
                 }
                 _ => Ok(Vec::new()),
             };
-        Ok(sort_remote_search_results(results?, &provider_options))
-    }
-
-    /// Lists the remote movies reported by the enabled metadata provider for
-    /// one persisted BoxSet.
-    ///
-    /// Emby's legacy collection discovery compares provider identifiers
-    /// against all current collection members before applying its optional
-    /// missing/present and aired/unaired filters. The two PostgreSQL reads are
-    /// set based; no member causes an individual item lookup.
-    ///
-    /// # Errors
-    ///
-    /// Returns not-found for an unknown or non-BoxSet id, persistence errors,
-    /// or the metadata-provider error returned by TMDB.
-    #[allow(clippy::too_many_arguments)]
-    pub async fn collection_provider_items(
-        &self,
-        item: &base_item::Model,
-        is_missing: Option<bool>,
-        is_unaired: Option<bool>,
-        api_key: &str,
-        metadata_language: &str,
-        metadata_country_code: &str,
-        metadata_options: &[jellyfin_model::MetadataOptions],
-    ) -> Result<Vec<RemoteSearchResult>, ItemLookupError> {
-        if !runtime_item_type_name(&item.item_type).eq_ignore_ascii_case("BoxSet") {
-            return Err(ItemLookupError::NotFound);
-        }
-        let item_id = item.id;
-        let reference = self
-            .virtual_folders
-            .library_options_for_item(item_id)
-            .await?;
-        let global_options = metadata_options
-            .iter()
-            .find(|options| options.item_type.eq_ignore_ascii_case("BoxSet"))
-            .cloned()
-            .unwrap_or_default();
-        let provider_options = RemoteSearchProviderOptions::new(
-            global_options,
-            reference
-                .as_ref()
-                .and_then(|reference| reference.library_options.as_ref()),
-            "BoxSet",
-        );
-        if item
-            .data
-            .as_ref()
-            .and_then(Value::as_object)
-            .and_then(|object| object_value_ignore_case(object, "IsLocked"))
-            .and_then(Value::as_bool)
-            .unwrap_or(false)
-            || api_key.trim().is_empty()
-            || provider_disabled(&provider_options, TMDB_PROVIDER_NAME, false, None)
-        {
-            return Ok(Vec::new());
-        }
-        let Some(tmdb_id) = provider_id_ignore_case(item.data.as_ref(), "Tmdb")
-            .and_then(|id| id.parse::<i64>().ok())
-        else {
-            return Ok(Vec::new());
-        };
-
-        let client = TmdbClient::with_base_url_and_locale(
-            api_key.to_owned(),
-            self.tmdb_base_url.to_string(),
-            metadata_language,
-            metadata_country_code,
-        );
-        let mut remote_items = client.collection_items(tmdb_id).await?;
-        if let Some(is_missing) = is_missing {
-            let links = self.linked_children.list(item_id).await?;
-            let member_ids = links.iter().map(|link| link.child_id).collect::<Vec<_>>();
-            let members = self.items.get_many(&member_ids).await?;
-            remote_items.retain(|remote| {
-                let present = members
-                    .iter()
-                    .any(|member| provider_ids_intersect(member.data.as_ref(), remote));
-                (!present) == is_missing
-            });
-        }
-        if let Some(is_unaired) = is_unaired {
-            let local_date = Local::now().date_naive();
-            let local_midnight = Local
-                .from_local_datetime(
-                    &local_date
-                        .and_hms_opt(0, 0, 0)
-                        .expect("midnight is always a valid naive time"),
-                )
-                .earliest()
-                .map_or_else(Utc::now, |value| value.with_timezone(&Utc));
-            if is_unaired {
-                // Emby intentionally allows a 1.1-day boundary tolerance.
-                let minimum = local_midnight - Duration::seconds(95_040);
-                remote_items.retain(|item| item.premiere_date.is_some_and(|date| date >= minimum));
-            } else {
-                remote_items.retain(|item| {
-                    item.premiere_date
-                        .is_some_and(|date| date <= local_midnight)
-                });
-            }
-        }
-        Ok(remote_items)
+        Ok(sort_remote_search_results(results?, metadata_options))
     }
 
     /// Lists remote images offered by the item's configured TMDB provider.
@@ -398,7 +216,7 @@ impl ItemLookupService {
     #[allow(clippy::too_many_arguments)]
     pub async fn remote_images(
         &self,
-        item: &base_item::Model,
+        item_id: Uuid,
         image_type: Option<ImageType>,
         provider_name: Option<&str>,
         include_all_languages: bool,
@@ -407,47 +225,38 @@ impl ItemLookupService {
         api_key: &str,
         metadata_language: &str,
         metadata_country_code: &str,
-        metadata_options: &jellyfin_model::MetadataOptions,
     ) -> Result<RemoteImageResult, ItemLookupError> {
-        let providers =
-            remote_image_provider_infos(&item.item_type, api_key, metadata_options, image_type)
-                .into_iter()
-                .map(|provider| provider.name)
-                .collect::<Vec<_>>();
-        if providers.is_empty()
-            || provider_name.is_some_and(|name| {
-                !providers
-                    .iter()
-                    .any(|provider| provider.eq_ignore_ascii_case(name))
-            })
-        {
-            return Ok(empty_remote_images_with_providers(providers));
+        if api_key.trim().is_empty() {
+            return Ok(empty_remote_images());
         }
+        if provider_name.is_some_and(|name| !name.eq_ignore_ascii_case(TMDB_PROVIDER_NAME)) {
+            return Ok(empty_remote_images());
+        }
+        let item = self
+            .items
+            .get(item_id)
+            .await?
+            .ok_or(ItemLookupError::NotFound)?;
         let Some(tmdb_id) =
             provider_id(item.data.as_ref(), "Tmdb").and_then(|id| id.parse::<i64>().ok())
         else {
-            return Ok(empty_remote_images_with_providers(providers));
+            return Ok(empty_remote_images());
         };
 
-        let client = TmdbClient::with_base_url_and_locale(
-            api_key.to_owned(),
-            self.tmdb_base_url.to_string(),
-            metadata_language,
-            metadata_country_code,
-        );
+        let client =
+            TmdbClient::with_locale(api_key.to_owned(), metadata_language, metadata_country_code);
         let images = match item.item_type.as_str() {
             "Movie" | "MusicVideo" | "Trailer" => client.movie_images(tmdb_id).await?,
             "Series" => client.tv_images(tmdb_id).await?,
             "Person" => client.person_images(tmdb_id).await?,
-            _ => return Ok(empty_remote_images_with_providers(providers)),
+            _ => return Ok(empty_remote_images()),
         };
-        let mut images =
-            images_to_remote_images(images, include_all_languages, Some(metadata_language));
+        let mut images = images_to_remote_images(images, include_all_languages);
         if let Some(image_type) = image_type {
             images.retain(|image| image.image_type == image_type);
         }
         let total_record_count = i32::try_from(images.len()).unwrap_or(i32::MAX);
-        let image_language = (!metadata_language.trim().is_empty()).then_some(metadata_language);
+        let image_language = client.language().split('-').next();
         let mut images = order_by_language_descending(images, image_language);
         if start_index > 0 {
             images = images.into_iter().skip(start_index).collect();
@@ -458,27 +267,77 @@ impl ItemLookupService {
         Ok(RemoteImageResult {
             images,
             total_record_count,
-            providers,
+            providers: vec![TMDB_PROVIDER_NAME.to_owned()],
         })
     }
 
-    /// Returns image providers that can actually search for the item.
+    /// Returns image providers available for the item when a TMDB key exists.
     ///
     /// # Errors
     ///
     /// Returns not-found for a missing item.
-    pub fn remote_image_providers(
+    pub async fn remote_image_providers(
         &self,
-        item: &base_item::Model,
+        item_id: Uuid,
         api_key: &str,
         metadata_options: &jellyfin_model::MetadataOptions,
     ) -> Result<Vec<ImageProviderInfo>, ItemLookupError> {
-        Ok(remote_image_provider_infos(
-            &item.item_type,
-            api_key,
-            metadata_options,
-            None,
-        ))
+        if api_key.trim().is_empty() {
+            return Ok(Vec::new());
+        }
+        let item = self
+            .items
+            .get(item_id)
+            .await?
+            .ok_or(ItemLookupError::NotFound)?;
+        let supported_images = match item.item_type.as_str() {
+            "Movie" | "MusicVideo" | "Trailer" | "Series" => {
+                vec![ImageType::Primary, ImageType::Backdrop, ImageType::Logo]
+            }
+            "Person" => vec![ImageType::Profile],
+            _ => return Ok(Vec::new()),
+        };
+        let provider_names = [TMDB_PROVIDER_NAME, "TV Maze", "TheAudioDB"]
+            .into_iter()
+            .filter(|name| {
+                !metadata_options
+                    .disabled_image_fetchers
+                    .iter()
+                    .any(|disabled| disabled.eq_ignore_ascii_case(name))
+            })
+            .filter(|name| {
+                metadata_options.image_fetcher_order.is_empty()
+                    || metadata_options
+                        .image_fetcher_order
+                        .iter()
+                        .any(|ordered| ordered.eq_ignore_ascii_case(name))
+            })
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+        let mut remaining = provider_names.len();
+        let mut supported_images = Some(supported_images);
+        Ok(provider_names
+            .into_iter()
+            .map(|name| {
+                remaining -= 1;
+                let images = if remaining == 0 {
+                    supported_images
+                        .take()
+                        .expect("supported image types must be available")
+                } else {
+                    // ALLOW: each provider response owns its image-type list; the final provider
+                    // takes the original list to avoid one unnecessary allocation.
+                    supported_images
+                        .as_ref()
+                        .expect("supported image types must be available")
+                        .clone()
+                };
+                ImageProviderInfo {
+                    name,
+                    supported_images: images,
+                }
+            })
+            .collect())
     }
 
     /// Applies remote-search provider identifiers to a persisted item.
@@ -537,113 +396,9 @@ impl ItemLookupService {
     }
 }
 
-fn provider_ids_intersect(data: Option<&Value>, remote: &RemoteSearchResult) -> bool {
-    let Some(provider_ids) = data
-        .and_then(Value::as_object)
-        .and_then(|object| object_value_ignore_case(object, "ProviderIds"))
-        .and_then(Value::as_object)
-    else {
-        return false;
-    };
-    provider_ids.iter().any(|(provider, local_value)| {
-        let Some(local_value) = local_value.as_str() else {
-            return false;
-        };
-        remote
-            .provider_ids
-            .iter()
-            .any(|(remote_provider, remote_value)| {
-                provider.eq_ignore_ascii_case(remote_provider)
-                    && local_value.eq_ignore_ascii_case(remote_value)
-            })
-    })
-}
-
-fn provider_id_ignore_case(data: Option<&Value>, provider: &str) -> Option<String> {
-    data.and_then(Value::as_object)
-        .and_then(|object| object_value_ignore_case(object, "ProviderIds"))
-        .and_then(Value::as_object)?
-        .iter()
-        .find_map(|(name, value)| {
-            name.eq_ignore_ascii_case(provider)
-                .then(|| value.as_str().map(str::to_owned))
-                .flatten()
-        })
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-struct RemoteSearchProviderOptions {
-    disabled_metadata_fetchers: Vec<String>,
-    metadata_fetchers: Option<Vec<String>>,
-    metadata_fetcher_order: Vec<String>,
-}
-
-impl RemoteSearchProviderOptions {
-    fn new(
-        global: jellyfin_model::MetadataOptions,
-        library_options: Option<&Value>,
-        item_type: &str,
-    ) -> Self {
-        let library = library_options.and_then(|options| library_type_options(options, item_type));
-        Self {
-            disabled_metadata_fetchers: global.disabled_metadata_fetchers,
-            metadata_fetchers: library
-                .as_ref()
-                .map(|options| options.metadata_fetchers.clone()),
-            metadata_fetcher_order: library.map_or(global.metadata_fetcher_order, |options| {
-                options.metadata_fetcher_order
-            }),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-struct LibraryMetadataOptions {
-    metadata_fetchers: Vec<String>,
-    metadata_fetcher_order: Vec<String>,
-}
-
-fn library_type_options(options: &Value, item_type: &str) -> Option<LibraryMetadataOptions> {
-    let type_options = object_value_ignore_case(options.as_object()?, "TypeOptions")?.as_array()?;
-    let selected = type_options.iter().find_map(|options| {
-        let object = options.as_object()?;
-        object_value_ignore_case(object, "Type")?
-            .as_str()?
-            .eq_ignore_ascii_case(item_type)
-            .then_some(object)
-    })?;
-    Some(LibraryMetadataOptions {
-        metadata_fetchers: string_array_ignore_case(selected, "MetadataFetchers"),
-        metadata_fetcher_order: string_array_ignore_case(selected, "MetadataFetcherOrder"),
-    })
-}
-
-fn object_value_ignore_case<'a>(
-    object: &'a serde_json::Map<String, Value>,
-    name: &str,
-) -> Option<&'a Value> {
-    object
-        .iter()
-        .find_map(|(key, value)| key.eq_ignore_ascii_case(name).then_some(value))
-}
-
-fn string_array_ignore_case(object: &serde_json::Map<String, Value>, name: &str) -> Vec<String> {
-    object_value_ignore_case(object, name)
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter_map(Value::as_str)
-        .map(str::to_owned)
-        .collect()
-}
-
-fn runtime_item_type_name(item_type: &str) -> &str {
-    item_type.rsplit('.').next().unwrap_or(item_type)
-}
-
 fn sort_remote_search_results(
     mut results: Vec<RemoteSearchResult>,
-    options: &RemoteSearchProviderOptions,
+    options: &jellyfin_model::MetadataOptions,
 ) -> Vec<RemoteSearchResult> {
     results.sort_by_key(|result| {
         configured_provider_order(
@@ -654,70 +409,28 @@ fn sort_remote_search_results(
     results
 }
 
-fn empty_remote_images_with_providers(providers: Vec<String>) -> RemoteImageResult {
+fn empty_remote_images() -> RemoteImageResult {
     RemoteImageResult {
         images: Vec::new(),
         total_record_count: 0,
-        providers,
+        providers: Vec::new(),
     }
-}
-
-fn remote_image_provider_infos(
-    item_type: &str,
-    api_key: &str,
-    metadata_options: &jellyfin_model::MetadataOptions,
-    image_type: Option<ImageType>,
-) -> Vec<ImageProviderInfo> {
-    if api_key.trim().is_empty() {
-        return Vec::new();
-    }
-    let Some(supported_images) = supported_remote_image_types(item_type) else {
-        return Vec::new();
-    };
-    if image_type.is_some_and(|image_type| !supported_images.contains(&image_type)) {
-        return Vec::new();
-    }
-
-    // RemoteImageController explicitly requests disabled providers for both search and provider
-    // discovery. The global order still applies, and unlisted providers remain enabled at the end.
-    let mut providers = vec![ImageProviderInfo {
-        name: TMDB_PROVIDER_NAME.to_owned(),
-        supported_images,
-    }];
-    sort_remote_image_providers(&mut providers, &metadata_options.image_fetcher_order);
-    providers
-}
-
-fn sort_remote_image_providers(providers: &mut [ImageProviderInfo], configured_order: &[String]) {
-    providers
-        .sort_by_key(|provider| configured_provider_order(configured_order, Some(&provider.name)));
 }
 
 fn provider_disabled(
-    options: &RemoteSearchProviderOptions,
+    options: &jellyfin_model::MetadataOptions,
     provider_name: &str,
     include_disabled: bool,
     selected_provider: Option<&str>,
 ) -> bool {
-    if selected_provider.is_some_and(|selected| !selected.eq_ignore_ascii_case(provider_name)) {
-        return true;
+    if let Some(selected_provider) = selected_provider {
+        return !selected_provider.eq_ignore_ascii_case(provider_name);
     }
-    if include_disabled {
-        return false;
-    }
-    options.metadata_fetchers.as_ref().map_or_else(
-        || {
-            options
-                .disabled_metadata_fetchers
-                .iter()
-                .any(|name| name.eq_ignore_ascii_case(provider_name))
-        },
-        |enabled| {
-            !enabled
-                .iter()
-                .any(|name| name.eq_ignore_ascii_case(provider_name))
-        },
-    )
+    !include_disabled
+        && options
+            .disabled_metadata_fetchers
+            .iter()
+            .any(|name| name.eq_ignore_ascii_case(provider_name))
 }
 
 fn configured_provider_order(order: &[String], provider_name: Option<&str>) -> usize {
@@ -728,21 +441,6 @@ fn configured_provider_order(order: &[String], provider_name: Option<&str>) -> u
                 .position(|configured| configured.eq_ignore_ascii_case(name))
         })
         .unwrap_or(usize::MAX)
-}
-
-fn supported_remote_image_types(item_type: &str) -> Option<Vec<ImageType>> {
-    match item_type {
-        "Movie" | "MusicVideo" | "Trailer" | "Series" => Some(vec![
-            ImageType::Primary,
-            ImageType::Backdrop,
-            ImageType::Logo,
-            ImageType::Thumb,
-        ]),
-        // Official TmdbPersonImageProvider exposes TMDB profile artwork as
-        // the Person item's Primary image, not the user-only Profile type.
-        "Person" => Some(vec![ImageType::Primary]),
-        _ => None,
-    }
 }
 
 fn identified_item_type<'a>(current: &str, identified: Option<&'a str>) -> Option<&'a str> {
@@ -764,7 +462,12 @@ mod tests {
     async fn remote_search_without_api_key_returns_empty() {
         let service = ItemLookupService::new(sea_orm::DatabaseConnection::Disconnected);
         let results = service
-            .remote_search("Movie", RemoteSearchRequest::default(), "", &[])
+            .remote_search(
+                "Movie",
+                RemoteSearchRequest::default(),
+                "",
+                &jellyfin_model::MetadataOptions::default(),
+            )
             .await
             .expect("empty result");
 
@@ -773,66 +476,37 @@ mod tests {
 
     #[test]
     fn remote_search_request_parses_official_body_shape() {
-        for body in [
-            json!({
-                "SearchInfo": {
-                    "Name": "Fallen",
-                    "ProviderIds": { "Imdb": "tt0119094" },
-                    "Year": 1998,
-                    "MetadataLanguage": "zh-cn",
-                    "MetadataCountryCode": "CN"
-                },
-                "ItemId": "00000000-0000-0000-0000-000000000000",
-                "SearchProviderName": "TheMovieDb",
-                "IncludeDisabledProviders": true
-            }),
-            json!({
-                "searchInfo": {
-                    "name": "Fallen",
-                    "providerIds": { "Imdb": "tt0119094" },
-                    "year": 1998,
-                    "metadataLanguage": "zh-cn",
-                    "metadataCountryCode": "CN"
-                },
-                "itemId": "00000000-0000-0000-0000-000000000000",
-                "searchProviderName": "TheMovieDb",
-                "includeDisabledProviders": true
-            }),
-            json!({
-                "searchinfo": {
-                    "name": "Fallen",
-                    "providerids": { "Imdb": "tt0119094" },
-                    "year": 1998,
-                    "metadatalanguage": "zh-cn",
-                    "metadatacountrycode": "CN"
-                },
-                "itemid": "00000000-0000-0000-0000-000000000000",
-                "searchprovidername": "TheMovieDb",
-                "includedisabledproviders": true
-            }),
-        ] {
-            let request: RemoteSearchRequest =
-                serde_json::from_value(body).expect("remote search request");
+        let request: RemoteSearchRequest = serde_json::from_value(json!({
+            "SearchInfo": {
+                "Name": "Fallen",
+                "ProviderIds": { "Imdb": "tt0119094" },
+                "Year": 1998,
+                "MetadataLanguage": "zh-cn",
+                "MetadataCountryCode": "CN"
+            },
+            "ItemId": "00000000-0000-0000-0000-000000000000",
+            "SearchProviderName": "TheMovieDb",
+            "IncludeDisabledProviders": true
+        }))
+        .expect("remote search request");
 
-            assert_eq!(request.search_info.name.as_deref(), Some("Fallen"));
-            assert_eq!(request.search_info.year, Some(1998));
-            assert_eq!(request.search_info.provider_ids["Imdb"], "tt0119094");
-            assert_eq!(
-                request.search_info.metadata_language.as_deref(),
-                Some("zh-cn")
-            );
-            assert_eq!(
-                request.search_info.metadata_country_code.as_deref(),
-                Some("CN")
-            );
-            assert_eq!(request.search_provider_name.as_deref(), Some("TheMovieDb"));
-            assert!(request.include_disabled_providers);
-        }
+        assert_eq!(request.search_info.name.as_deref(), Some("Fallen"));
+        assert_eq!(request.search_info.year, Some(1998));
+        assert_eq!(request.search_info.provider_ids["Imdb"], "tt0119094");
+        assert_eq!(
+            request.search_info.metadata_language.as_deref(),
+            Some("zh-cn")
+        );
+        assert_eq!(
+            request.search_info.metadata_country_code.as_deref(),
+            Some("CN")
+        );
+        assert_eq!(request.search_provider_name.as_deref(), Some("TheMovieDb"));
     }
 
     #[test]
     fn provider_disabled_honors_config_and_search_provider_selection() {
-        let options = RemoteSearchProviderOptions {
+        let options = jellyfin_model::MetadataOptions {
             disabled_metadata_fetchers: vec!["TVMaze".to_owned()],
             ..Default::default()
         };
@@ -844,57 +518,17 @@ mod tests {
             false,
             Some("TVMaze")
         ));
-        assert!(!provider_disabled(&options, "TVMaze", true, Some("TVMaze")));
-        assert!(
-            provider_disabled(&options, "TVMaze", false, Some("TVMaze")),
-            "selecting a provider must not bypass its disabled configuration"
-        );
-    }
-
-    #[test]
-    fn library_type_options_override_global_enablement_and_order() {
-        let global = jellyfin_model::MetadataOptions {
-            item_type: "Movie".to_owned(),
-            disabled_metadata_fetchers: vec!["DisabledGlobally".to_owned()],
-            metadata_fetcher_order: vec!["GlobalFirst".to_owned()],
-            ..Default::default()
-        };
-        let library = json!({
-            "typeoptions": [{
-                "type": "mOvIe",
-                "metadatafetchers": [],
-                "metadatafetcherorder": []
-            }]
-        });
-        let options = RemoteSearchProviderOptions::new(global, Some(&library), "Movie");
-
-        assert_eq!(options.metadata_fetchers, Some(Vec::new()));
-        assert!(options.metadata_fetcher_order.is_empty());
-        assert!(provider_disabled(&options, "TheMovieDb", false, None));
-        assert!(!provider_disabled(&options, "TheMovieDb", true, None));
-    }
-
-    #[test]
-    fn missing_library_type_options_retain_global_metadata_options() {
-        let global = jellyfin_model::MetadataOptions {
-            disabled_metadata_fetchers: vec!["TVMaze".to_owned()],
-            metadata_fetcher_order: vec!["TheMovieDb".to_owned()],
-            ..Default::default()
-        };
-        let options = RemoteSearchProviderOptions::new(
-            global,
-            Some(&json!({ "TypeOptions": [{ "Type": "Series" }] })),
-            "Movie",
-        );
-
-        assert_eq!(options.metadata_fetchers, None);
-        assert_eq!(options.metadata_fetcher_order, ["TheMovieDb"]);
-        assert!(provider_disabled(&options, "TVMaze", false, None));
+        assert!(!provider_disabled(
+            &options,
+            "TVMaze",
+            false,
+            Some("TVMaze")
+        ));
     }
 
     #[test]
     fn search_results_follow_configured_provider_order() {
-        let options = RemoteSearchProviderOptions {
+        let options = jellyfin_model::MetadataOptions {
             metadata_fetcher_order: vec!["TVMaze".to_owned(), "TheMovieDb".to_owned()],
             ..Default::default()
         };
@@ -927,64 +561,5 @@ mod tests {
         assert_eq!(identified_item_type("Audio", Some("Movie")), None);
         assert_eq!(identified_item_type("Video", None), None);
         assert_eq!(identified_item_type("Video", Some("BoxSet")), None);
-    }
-
-    #[test]
-    fn person_remote_provider_advertises_primary_images() {
-        assert_eq!(
-            supported_remote_image_types("Person"),
-            Some(vec![ImageType::Primary])
-        );
-    }
-
-    #[test]
-    fn tmdb_video_remote_providers_advertise_official_image_types() {
-        let expected = vec![
-            ImageType::Primary,
-            ImageType::Backdrop,
-            ImageType::Logo,
-            ImageType::Thumb,
-        ];
-        for item_type in ["Movie", "Trailer", "Series"] {
-            assert_eq!(
-                supported_remote_image_types(item_type),
-                Some(expected.clone()),
-                "{item_type}"
-            );
-        }
-    }
-
-    #[test]
-    fn remote_image_providers_include_disabled_and_keep_unlisted_providers() {
-        let options = jellyfin_model::MetadataOptions {
-            disabled_image_fetchers: vec![TMDB_PROVIDER_NAME.to_owned()],
-            image_fetcher_order: vec!["Unimplemented Provider".to_owned()],
-            ..Default::default()
-        };
-        let providers = remote_image_provider_infos("Movie", "test-key", &options, None);
-        assert_eq!(providers.len(), 1);
-        assert_eq!(providers[0].name, TMDB_PROVIDER_NAME);
-    }
-
-    #[test]
-    fn remote_image_provider_order_keeps_unlisted_entries_at_the_end() {
-        let mut providers = ["Unlisted", TMDB_PROVIDER_NAME, "Preferred"]
-            .into_iter()
-            .map(|name| ImageProviderInfo {
-                name: name.to_owned(),
-                supported_images: Vec::new(),
-            })
-            .collect::<Vec<_>>();
-        sort_remote_image_providers(
-            &mut providers,
-            &["Preferred".to_owned(), TMDB_PROVIDER_NAME.to_owned()],
-        );
-        assert_eq!(
-            providers
-                .iter()
-                .map(|provider| provider.name.as_str())
-                .collect::<Vec<_>>(),
-            ["Preferred", TMDB_PROVIDER_NAME, "Unlisted"]
-        );
     }
 }
