@@ -1,6 +1,6 @@
 # Jellyfin Rust
 
-Jellyfin 服务端的 Rust 重实现。项目以兼容官方 Jellyfin API 和 Web 客户端为目标，
+Jellyfin 服务端的 Rust 重实现。项目以兼容官方 Jellyfin API 与 Web 客户端为目标，
 使用 Axum、SeaORM、PostgreSQL 构建，当前处于持续开发阶段，尚未达到生产可用级别。
 
 ## 当前能力
